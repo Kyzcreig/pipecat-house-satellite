@@ -24,8 +24,10 @@ depending on XVF3800 microphone bring-up.
 For local bench validation when Skynet is unavailable:
 
 ```bash
+python3.13 -m venv /tmp/pipecat-loopback-venv
 /tmp/pipecat-loopback-venv/bin/pip install aiohttp aiortc av
-scripts/loopback-tone-server.py --host 0.0.0.0 --port 7860
+/tmp/pipecat-loopback-venv/bin/python scripts/loopback-tone-server.py \
+  --host 0.0.0.0 --port 7860
 PIPECAT_SMALLWEBRTC_URL=http://192.168.1.18:7860/api/offer \
   scripts/flash-bench.sh flash
 ```
