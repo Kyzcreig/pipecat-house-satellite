@@ -1,0 +1,315 @@
+#include <opus.h>
+
+#include <atomic>
+#include <cstring>
+
+#include "driver/i2c_master.h"
+#include "driver/i2s_std.h"
+#include "esp_check.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "main.h"
+
+#define WEBRTC_SAMPLE_RATE (16000)
+#define BOARD_I2S_SAMPLE_RATE (48000)
+#define UPSAMPLE_RATIO (BOARD_I2S_SAMPLE_RATE / WEBRTC_SAMPLE_RATE)
+
+#define OPUS_BUFFER_SIZE 1276
+#define PCM_SAMPLES_PER_FRAME 320
+#define PCM_BUFFER_SIZE (PCM_SAMPLES_PER_FRAME * sizeof(int16_t))
+#define BOARD_FRAME_SAMPLES (PCM_SAMPLES_PER_FRAME * UPSAMPLE_RATIO * 2)
+#define BOARD_FRAME_BYTES (BOARD_FRAME_SAMPLES * sizeof(int32_t))
+
+#define OPUS_ENCODER_BITRATE 30000
+#define OPUS_ENCODER_COMPLEXITY 0
+
+static constexpr gpio_num_t PIN_I2S_BCLK = GPIO_NUM_8;
+static constexpr gpio_num_t PIN_I2S_WS = GPIO_NUM_7;
+static constexpr gpio_num_t PIN_I2S_DOUT = GPIO_NUM_44;
+static constexpr gpio_num_t PIN_I2S_DIN = GPIO_NUM_43;
+static constexpr gpio_num_t PIN_I2C_SDA = GPIO_NUM_5;
+static constexpr gpio_num_t PIN_I2C_SCL = GPIO_NUM_6;
+static constexpr uint8_t AIC3104_ADDR = 0x18;
+static constexpr uint8_t AIC3104_PAGE_CTRL = 0x00;
+static constexpr uint8_t AIC3104_LEFT_DAC_VOLUME = 0x2B;
+static constexpr uint8_t AIC3104_RIGHT_DAC_VOLUME = 0x2C;
+
+static i2c_master_bus_handle_t i2c_bus = nullptr;
+static i2c_master_dev_handle_t aic3104 = nullptr;
+static i2s_chan_handle_t tx_handle = nullptr;
+static i2s_chan_handle_t rx_handle = nullptr;
+
+static std::atomic<bool> is_playing = false;
+static unsigned int silence_count = 0;
+
+static bool aic3104_write(uint8_t reg, uint8_t value) {
+  if (aic3104 == nullptr) {
+    return false;
+  }
+
+  uint8_t payload[2] = {reg, value};
+  esp_err_t ret = i2c_master_transmit(aic3104, payload, sizeof(payload),
+                                      pdMS_TO_TICKS(100));
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "AIC3104 write 0x%02x failed: %s", reg,
+             esp_err_to_name(ret));
+    return false;
+  }
+  return true;
+}
+
+static void init_i2c_and_codec() {
+  i2c_master_bus_config_t bus_cfg = {
+      .i2c_port = I2C_NUM_0,
+      .sda_io_num = PIN_I2C_SDA,
+      .scl_io_num = PIN_I2C_SCL,
+      .clk_source = I2C_CLK_SRC_DEFAULT,
+      .glitch_ignore_cnt = 7,
+      .intr_priority = 0,
+      .trans_queue_depth = 0,
+      .flags = {
+          .enable_internal_pullup = 1,
+      },
+  };
+  ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &i2c_bus));
+
+  i2c_device_config_t codec_cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = AIC3104_ADDR,
+      .scl_speed_hz = 100 * 1000,
+      .scl_wait_us = 0,
+      .flags = {
+          .disable_ack_check = 0,
+      },
+  };
+  ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &codec_cfg, &aic3104));
+
+  // ESPHome's AIC3104 component uses these DAC volume registers for unmute.
+  // The XMOS firmware owns the deeper codec clocking/routing setup.
+  aic3104_write(AIC3104_PAGE_CTRL, 0x00);
+  aic3104_write(AIC3104_LEFT_DAC_VOLUME, 0x10);
+  aic3104_write(AIC3104_RIGHT_DAC_VOLUME, 0x10);
+}
+
+static void init_i2s() {
+  i2s_chan_config_t chan_cfg = {
+      .id = I2S_NUM_0,
+      .role = I2S_ROLE_SLAVE,
+      .dma_desc_num = 8,
+      .dma_frame_num = 240,
+      .auto_clear_after_cb = true,
+      .auto_clear_before_cb = false,
+      .intr_priority = 0,
+  };
+  ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle));
+
+  i2s_std_config_t std_cfg = {
+      .clk_cfg =
+          {
+              .sample_rate_hz = BOARD_I2S_SAMPLE_RATE,
+              .clk_src = I2S_CLK_SRC_DEFAULT,
+              .ext_clk_freq_hz = 0,
+              .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+          },
+      .slot_cfg =
+          {
+              .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
+              .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+              .slot_mode = I2S_SLOT_MODE_STEREO,
+              .slot_mask = I2S_STD_SLOT_BOTH,
+              .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
+              .ws_pol = false,
+              .bit_shift = true,
+              .left_align = true,
+              .big_endian = false,
+              .bit_order_lsb = false,
+          },
+      .gpio_cfg =
+          {
+              .mclk = GPIO_NUM_NC,
+              .bclk = PIN_I2S_BCLK,
+              .ws = PIN_I2S_WS,
+              .dout = PIN_I2S_DOUT,
+              .din = PIN_I2S_DIN,
+              .invert_flags =
+                  {
+                      .mclk_inv = false,
+                      .bclk_inv = false,
+                      .ws_inv = false,
+                  },
+          },
+  };
+
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));
+  ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
+  ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
+}
+
+void pipecat_init_audio_capture() {
+  init_i2c_and_codec();
+  init_i2s();
+}
+
+static void update_is_playing(int16_t *in_buf, size_t in_samples) {
+  bool any_set = false;
+  for (size_t i = 0; i < in_samples; i++) {
+    if (in_buf[i] != -1 && in_buf[i] != 0 && in_buf[i] != 1) {
+      any_set = true;
+      break;
+    }
+  }
+
+  if (any_set) {
+    silence_count = 0;
+  } else {
+    silence_count++;
+  }
+
+  if (silence_count >= 20 && is_playing) {
+    is_playing = false;
+  } else if (any_set && !is_playing) {
+    is_playing = true;
+  }
+}
+
+static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
+                                         int32_t *dst) {
+  size_t out = 0;
+  for (size_t i = 0; i < src_samples; i++) {
+    int32_t sample = ((int32_t)src[i]) << 16;
+    for (int j = 0; j < UPSAMPLE_RATIO; j++) {
+      dst[out++] = sample;
+      dst[out++] = sample;
+    }
+  }
+}
+
+static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
+                                         int16_t *dst) {
+  size_t out = 0;
+  for (size_t i = 0; i + (UPSAMPLE_RATIO * 2 - 1) < src_frames &&
+                     out < PCM_SAMPLES_PER_FRAME;
+       i += UPSAMPLE_RATIO * 2) {
+    dst[out++] = (int16_t)(src[i] >> 16);
+  }
+  while (out < PCM_SAMPLES_PER_FRAME) {
+    dst[out++] = 0;
+  }
+}
+
+static void fill_bench_tone(int16_t *dst, size_t samples) {
+  static uint32_t phase = 0;
+  for (size_t i = 0; i < samples; i++) {
+    dst[i] = (phase < 18) ? 6000 : -6000;
+    phase = (phase + 1) % 36;
+  }
+}
+
+static int16_t *decoder_buffer = nullptr;
+static int32_t *i2s_play_buffer = nullptr;
+static OpusDecoder *opus_decoder = nullptr;
+
+void pipecat_init_audio_decoder() {
+  int decoder_error = 0;
+  opus_decoder = opus_decoder_create(WEBRTC_SAMPLE_RATE, 1, &decoder_error);
+  if (decoder_error != OPUS_OK) {
+    ESP_LOGE(LOG_TAG, "Failed to create OPUS decoder: %d", decoder_error);
+    return;
+  }
+
+  decoder_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
+  i2s_play_buffer =
+      (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
+  if (decoder_buffer == nullptr || i2s_play_buffer == nullptr) {
+    ESP_LOGE(LOG_TAG, "Failed to allocate playback buffers");
+  }
+}
+
+void pipecat_audio_decode(uint8_t *data, size_t size) {
+  int decoded_size =
+      opus_decode(opus_decoder, data, size, decoder_buffer,
+                  PCM_SAMPLES_PER_FRAME, 0);
+
+  if (decoded_size <= 0) {
+    return;
+  }
+
+  update_is_playing(decoder_buffer, decoded_size);
+  if (!is_playing) {
+    return;
+  }
+
+  mono_16k_to_stereo_48k_32bit(decoder_buffer, decoded_size, i2s_play_buffer);
+
+  size_t bytes_written = 0;
+  size_t bytes_to_write =
+      decoded_size * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
+  esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer, bytes_to_write,
+                                    &bytes_written, pdMS_TO_TICKS(40));
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "i2s write failed: %s", esp_err_to_name(ret));
+  }
+}
+
+static OpusEncoder *opus_encoder = nullptr;
+static uint8_t *encoder_output_buffer = nullptr;
+static int16_t *read_buffer = nullptr;
+static int32_t *i2s_capture_buffer = nullptr;
+
+void pipecat_init_audio_encoder() {
+  int encoder_error;
+  opus_encoder = opus_encoder_create(WEBRTC_SAMPLE_RATE, 1,
+                                     OPUS_APPLICATION_VOIP, &encoder_error);
+  if (encoder_error != OPUS_OK) {
+    ESP_LOGE(LOG_TAG, "Failed to create OPUS encoder: %d", encoder_error);
+    return;
+  }
+
+  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+
+  read_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
+  i2s_capture_buffer =
+      (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
+  encoder_output_buffer = (uint8_t *)malloc(OPUS_BUFFER_SIZE);
+  if (read_buffer == nullptr || i2s_capture_buffer == nullptr ||
+      encoder_output_buffer == nullptr) {
+    ESP_LOGE(LOG_TAG, "Failed to allocate capture buffers");
+  }
+}
+
+void pipecat_send_audio(PeerConnection *peer_connection) {
+  if (is_playing) {
+    memset(read_buffer, 0, PCM_BUFFER_SIZE);
+    vTaskDelay(pdMS_TO_TICKS(20));
+  } else {
+#ifdef PIPECAT_BENCH_SEND_TONE
+    fill_bench_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
+#else
+    size_t bytes_read = 0;
+    esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
+                                     BOARD_FRAME_BYTES, &bytes_read,
+                                     pdMS_TO_TICKS(20));
+    if (ret == ESP_OK && bytes_read > 0) {
+      stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
+                                   bytes_read / sizeof(int32_t), read_buffer);
+    } else {
+      memset(read_buffer, 0, PCM_BUFFER_SIZE);
+    }
+#endif
+  }
+
+  auto encoded_size =
+      opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
+                  PCM_SAMPLES_PER_FRAME, encoder_output_buffer,
+                  OPUS_BUFFER_SIZE);
+  if (encoded_size > 0) {
+    peer_connection_send_audio(peer_connection, encoder_output_buffer,
+                               encoded_size);
+  }
+}

@@ -12,6 +12,11 @@ work, but this is what has been developed against.
 * [Espressif - ESP32-S3-BOX-3](https://www.digikey.com/short/fb2vjrpn)
 * [M5Stack - CoreS3 ESP32S3 loT Development Kit](https://shop.m5stack.com/products/m5stack-cores3-esp32s3-lotdevelopment-kit)
 
+This fork also adds an Ace bench target:
+
+* `xiao-esp32-s3` - XIAO ESP32-S3 + ReSpeaker XVF3800 bench board. See
+  `boards/xiao-esp32-s3.config` and `tests/bench-esp32-loopback.md`.
+
 ## 📋 Pre-requisites
 
 Clone this repository:
@@ -59,6 +64,14 @@ Then, just build:
 idf.py build
 ```
 
+For the XIAO ESP32-S3 bench board:
+
+```
+cd xiao-esp32-s3
+idf.py --preview set-target esp32s3
+idf.py build
+```
+
 If you built for `linux` you can run the binary directly:
 
 ```
@@ -85,6 +98,12 @@ don't need root access.
 
 ```
 idf.py flash
+```
+
+For the bench board on the Mac Studio:
+
+```
+scripts/flash-bench.sh flash monitor
 ```
 
 ## ▶️ Usage
