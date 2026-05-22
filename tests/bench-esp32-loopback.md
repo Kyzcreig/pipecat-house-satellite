@@ -19,7 +19,8 @@ PIPECAT_SMALLWEBRTC_URL=http://skynet.local:7860/api/offer \
 `scripts/flash-bench.sh` pulls the Wi-Fi password from 1Password when
 `WIFI_PASSWORD` is not already set. It defaults `PIPECAT_BENCH_SEND_TONE=1`
 so the ESP32 sends a generated 16 kHz square-wave test tone upstream without
-depending on XVF3800 microphone bring-up.
+depending on XVF3800 microphone bring-up. For real XVF3800 microphone capture,
+set `PIPECAT_BENCH_SEND_TONE=0`.
 
 For local bench validation when Skynet is unavailable:
 
@@ -44,12 +45,55 @@ I (...) pipecat: DataChannel created
 
 ## Validation Log
 
+### 2026-05-21 20:07 PDT resume validation
+
+- Status: passed Skynet WebRTC loopback and XVF3800 I2C/mic capture on bench
+  board.
+- Firmware commit: `346d8c5` (`WIP: xvf3800 control port probe + I2S master role for INT-Device DFU`).
+- Command:
+  ```bash
+  PIPECAT_BENCH_SEND_TONE=0 \
+    PIPECAT_SMALLWEBRTC_URL=http://192.168.1.78:7860/api/offer \
+    scripts/flash-bench.sh flash monitor
+  ```
+- Flash completed on `/dev/cu.usbmodem4101`; final image size was
+  `0x11eb20`, leaving `0x614e0` bytes free in the app partition.
+- Skynet health before test: `{"ok":true,"service":"pipecat-house-pipeline","stt_provider":"local","wake_gate_enabled":true,"active_peers":0}`.
+- Board reached Skynet: `PeerConnectionState` progressed through
+  `checking` -> `connected` -> `completed`; `DataChannel created` logged.
+- XVF3800 control probe passed over I2C:
+  `XVF3800 alive at 0x2c, DFU firmware v6.0.0`.
+- Mic capture was no longer stuck at `peak=0` with bench tone disabled:
+  serial diagnostics reported `50/50 ok`, `0 zero-byte`, `last_err=ESP_OK`,
+  and non-zero peaks (`peak |s16|=3004`, `9193`, `18298`, etc.).
+- Post-test Skynet health showed `active_peers:1`, confirming the board was
+  still connected to the live PipeCat server.
+
+Board monitor excerpt:
+
+```text
+I (660) pipecat: XVF3800 alive at 0x2c, DFU firmware v6.0.0
+I (4725) pipecat: Connecting to http://192.168.1.78:7860/api/offer
+I (5454) pipecat: PeerConnectionState: connected
+I (6100) pipecat: PeerConnectionState: completed
+I (6261) pipecat: DataChannel created
+I (6416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=3004 raw=196909376
+I (7416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=9193 raw=602501312
+I (11416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=18298 raw=1199152768
+```
+
+Remaining gap: physical speaker playback still needs a human-audible bench
+test. This run did not trigger a TTS response, so it does not close the
+speaker-output gate.
+
+### 2026-05-21 local aiortc validation
+
 - Status: passed local WebRTC loopback on bench board.
 - Date: 2026-05-21.
 - Board: XIAO ESP32-S3, MAC `1c:db:d4:74:64:84`, USB serial
   `/dev/cu.usbmodem4101`.
 - Server endpoint used: `http://192.168.1.18:7860/api/offer`.
-- Skynet endpoint was not reachable during validation:
+- Skynet endpoint was not reachable during the initial validation:
   `skynet.local` did not resolve and `192.168.1.78:7860` timed out.
 - Build/flash gate: `scripts/flash-bench.sh build` and
   `scripts/flash-bench.sh flash` completed with ESP-IDF 5.5.3. Final image
