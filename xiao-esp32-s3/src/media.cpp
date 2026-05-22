@@ -37,10 +37,21 @@ static constexpr uint8_t AIC3104_PAGE_CTRL = 0x00;
 static constexpr uint8_t AIC3104_LEFT_DAC_VOLUME = 0x2B;
 static constexpr uint8_t AIC3104_RIGHT_DAC_VOLUME = 0x2C;
 
+// XVF3800 control port. Pre-flashed via DFU; we just need to confirm it's
+// alive on I2C and that it's clocking BCLK/WS as I2S master (otherwise our
+// secondary-mode i2s_channel_read / i2s_channel_write will time out forever).
+static constexpr uint8_t XVF3800_ADDR = 0x2C;
+// Vendor control protocol: write 1B resource ID then read N bytes.
+// Resource 0xB3 returns 3-byte semantic version of the XMOS DFU firmware,
+// matching what formatBCE's respeaker_xvf3800 ESPHome component reads.
+static constexpr uint8_t XVF3800_RESID_VERSION = 0xB3;
+
 static i2c_master_bus_handle_t i2c_bus = nullptr;
 static i2c_master_dev_handle_t aic3104 = nullptr;
+static i2c_master_dev_handle_t xvf3800 = nullptr;
 static i2s_chan_handle_t tx_handle = nullptr;
 static i2s_chan_handle_t rx_handle = nullptr;
+static bool xvf3800_present = false;
 
 static std::atomic<bool> is_playing = false;
 static unsigned int silence_count = 0;
@@ -92,12 +103,57 @@ static void init_i2c_and_codec() {
   aic3104_write(AIC3104_PAGE_CTRL, 0x00);
   aic3104_write(AIC3104_LEFT_DAC_VOLUME, 0x10);
   aic3104_write(AIC3104_RIGHT_DAC_VOLUME, 0x10);
+
+  // XVF3800 control port. If this probe fails, the XMOS DFU firmware is
+  // missing -- no I2S clocks will ever appear and our slave-mode reads/writes
+  // will hang at the watchdog timeout. Refusing to advance saves debugging time.
+  i2c_device_config_t xvf_cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = XVF3800_ADDR,
+      .scl_speed_hz = 100 * 1000,
+      .scl_wait_us = 0,
+      .flags = {
+          .disable_ack_check = 0,
+      },
+  };
+  ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &xvf_cfg, &xvf3800));
+
+  esp_err_t probe = i2c_master_probe(i2c_bus, XVF3800_ADDR, pdMS_TO_TICKS(100));
+  if (probe != ESP_OK) {
+    ESP_LOGE(LOG_TAG,
+             "XVF3800 not responding at 0x%02x: %s. "
+             "DFU firmware likely not flashed -- I2S clocks will be absent.",
+             XVF3800_ADDR, esp_err_to_name(probe));
+    xvf3800_present = false;
+    return;
+  }
+  xvf3800_present = true;
+
+  // Read XMOS firmware version (resource 0xB3 -> 3 bytes major.minor.patch).
+  uint8_t resid = XVF3800_RESID_VERSION;
+  uint8_t ver[3] = {0, 0, 0};
+  esp_err_t ver_ret = i2c_master_transmit_receive(
+      xvf3800, &resid, 1, ver, sizeof(ver), pdMS_TO_TICKS(100));
+  if (ver_ret == ESP_OK) {
+    ESP_LOGI(LOG_TAG, "XVF3800 alive at 0x%02x, DFU firmware v%u.%u.%u",
+             XVF3800_ADDR, ver[0], ver[1], ver[2]);
+  } else {
+    ESP_LOGW(LOG_TAG,
+             "XVF3800 ack'd at 0x%02x but version read failed: %s. "
+             "Continuing -- maybe vendor protocol mismatch.",
+             XVF3800_ADDR, esp_err_to_name(ver_ret));
+  }
 }
 
 static void init_i2s() {
+  // XVF3800 DFU v6.0.0 on this bench board is the stock XMOS INT-Device build,
+  // where the XVF3800 is the I2S SLAVE and expects the host (ESP32-S3) to
+  // provide BCLK/WS. Seeed's HA-specific "i2s_master" firmware would flip
+  // these roles, but we cannot rely on that being flashed. Drive the bus
+  // ourselves so XVF3800 can clock its internal pipeline off our reference.
   i2s_chan_config_t chan_cfg = {
       .id = I2S_NUM_0,
-      .role = I2S_ROLE_SLAVE,
+      .role = I2S_ROLE_MASTER,
       .dma_desc_num = 8,
       .dma_frame_num = 240,
       .auto_clear_after_cb = true,
@@ -250,8 +306,22 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
       decoded_size * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
   esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer, bytes_to_write,
                                     &bytes_written, pdMS_TO_TICKS(40));
-  if (ret != ESP_OK) {
+  // Throttled diagnostic so we can correlate "i2s write failed" bursts with
+  // XVF3800 clock loss vs occasional underruns.
+  static uint32_t play_frames = 0;
+  static uint32_t play_ok = 0;
+  play_frames++;
+  if (ret == ESP_OK) {
+    play_ok++;
+  } else {
     ESP_LOGW(LOG_TAG, "i2s write failed: %s", esp_err_to_name(ret));
+  }
+  if (play_frames >= 50) {
+    ESP_LOGI(LOG_TAG, "i2s playback: %lu/%lu frames ok%s",
+             (unsigned long)play_ok, (unsigned long)play_frames,
+             xvf3800_present ? "" : " [XVF3800 ABSENT]");
+    play_frames = 0;
+    play_ok = 0;
   }
 }
 
@@ -294,12 +364,69 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     size_t bytes_read = 0;
     esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
                                      BOARD_FRAME_BYTES, &bytes_read,
-                                     pdMS_TO_TICKS(20));
+                                     pdMS_TO_TICKS(200));
+    // Throttled diagnostic: report mic capture health once per second.
+    // Helps the bench operator see whether XVF3800 is actually clocking I2S
+    // and what audio level the mic array is delivering.
+    static uint32_t diag_frames = 0;
+    static uint32_t diag_ok = 0;
+    static uint32_t diag_zero_bytes = 0;
+    static esp_err_t diag_last_err = ESP_OK;
+    static int32_t diag_peak = 0;
+    diag_frames++;
+    if (ret != ESP_OK) {
+      diag_last_err = ret;
+    } else if (bytes_read == 0) {
+      diag_zero_bytes++;
+    }
+    static uint32_t diag_raw_peak = 0;
     if (ret == ESP_OK && bytes_read > 0) {
+      diag_ok++;
+      size_t samples = bytes_read / sizeof(int32_t);
+      for (size_t i = 0; i < samples; i++) {
+        int32_t raw = i2s_capture_buffer[i];
+        uint32_t rawmag = raw < 0 ? (uint32_t)(-raw) : (uint32_t)raw;
+        if (rawmag > diag_raw_peak) diag_raw_peak = rawmag;
+        int32_t s = raw >> 16;
+        if (s < 0) s = -s;
+        if (s > diag_peak) diag_peak = s;
+      }
       stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
                                    bytes_read / sizeof(int32_t), read_buffer);
     } else {
       memset(read_buffer, 0, PCM_BUFFER_SIZE);
+    }
+    // PCM frames are 20ms => 50 per second.
+    if (diag_frames >= 50) {
+      // Dump first 8 raw int32 samples each second to confirm we're seeing
+      // real I2S data and not all-zero garbage. Helps diagnose silent stream
+      // vs unsynced framing.
+      ESP_LOGI(LOG_TAG,
+               "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld raw=%lu%s",
+               (unsigned long)diag_ok, (unsigned long)diag_frames,
+               (unsigned long)diag_zero_bytes,
+               esp_err_to_name(diag_last_err),
+               (long)diag_peak,
+               (unsigned long)diag_raw_peak,
+               xvf3800_present ? "" : " [XVF3800 ABSENT]");
+      if (diag_ok > 0) {
+        ESP_LOGI(LOG_TAG,
+                 "raw: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+                 (unsigned long)i2s_capture_buffer[0],
+                 (unsigned long)i2s_capture_buffer[1],
+                 (unsigned long)i2s_capture_buffer[2],
+                 (unsigned long)i2s_capture_buffer[3],
+                 (unsigned long)i2s_capture_buffer[4],
+                 (unsigned long)i2s_capture_buffer[5],
+                 (unsigned long)i2s_capture_buffer[6],
+                 (unsigned long)i2s_capture_buffer[7]);
+      }
+      diag_frames = 0;
+      diag_ok = 0;
+      diag_zero_bytes = 0;
+      diag_last_err = ESP_OK;
+      diag_peak = 0;
+      diag_raw_peak = 0;
     }
 #endif
   }
