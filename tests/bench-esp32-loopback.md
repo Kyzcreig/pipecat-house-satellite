@@ -45,11 +45,11 @@ I (...) pipecat: DataChannel created
 
 ## Validation Log
 
-### 2026-05-21 20:07 PDT resume validation
+### 2026-05-21 20:07-20:22 PDT resume validation
 
-- Status: passed Skynet WebRTC loopback and XVF3800 I2C/mic capture on bench
-  board.
-- Firmware commit: `346d8c5` (`WIP: xvf3800 control port probe + I2S master role for INT-Device DFU`).
+- Status: passed Skynet WebRTC loopback and XVF3800 I2C probe on bench board.
+  Mic capture is narrowed but not closed.
+- Firmware commits: `346d8c5` plus local follow-up converter diagnostics/fix.
 - Command:
   ```bash
   PIPECAT_BENCH_SEND_TONE=0 \
@@ -63,11 +63,17 @@ I (...) pipecat: DataChannel created
   `checking` -> `connected` -> `completed`; `DataChannel created` logged.
 - XVF3800 control probe passed over I2C:
   `XVF3800 alive at 0x2c, DFU firmware v6.0.0`.
-- Mic capture was no longer stuck at `peak=0` with bench tone disabled:
-  serial diagnostics reported `50/50 ok`, `0 zero-byte`, `last_err=ESP_OK`,
-  and non-zero peaks (`peak |s16|=3004`, `9193`, `18298`, etc.).
-- Post-test Skynet health showed `active_peers:1`, confirming the board was
-  still connected to the live PipeCat server.
+- Raw I2S reads intermittently showed non-zero samples, but the 16 kHz mono
+  frame sent to Opus was still `mono=0`. Root cause: the downsampler sampled a
+  fixed slot/phase that missed the sparse non-zero I2S samples.
+- Follow-up patch changed the downsampler to select the highest-magnitude
+  sample from each 48 kHz stereo group and kept the `mono=` diagnostic.
+- The patched image flashed once (`src.bin` `0x11eb70`, `0x61490` bytes free),
+  but post-flash serial auto-reset/monitor became unreliable. Post-patch
+  `mono` verification still needs a physical reset/boot-mode assist or another
+  successful serial session.
+- Post-test Skynet health eventually returned `active_peers:0`; the board is
+  not left actively streaming to Skynet.
 
 Board monitor excerpt:
 
@@ -80,11 +86,12 @@ I (6261) pipecat: DataChannel created
 I (6416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=3004 raw=196909376
 I (7416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=9193 raw=602501312
 I (11416) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=18298 raw=1199152768
+I (23592) pipecat: mic capture: 50/50 ok, 0 zero-byte, last_err=ESP_OK, peak |s16|=1842 mono=0 raw=120754432
 ```
 
 Remaining gap: physical speaker playback still needs a human-audible bench
-test. This run did not trigger a TTS response, so it does not close the
-speaker-output gate.
+test. Post-patch mono mic verification is also pending because serial
+auto-reset stopped entering the ESP32 bootloader reliably.
 
 ### 2026-05-21 local aiortc validation
 

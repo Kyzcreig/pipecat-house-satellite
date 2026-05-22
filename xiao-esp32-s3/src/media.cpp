@@ -250,7 +250,17 @@ static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
   for (size_t i = 0; i + (UPSAMPLE_RATIO * 2 - 1) < src_frames &&
                      out < PCM_SAMPLES_PER_FRAME;
        i += UPSAMPLE_RATIO * 2) {
-    dst[out++] = (int16_t)(src[i] >> 16);
+    int32_t best = 0;
+    int32_t best_abs = 0;
+    for (size_t j = 0; j < UPSAMPLE_RATIO * 2; j++) {
+      int32_t sample = src[i + j] >> 16;
+      int32_t sample_abs = sample < 0 ? -sample : sample;
+      if (sample_abs > best_abs) {
+        best = sample;
+        best_abs = sample_abs;
+      }
+    }
+    dst[out++] = (int16_t)best;
   }
   while (out < PCM_SAMPLES_PER_FRAME) {
     dst[out++] = 0;
@@ -373,6 +383,7 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     static uint32_t diag_zero_bytes = 0;
     static esp_err_t diag_last_err = ESP_OK;
     static int32_t diag_peak = 0;
+    static int32_t diag_mono_peak = 0;
     diag_frames++;
     if (ret != ESP_OK) {
       diag_last_err = ret;
@@ -393,6 +404,11 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
       }
       stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
                                    bytes_read / sizeof(int32_t), read_buffer);
+      for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
+        int32_t s = read_buffer[i];
+        if (s < 0) s = -s;
+        if (s > diag_mono_peak) diag_mono_peak = s;
+      }
     } else {
       memset(read_buffer, 0, PCM_BUFFER_SIZE);
     }
@@ -402,11 +418,12 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
       // real I2S data and not all-zero garbage. Helps diagnose silent stream
       // vs unsynced framing.
       ESP_LOGI(LOG_TAG,
-               "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld raw=%lu%s",
+               "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld mono=%ld raw=%lu%s",
                (unsigned long)diag_ok, (unsigned long)diag_frames,
                (unsigned long)diag_zero_bytes,
                esp_err_to_name(diag_last_err),
                (long)diag_peak,
+               (long)diag_mono_peak,
                (unsigned long)diag_raw_peak,
                xvf3800_present ? "" : " [XVF3800 ABSENT]");
       if (diag_ok > 0) {
@@ -426,6 +443,7 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
       diag_zero_bytes = 0;
       diag_last_err = ESP_OK;
       diag_peak = 0;
+      diag_mono_peak = 0;
       diag_raw_peak = 0;
     }
 #endif
