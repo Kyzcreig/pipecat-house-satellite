@@ -210,6 +210,8 @@ void pipecat_init_audio_capture() {
   init_i2s();
 }
 
+bool pipecat_xvf3800_present() { return xvf3800_present; }
+
 static void update_is_playing(int16_t *in_buf, size_t in_samples) {
   bool any_set = false;
   for (size_t i = 0; i < in_samples; i++) {

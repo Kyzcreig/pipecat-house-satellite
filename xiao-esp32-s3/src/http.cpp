@@ -1,6 +1,7 @@
 #include <cJSON.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "main.h"
@@ -113,25 +114,28 @@ void pipecat_http_request(char *offer, char *answer) {
   if (err != ESP_OK || status_code != 200) {
     ESP_LOGE(LOG_TAG, "Error perform http request %s (status %d)",
              esp_err_to_name(err), status_code);
-#ifndef LINUX_BUILD
-    esp_restart();
-#endif
+    memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    free(j_offer_str);
+    esp_http_client_cleanup(client);
+    return;
   }
+  free(j_offer_str);
 
   cJSON *j_response = cJSON_Parse((const char *)answer);
   if (j_response == NULL) {
     ESP_LOGE(LOG_TAG, "Error parsing HTTP response");
-#ifndef LINUX_BUILD
-    esp_restart();
-#endif
+    memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    esp_http_client_cleanup(client);
+    return;
   }
 
   cJSON *j_answer = cJSON_GetObjectItem(j_response, "sdp");
-  if (j_answer == NULL) {
+  if (j_answer == NULL || j_answer->valuestring == NULL) {
     ESP_LOGE(LOG_TAG, "Unable to find `sdp` field in response");
-#ifndef LINUX_BUILD
-    esp_restart();
-#endif
+    memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    cJSON_Delete(j_response);
+    esp_http_client_cleanup(client);
+    return;
   }
 
   memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);

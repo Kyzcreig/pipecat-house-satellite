@@ -21,10 +21,15 @@ extern "C" void app_main(void) {
   pipecat_init_audio_capture();
   pipecat_init_audio_decoder();
   pipecat_init_wifi();
+  pipecat_init_mdns();
+  pipecat_init_ota_server();
+  pipecat_start_ota_validation_watchdog();
   pipecat_init_webrtc();
+  pipecat_validate_ota_if_healthy();
 
   while (1) {
     pipecat_webrtc_loop();
+    pipecat_validate_ota_if_healthy();
     vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
   }
 }

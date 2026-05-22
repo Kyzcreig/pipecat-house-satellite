@@ -59,3 +59,5 @@ void pipecat_init_wifi() {
     vTaskDelay(pdMS_TO_TICKS(200));
   }
 }
+
+bool pipecat_wifi_connected() { return g_wifi_connected; }

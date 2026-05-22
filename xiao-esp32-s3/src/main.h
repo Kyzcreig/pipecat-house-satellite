@@ -9,6 +9,7 @@
 
 // Wifi
 extern void pipecat_init_wifi();
+extern bool pipecat_wifi_connected();
 
 // WebRTC / Media
 extern void pipecat_init_audio_capture();
@@ -16,6 +17,15 @@ extern void pipecat_init_audio_decoder();
 extern void pipecat_init_audio_encoder();
 extern void pipecat_send_audio(PeerConnection *peer_connection);
 extern void pipecat_audio_decode(uint8_t *data, size_t size);
+extern bool pipecat_xvf3800_present();
+
+// OTA / mDNS
+extern void pipecat_init_mdns();
+extern void pipecat_init_ota_server();
+extern void pipecat_start_ota_validation_watchdog();
+extern void pipecat_validate_ota_if_healthy();
+extern bool pipecat_mdns_started();
+extern bool pipecat_ota_server_started();
 
 // WebRTC / Signalling
 extern void pipecat_init_webrtc();
