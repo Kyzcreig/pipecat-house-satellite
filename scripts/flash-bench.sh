@@ -9,8 +9,12 @@ PORT="${PORT:-/dev/cu.usbmodem4101}"
 export HOME="${HOME_OVERRIDE:-$USER_HOME}"
 export PATH="$USER_HOME/.platformio/tools/tool-cmake/bin:$USER_HOME/.platformio/packages/tool-cmake/bin:$USER_HOME/.platformio/tools/tool-ninja:$USER_HOME/.platformio/packages/tool-ninja:$PATH"
 export WIFI_SSID="${WIFI_SSID:-Wi-Fight this Feeling}"
-export PIPECAT_SMALLWEBRTC_URL="${PIPECAT_SMALLWEBRTC_URL:-http://skynet.local:7860/api/offer}"
+export PIPECAT_SMALLWEBRTC_URL="${PIPECAT_SMALLWEBRTC_URL:-http://192.168.1.78:7860/api/offer}"
 export PIPECAT_BENCH_SEND_TONE="${PIPECAT_BENCH_SEND_TONE:-1}"
+export PIPECAT_SATELLITE_ID="${PIPECAT_SATELLITE_ID:-bench}"
+export PIPECAT_MDNS_HOSTNAME="${PIPECAT_MDNS_HOSTNAME:-${PIPECAT_SATELLITE_ID}-xvf3800}"
+export PIPECAT_MDNS_INSTANCE="${PIPECAT_MDNS_INSTANCE:-${PIPECAT_SATELLITE_ID} XVF3800 Voice Satellite}"
+export PIPECAT_AEC_FAR_EXTGAIN_DB="${PIPECAT_AEC_FAR_EXTGAIN_DB:-0.0f}"
 
 if [[ -z "${WIFI_PASSWORD:-}" ]]; then
   if [[ -f "$USER_HOME/.openclaw/.op-service-token" ]] && command -v op >/dev/null 2>&1; then

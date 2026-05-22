@@ -72,6 +72,22 @@ idf.py --preview set-target esp32s3
 idf.py build
 ```
 
+The XIAO/XVF3800 target accepts these production build knobs:
+
+```
+PIPECAT_SATELLITE_ID=bench
+PIPECAT_MDNS_HOSTNAME=bench-xvf3800
+PIPECAT_MDNS_INSTANCE="Bench XVF3800 Voice Satellite"
+PIPECAT_AEC_FAR_EXTGAIN_DB=0.0f
+PIPECAT_SMALLWEBRTC_URL=http://192.168.1.78:7860/api/offer
+```
+
+At boot the firmware disables Wi-Fi power save, advertises the satellite as
+`<PIPECAT_MDNS_HOSTNAME>.local`, routes both XVF3800 output channels to the
+processed auto-selected beam, enables AEC/AGC/noise/echo processing, and keeps
+mic capture full-duplex while speaker playback is active so the XVF3800 hardware
+AEC sees the far-end reference.
+
 If you built for `linux` you can run the binary directly:
 
 ```

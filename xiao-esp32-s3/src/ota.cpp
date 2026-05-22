@@ -167,13 +167,15 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   const esp_app_desc_t *app = esp_app_get_description();
   int64_t uptime_s = esp_timer_get_time() / 1000000LL;
   bool app_valid = ota_state_is_valid_for_status(state);
-  char body[384];
+  char body[512];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
-           ",\"firmware_version\":\"%s\"}",
+           ",\"firmware_version\":\"%s\",\"satellite_id\":\"%s\","
+           "\"mdns_hostname\":\"%s.local\"}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
-           sha_hex, uptime_s, app->version);
+           sha_hex, uptime_s, app->version, PIPECAT_SATELLITE_ID,
+           PIPECAT_MDNS_HOSTNAME);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
@@ -300,11 +302,19 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
 
 void pipecat_init_mdns() {
   ESP_ERROR_CHECK(mdns_init());
-  ESP_ERROR_CHECK(mdns_hostname_set("bench-xvf3800"));
-  ESP_ERROR_CHECK(mdns_instance_name_set("Bench XVF3800 Voice Satellite"));
-  ESP_ERROR_CHECK(mdns_service_add(NULL, "_http", "_tcp", OTA_HTTP_PORT, NULL, 0));
+  ESP_ERROR_CHECK(mdns_hostname_set(PIPECAT_MDNS_HOSTNAME));
+  ESP_ERROR_CHECK(mdns_instance_name_set(PIPECAT_MDNS_INSTANCE));
+  mdns_txt_item_t service_txt[] = {
+      {"satellite_id", PIPECAT_SATELLITE_ID},
+      {"fw", "pipecat-house-satellite"},
+      {"role", "xvf3800"},
+  };
+  ESP_ERROR_CHECK(mdns_service_add(PIPECAT_MDNS_INSTANCE, "_http", "_tcp",
+                                   OTA_HTTP_PORT, service_txt,
+                                   sizeof(service_txt) / sizeof(service_txt[0])));
   g_mdns_started = true;
-  ESP_LOGI(LOG_TAG, "mDNS registered: bench-xvf3800.local");
+  ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)",
+           PIPECAT_MDNS_HOSTNAME, PIPECAT_MDNS_INSTANCE);
 }
 
 void pipecat_init_ota_server() {

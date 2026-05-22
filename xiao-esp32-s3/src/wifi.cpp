@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <esp_event.h>
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <esp_wifi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,13 +37,16 @@ void pipecat_init_wifi() {
   ESP_ERROR_CHECK(esp_netif_init());
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   assert(sta_netif);
+  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, PIPECAT_MDNS_HOSTNAME));
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s", WIFI_SSID);
+  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s as %s", WIFI_SSID,
+           PIPECAT_MDNS_HOSTNAME);
   wifi_config_t wifi_config;
   memset(&wifi_config, 0, sizeof(wifi_config));
   strncpy((char *)wifi_config.sta.ssid, (char *)WIFI_SSID,

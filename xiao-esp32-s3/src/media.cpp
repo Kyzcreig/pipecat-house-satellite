@@ -1,11 +1,13 @@
 #include <opus.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -25,6 +27,10 @@
 
 #define OPUS_ENCODER_BITRATE 30000
 #define OPUS_ENCODER_COMPLEXITY 0
+#define I2S_WRITE_TIMEOUT_MS 200
+#define XVF_CONTROL_TIMEOUT_MS 100
+#define XVF_CONTROL_RETRIES 8
+#define PLAYBACK_SILENCE_FRAMES 20
 
 static constexpr gpio_num_t PIN_I2S_BCLK = GPIO_NUM_8;
 static constexpr gpio_num_t PIN_I2S_WS = GPIO_NUM_7;
@@ -45,6 +51,47 @@ static constexpr uint8_t XVF3800_ADDR = 0x2C;
 // Resource 0xB3 returns 3-byte semantic version of the XMOS DFU firmware,
 // matching what formatBCE's respeaker_xvf3800 ESPHome component reads.
 static constexpr uint8_t XVF3800_RESID_VERSION = 0xB3;
+static constexpr uint8_t XVF_READ_BIT = 0x80;
+
+static constexpr uint8_t XVF_RESID_PP = 17;
+static constexpr uint8_t XVF_RESID_AEC = 33;
+static constexpr uint8_t XVF_RESID_AUDIO_MGR = 35;
+static constexpr uint8_t XVF_CMD_PP_AGCONOFF = 10;
+static constexpr uint8_t XVF_CMD_PP_AGCMAXGAIN = 11;
+static constexpr uint8_t XVF_CMD_PP_AGCDESIREDLEVEL = 12;
+static constexpr uint8_t XVF_CMD_PP_AGCGAIN = 13;
+static constexpr uint8_t XVF_CMD_PP_LIMITONOFF = 19;
+static constexpr uint8_t XVF_CMD_PP_MIN_NS = 21;
+static constexpr uint8_t XVF_CMD_PP_MIN_NN = 22;
+static constexpr uint8_t XVF_CMD_PP_ECHOONOFF = 23;
+static constexpr uint8_t XVF_CMD_PP_NLATTENONOFF = 27;
+static constexpr uint8_t XVF_CMD_PP_DTSENSITIVE = 31;
+static constexpr uint8_t XVF_CMD_PP_ATTNS_MODE = 32;
+static constexpr uint8_t XVF_CMD_PP_ATTNS_NOMINAL = 33;
+static constexpr uint8_t XVF_CMD_PP_ATTNS_SLOPE = 34;
+
+static constexpr uint8_t XVF_CMD_AEC_HPFONOFF = 1;
+static constexpr uint8_t XVF_CMD_AEC_FAR_EXTGAIN = 5;
+static constexpr uint8_t XVF_CMD_AEC_ASROUTONOFF = 35;
+static constexpr uint8_t XVF_CMD_AEC_FIXEDBEAMSONOFF = 37;
+static constexpr uint8_t XVF_CMD_AEC_AZIMUTH_VALUES = 75;
+static constexpr uint8_t XVF_CMD_AEC_SPENERGY_VALUES = 80;
+
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_L = 15;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_R = 19;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_SYS_DELAY = 26;
+
+static constexpr uint8_t XVF_AUDIO_CATEGORY_PROCESSED = 6;
+static constexpr uint8_t XVF_AUDIO_SOURCE_AUTO_SELECT = 3;
+static constexpr float PI_F = 3.14159265358979323846f;
+
+enum XvfControlStatus : uint8_t {
+  XVF_CTRL_DONE = 0,
+  XVF_CTRL_WAIT = 1,
+  XVF_SERVICER_COMMAND_RETRY = 0x40,
+};
 
 static i2c_master_bus_handle_t i2c_bus = nullptr;
 static i2c_master_dev_handle_t aic3104 = nullptr;
@@ -52,6 +99,7 @@ static i2c_master_dev_handle_t xvf3800 = nullptr;
 static i2s_chan_handle_t tx_handle = nullptr;
 static i2s_chan_handle_t rx_handle = nullptr;
 static bool xvf3800_present = false;
+static bool xvf_beam_telemetry_supported = true;
 
 static std::atomic<bool> is_playing = false;
 static unsigned int silence_count = 0;
@@ -70,6 +118,186 @@ static bool aic3104_write(uint8_t reg, uint8_t value) {
     return false;
   }
   return true;
+}
+
+static esp_err_t xvf_write_bytes(uint8_t resid, uint8_t cmd,
+                                 const uint8_t *value, size_t value_len) {
+  if (xvf3800 == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (value_len > 29) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  uint8_t payload[32] = {resid, cmd, static_cast<uint8_t>(value_len)};
+  if (value_len > 0) {
+    memcpy(&payload[3], value, value_len);
+  }
+  esp_err_t ret = i2c_master_transmit(xvf3800, payload, value_len + 3,
+                                      pdMS_TO_TICKS(XVF_CONTROL_TIMEOUT_MS));
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "XVF3800 write resid=%u cmd=%u failed: %s", resid, cmd,
+             esp_err_to_name(ret));
+  }
+  return ret;
+}
+
+static esp_err_t xvf_read_bytes(uint8_t resid, uint8_t cmd, uint8_t *out,
+                                size_t out_len) {
+  if (xvf3800 == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (out_len > 31) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  uint8_t req[3] = {resid, static_cast<uint8_t>(cmd | XVF_READ_BIT),
+                    static_cast<uint8_t>(out_len + 1)};
+  uint8_t resp[32] = {};
+  for (int attempt = 0; attempt < XVF_CONTROL_RETRIES; attempt++) {
+    esp_err_t ret = i2c_master_transmit_receive(
+        xvf3800, req, sizeof(req), resp, out_len + 1,
+        pdMS_TO_TICKS(XVF_CONTROL_TIMEOUT_MS));
+    if (ret != ESP_OK) {
+      ESP_LOGW(LOG_TAG, "XVF3800 read resid=%u cmd=%u failed: %s", resid, cmd,
+               esp_err_to_name(ret));
+      return ret;
+    }
+
+    uint8_t status = resp[0];
+    if (status == XVF_CTRL_DONE) {
+      memcpy(out, &resp[1], out_len);
+      return ESP_OK;
+    }
+    if (status != XVF_CTRL_WAIT && status != XVF_SERVICER_COMMAND_RETRY) {
+      ESP_LOGW(LOG_TAG,
+               "XVF3800 read resid=%u cmd=%u returned status 0x%02x", resid,
+               cmd, status);
+      return ESP_ERR_INVALID_RESPONSE;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return ESP_ERR_TIMEOUT;
+}
+
+static void store_be32(uint8_t *out, uint32_t value) {
+  out[0] = static_cast<uint8_t>((value >> 24) & 0xff);
+  out[1] = static_cast<uint8_t>((value >> 16) & 0xff);
+  out[2] = static_cast<uint8_t>((value >> 8) & 0xff);
+  out[3] = static_cast<uint8_t>(value & 0xff);
+}
+
+static uint32_t load_be32(const uint8_t *in) {
+  return (static_cast<uint32_t>(in[0]) << 24) |
+         (static_cast<uint32_t>(in[1]) << 16) |
+         (static_cast<uint32_t>(in[2]) << 8) | static_cast<uint32_t>(in[3]);
+}
+
+static esp_err_t xvf_write_int32(uint8_t resid, uint8_t cmd, int32_t value) {
+  uint8_t payload[sizeof(value)];
+  store_be32(payload, static_cast<uint32_t>(value));
+  return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
+}
+
+static esp_err_t xvf_write_float(uint8_t resid, uint8_t cmd, float value) {
+  uint8_t payload[sizeof(value)];
+  uint32_t bits = 0;
+  memcpy(&bits, &value, sizeof(bits));
+  store_be32(payload, bits);
+  return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
+}
+
+static esp_err_t xvf_write_u8_pair(uint8_t resid, uint8_t cmd, uint8_t first,
+                                   uint8_t second) {
+  uint8_t payload[2] = {first, second};
+  return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
+}
+
+static bool xvf_read_float4(uint8_t resid, uint8_t cmd, float values[4]) {
+  uint8_t payload[sizeof(float) * 4] = {};
+  esp_err_t ret = xvf_read_bytes(resid, cmd, payload, sizeof(payload));
+  if (ret != ESP_OK) {
+    return false;
+  }
+  for (size_t i = 0; i < 4; i++) {
+    uint32_t bits = load_be32(&payload[i * sizeof(float)]);
+    memcpy(&values[i], &bits, sizeof(bits));
+  }
+  return true;
+}
+
+static int azimuth_to_led(float radians) {
+  float degrees = radians * 180.0f / PI_F;
+  int led = static_cast<int>(roundf(degrees / 30.0f));
+  if (led < 0) {
+    led += 12;
+  }
+  return led % 12;
+}
+
+static void configure_xvf3800_dsp_profile() {
+  if (!xvf3800_present) {
+    return;
+  }
+
+  uint32_t ok = 0;
+  uint32_t total = 0;
+  auto record = [&ok, &total](esp_err_t ret) {
+    total++;
+    if (ret == ESP_OK) {
+      ok++;
+    }
+  };
+
+  // Route both I2S output channels to the XVF3800's auto-selected processed
+  // beam. This gives the ESP32 mono path the same AEC/beamformed/PP signal on
+  // left and right, instead of mixing the default communication + ASR channels.
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L,
+                           XVF_AUDIO_CATEGORY_PROCESSED,
+                           XVF_AUDIO_SOURCE_AUTO_SELECT));
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
+                           XVF_AUDIO_CATEGORY_PROCESSED,
+                           XVF_AUDIO_SOURCE_AUTO_SELECT));
+
+  // Seeed's published XVF3800 tuning defaults for this board family.
+  record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
+                         8.0f));
+  record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
+                         90.0f));
+  record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
+                         12));
+
+  // Keep adaptive beamforming/AEC active and align the far-end reference gain
+  // with the host playback path. Per-build override is useful when speaker
+  // attenuation changes between bench and kitchen enclosures.
+  record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_ASROUTONOFF, 0));
+  record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSONOFF, 0));
+  record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2));
+  record(xvf_write_float(XVF_RESID_AEC, XVF_CMD_AEC_FAR_EXTGAIN,
+                         PIPECAT_AEC_FAR_EXTGAIN_DB));
+
+  // Enable the production post-processor: AGC, limiter, echo suppression,
+  // non-linear echo attenuation, and conservative noise floors from XMOS docs.
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCGAIN, 2.0f));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN, 64.0f));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL, 0.0045f));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_AGCONOFF, 1));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_LIMITONOFF, 1));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF, 1));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF, 1));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NS, 0.15f));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NN, 0.51f));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, 10));
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ATTNS_MODE, 1));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_NOMINAL, 1.0f));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_SLOPE, 1.0f));
+
+  ESP_LOGI(LOG_TAG,
+           "XVF3800 DSP profile: %lu/%lu control writes acked "
+           "(processed auto-beam, AEC, AGC, limiter, no Wi-Fi PS; "
+           "far_extgain=%.1fdB)",
+           (unsigned long)ok, (unsigned long)total,
+           (double)PIPECAT_AEC_FAR_EXTGAIN_DB);
 }
 
 static void init_i2c_and_codec() {
@@ -143,6 +371,8 @@ static void init_i2c_and_codec() {
              "Continuing -- maybe vendor protocol mismatch.",
              XVF3800_ADDR, esp_err_to_name(ver_ret));
   }
+
+  configure_xvf3800_dsp_profile();
 }
 
 static void init_i2s() {
@@ -227,7 +457,7 @@ static void update_is_playing(int16_t *in_buf, size_t in_samples) {
     silence_count++;
   }
 
-  if (silence_count >= 20 && is_playing) {
+  if (silence_count >= PLAYBACK_SILENCE_FRAMES && is_playing) {
     is_playing = false;
   } else if (any_set && !is_playing) {
     is_playing = true;
@@ -317,7 +547,8 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
   size_t bytes_to_write =
       decoded_size * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
   esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer, bytes_to_write,
-                                    &bytes_written, pdMS_TO_TICKS(40));
+                                    &bytes_written,
+                                    pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
   // Throttled diagnostic so we can correlate "i2s write failed" bursts with
   // XVF3800 clock loss vs occasional underruns.
   static uint32_t play_frames = 0;
@@ -326,7 +557,9 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
   if (ret == ESP_OK) {
     play_ok++;
   } else {
-    ESP_LOGW(LOG_TAG, "i2s write failed: %s", esp_err_to_name(ret));
+    ESP_LOGW(LOG_TAG, "i2s write failed: %s (%lu/%lu bytes)",
+             esp_err_to_name(ret), (unsigned long)bytes_written,
+             (unsigned long)bytes_to_write);
   }
   if (play_frames >= 50) {
     ESP_LOGI(LOG_TAG, "i2s playback: %lu/%lu frames ok%s",
@@ -366,90 +599,105 @@ void pipecat_init_audio_encoder() {
 }
 
 void pipecat_send_audio(PeerConnection *peer_connection) {
-  if (is_playing) {
-    memset(read_buffer, 0, PCM_BUFFER_SIZE);
-    vTaskDelay(pdMS_TO_TICKS(20));
-  } else {
 #ifdef PIPECAT_BENCH_SEND_TONE
-    fill_bench_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
+  fill_bench_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
 #else
-    size_t bytes_read = 0;
-    esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
-                                     BOARD_FRAME_BYTES, &bytes_read,
-                                     pdMS_TO_TICKS(200));
-    // Throttled diagnostic: report mic capture health once per second.
-    // Helps the bench operator see whether XVF3800 is actually clocking I2S
-    // and what audio level the mic array is delivering.
-    static uint32_t diag_frames = 0;
-    static uint32_t diag_ok = 0;
-    static uint32_t diag_zero_bytes = 0;
-    static esp_err_t diag_last_err = ESP_OK;
-    static int32_t diag_peak = 0;
-    static int32_t diag_mono_peak = 0;
-    diag_frames++;
-    if (ret != ESP_OK) {
-      diag_last_err = ret;
-    } else if (bytes_read == 0) {
-      diag_zero_bytes++;
-    }
-    static uint32_t diag_raw_peak = 0;
-    if (ret == ESP_OK && bytes_read > 0) {
-      diag_ok++;
-      size_t samples = bytes_read / sizeof(int32_t);
-      for (size_t i = 0; i < samples; i++) {
-        int32_t raw = i2s_capture_buffer[i];
-        uint32_t rawmag = raw < 0 ? (uint32_t)(-raw) : (uint32_t)raw;
-        if (rawmag > diag_raw_peak) diag_raw_peak = rawmag;
-        int32_t s = raw >> 16;
-        if (s < 0) s = -s;
-        if (s > diag_peak) diag_peak = s;
-      }
-      stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
-                                   bytes_read / sizeof(int32_t), read_buffer);
-      for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
-        int32_t s = read_buffer[i];
-        if (s < 0) s = -s;
-        if (s > diag_mono_peak) diag_mono_peak = s;
-      }
-    } else {
-      memset(read_buffer, 0, PCM_BUFFER_SIZE);
-    }
-    // PCM frames are 20ms => 50 per second.
-    if (diag_frames >= 50) {
-      // Dump first 8 raw int32 samples each second to confirm we're seeing
-      // real I2S data and not all-zero garbage. Helps diagnose silent stream
-      // vs unsynced framing.
-      ESP_LOGI(LOG_TAG,
-               "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld mono=%ld raw=%lu%s",
-               (unsigned long)diag_ok, (unsigned long)diag_frames,
-               (unsigned long)diag_zero_bytes,
-               esp_err_to_name(diag_last_err),
-               (long)diag_peak,
-               (long)diag_mono_peak,
-               (unsigned long)diag_raw_peak,
-               xvf3800_present ? "" : " [XVF3800 ABSENT]");
-      if (diag_ok > 0) {
-        ESP_LOGI(LOG_TAG,
-                 "raw: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
-                 (unsigned long)i2s_capture_buffer[0],
-                 (unsigned long)i2s_capture_buffer[1],
-                 (unsigned long)i2s_capture_buffer[2],
-                 (unsigned long)i2s_capture_buffer[3],
-                 (unsigned long)i2s_capture_buffer[4],
-                 (unsigned long)i2s_capture_buffer[5],
-                 (unsigned long)i2s_capture_buffer[6],
-                 (unsigned long)i2s_capture_buffer[7]);
-      }
-      diag_frames = 0;
-      diag_ok = 0;
-      diag_zero_bytes = 0;
-      diag_last_err = ESP_OK;
-      diag_peak = 0;
-      diag_mono_peak = 0;
-      diag_raw_peak = 0;
-    }
-#endif
+  size_t bytes_read = 0;
+  esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
+                                   BOARD_FRAME_BYTES, &bytes_read,
+                                   pdMS_TO_TICKS(200));
+  // Throttled diagnostic: report mic capture health once per second.
+  // Helps the bench operator see whether XVF3800 is actually clocking I2S
+  // and what audio level the mic array is delivering.
+  static uint32_t diag_frames = 0;
+  static uint32_t diag_ok = 0;
+  static uint32_t diag_zero_bytes = 0;
+  static esp_err_t diag_last_err = ESP_OK;
+  static int32_t diag_peak = 0;
+  static int32_t diag_mono_peak = 0;
+  diag_frames++;
+  if (ret != ESP_OK) {
+    diag_last_err = ret;
+  } else if (bytes_read == 0) {
+    diag_zero_bytes++;
   }
+  static uint32_t diag_raw_peak = 0;
+  if (ret == ESP_OK && bytes_read > 0) {
+    diag_ok++;
+    size_t samples = bytes_read / sizeof(int32_t);
+    for (size_t i = 0; i < samples; i++) {
+      int32_t raw = i2s_capture_buffer[i];
+      uint32_t rawmag =
+          raw < 0 ? static_cast<uint32_t>(-(int64_t)raw)
+                  : static_cast<uint32_t>(raw);
+      if (rawmag > diag_raw_peak) diag_raw_peak = rawmag;
+      int32_t s = raw >> 16;
+      if (s < 0) s = -s;
+      if (s > diag_peak) diag_peak = s;
+    }
+    stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
+                                 bytes_read / sizeof(int32_t), read_buffer);
+    for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
+      int32_t s = read_buffer[i];
+      if (s < 0) s = -s;
+      if (s > diag_mono_peak) diag_mono_peak = s;
+    }
+  } else {
+    memset(read_buffer, 0, PCM_BUFFER_SIZE);
+  }
+  // PCM frames are 20ms => 50 per second.
+  if (diag_frames >= 50) {
+    // Dump first 8 raw int32 samples each second to confirm we're seeing
+    // real I2S data and not all-zero garbage. Helps diagnose silent stream
+    // vs unsynced framing.
+    ESP_LOGI(LOG_TAG,
+             "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld mono=%ld raw=%lu full_duplex=%d%s",
+             (unsigned long)diag_ok, (unsigned long)diag_frames,
+             (unsigned long)diag_zero_bytes, esp_err_to_name(diag_last_err),
+             (long)diag_peak, (long)diag_mono_peak,
+             (unsigned long)diag_raw_peak, is_playing ? 1 : 0,
+             xvf3800_present ? "" : " [XVF3800 ABSENT]");
+    if (diag_ok > 0) {
+      ESP_LOGI(LOG_TAG,
+               "raw: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+               (unsigned long)i2s_capture_buffer[0],
+               (unsigned long)i2s_capture_buffer[1],
+               (unsigned long)i2s_capture_buffer[2],
+               (unsigned long)i2s_capture_buffer[3],
+               (unsigned long)i2s_capture_buffer[4],
+               (unsigned long)i2s_capture_buffer[5],
+               (unsigned long)i2s_capture_buffer[6],
+               (unsigned long)i2s_capture_buffer[7]);
+    }
+    if (xvf3800_present && xvf_beam_telemetry_supported) {
+      float azimuth[4] = {};
+      float energy[4] = {};
+      bool az_ok =
+          xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, azimuth);
+      bool energy_ok =
+          xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, energy);
+      if (az_ok || energy_ok) {
+        int led = az_ok ? azimuth_to_led(azimuth[3]) : -1;
+        ESP_LOGI(LOG_TAG,
+                 "xvf beam: az_ok=%d auto=%.3frad led=%d spenergy=[%.0f %.0f %.0f %.0f]",
+                 az_ok ? 1 : 0, (double)azimuth[3], led,
+                 (double)energy[0], (double)energy[1], (double)energy[2],
+                 (double)energy[3]);
+      } else {
+        xvf_beam_telemetry_supported = false;
+        ESP_LOGW(LOG_TAG,
+                 "XVF3800 beam telemetry unavailable; disabling beam polls");
+      }
+    }
+    diag_frames = 0;
+    diag_ok = 0;
+    diag_zero_bytes = 0;
+    diag_last_err = ESP_OK;
+    diag_peak = 0;
+    diag_mono_peak = 0;
+    diag_raw_peak = 0;
+  }
+#endif
 
   auto encoded_size =
       opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
