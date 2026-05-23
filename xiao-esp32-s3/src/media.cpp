@@ -180,22 +180,23 @@ static esp_err_t xvf_read_bytes(uint8_t resid, uint8_t cmd, uint8_t *out,
   return ESP_ERR_TIMEOUT;
 }
 
-static void store_be32(uint8_t *out, uint32_t value) {
-  out[0] = static_cast<uint8_t>((value >> 24) & 0xff);
-  out[1] = static_cast<uint8_t>((value >> 16) & 0xff);
-  out[2] = static_cast<uint8_t>((value >> 8) & 0xff);
-  out[3] = static_cast<uint8_t>(value & 0xff);
+static void store_le32(uint8_t *out, uint32_t value) {
+  out[0] = static_cast<uint8_t>(value & 0xff);
+  out[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+  out[2] = static_cast<uint8_t>((value >> 16) & 0xff);
+  out[3] = static_cast<uint8_t>((value >> 24) & 0xff);
 }
 
-static uint32_t load_be32(const uint8_t *in) {
-  return (static_cast<uint32_t>(in[0]) << 24) |
-         (static_cast<uint32_t>(in[1]) << 16) |
-         (static_cast<uint32_t>(in[2]) << 8) | static_cast<uint32_t>(in[3]);
+static uint32_t load_le32(const uint8_t *in) {
+  return static_cast<uint32_t>(in[0]) |
+         (static_cast<uint32_t>(in[1]) << 8) |
+         (static_cast<uint32_t>(in[2]) << 16) |
+         (static_cast<uint32_t>(in[3]) << 24);
 }
 
 static esp_err_t xvf_write_int32(uint8_t resid, uint8_t cmd, int32_t value) {
   uint8_t payload[sizeof(value)];
-  store_be32(payload, static_cast<uint32_t>(value));
+  store_le32(payload, static_cast<uint32_t>(value));
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
 }
 
@@ -203,7 +204,7 @@ static esp_err_t xvf_write_float(uint8_t resid, uint8_t cmd, float value) {
   uint8_t payload[sizeof(value)];
   uint32_t bits = 0;
   memcpy(&bits, &value, sizeof(bits));
-  store_be32(payload, bits);
+  store_le32(payload, bits);
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
 }
 
@@ -220,7 +221,7 @@ static bool xvf_read_float4(uint8_t resid, uint8_t cmd, float values[4]) {
     return false;
   }
   for (size_t i = 0; i < 4; i++) {
-    uint32_t bits = load_be32(&payload[i * sizeof(float)]);
+    uint32_t bits = load_le32(&payload[i * sizeof(float)]);
     memcpy(&values[i], &bits, sizeof(bits));
   }
   return true;
