@@ -377,14 +377,17 @@ static void init_i2c_and_codec() {
 }
 
 static void init_i2s() {
-  // XVF3800 DFU v6.0.0 on this bench board is the stock XMOS INT-Device build,
-  // where the XVF3800 is the I2S SLAVE and expects the host (ESP32-S3) to
-  // provide BCLK/WS. Seeed's HA-specific "i2s_master" firmware would flip
-  // these roles, but we cannot rely on that being flashed. Drive the bus
-  // ourselves so XVF3800 can clock its internal pipeline off our reference.
+  // XVF3800 DFU v6.34.4 on the theater/kitchen boards is the XMOS build that
+  // acts as the I2S **MASTER** (it drives BCLK/WS off its own audio pipeline) —
+  // exactly what the working respeaker_xvf3800 ESPHome component assumes
+  // (`i2s_mode: secondary`, i.e. the ESP32 is the I2S secondary/slave). If the
+  // ESP32 also drives the clock (ROLE_MASTER) both ends fight the bus and the
+  // captured words come back bit-smeared/rail-pinned (28 shared bits between
+  // consecutive samples, constant peak=0x8000) — NOT real mic audio. So the
+  // ESP32 must be the I2S SLAVE and clock its reads off the XVF's BCLK/WS.
   i2s_chan_config_t chan_cfg = {
       .id = I2S_NUM_0,
-      .role = I2S_ROLE_MASTER,
+      .role = I2S_ROLE_SLAVE,
       .dma_desc_num = 8,
       .dma_frame_num = 240,
       .auto_clear_after_cb = true,
