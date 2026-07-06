@@ -11,6 +11,13 @@
 
 static PeerConnection *peer_connection = NULL;
 
+// Connection watchdog: set true once the peer reaches CONNECTED. The main loop
+// checks this against a boot deadline; if we never connect (e.g. the SmallWebRTC
+// server was down/restarting when we booted, so the offer got no answer and the
+// firmware would otherwise sit idle forever), we esp_restart() to re-offer. This
+// makes the satellite self-heal instead of needing a manual power-cycle.
+volatile bool pipecat_webrtc_connected = false;
+
 #ifndef LINUX_BUILD
 StaticTask_t task_buffer;
 void pipecat_send_audio_task(void *user_data) {
@@ -53,6 +60,7 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
 #endif
   } else if (state == PEER_CONNECTION_CONNECTED) {
 #ifndef LINUX_BUILD
+    pipecat_webrtc_connected = true;
     StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
         30000 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
     xTaskCreateStaticPinnedToCore(pipecat_send_audio_task, "audio_publisher",

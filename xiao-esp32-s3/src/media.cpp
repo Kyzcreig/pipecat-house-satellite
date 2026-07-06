@@ -281,7 +281,8 @@ static void configure_xvf3800_dsp_profile() {
   // non-linear echo attenuation, and conservative noise floors from XMOS docs.
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCGAIN, 2.0f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN, 64.0f));
-  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL, 0.0045f));
+  record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL,
+                         PIPECAT_AGC_DESIRED_LEVEL));
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_AGCONOFF, 1));
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_LIMITONOFF, 1));
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF, 1));
@@ -295,10 +296,11 @@ static void configure_xvf3800_dsp_profile() {
 
   ESP_LOGI(LOG_TAG,
            "XVF3800 DSP profile: %lu/%lu control writes acked "
-           "(processed auto-beam, AEC, AGC, limiter, no Wi-Fi PS; "
-           "far_extgain=%.1fdB)",
+           "(processed auto-beam, AEC, AGC on, limiter, no Wi-Fi PS; "
+           "far_extgain=%.1fdB agc_desired_level=%.5f)",
            (unsigned long)ok, (unsigned long)total,
-           (double)PIPECAT_AEC_FAR_EXTGAIN_DB);
+           (double)PIPECAT_AEC_FAR_EXTGAIN_DB,
+           (double)PIPECAT_AGC_DESIRED_LEVEL);
 }
 
 static void init_i2c_and_codec() {
