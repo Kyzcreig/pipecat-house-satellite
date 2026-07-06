@@ -19,6 +19,9 @@ jobs:
       with:
         submodules: 'recursive'
 
+    - name: I2S role lint (ESP32 must be I2S SLAVE — XVF3800 is clock master)
+      run: python3 scripts/i2s_role_lint.py
+
     - name: Build
       run: |
         docker run -v $PWD:/project -w /project -u 0 \

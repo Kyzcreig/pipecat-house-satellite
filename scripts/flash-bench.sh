@@ -50,4 +50,26 @@ idf.py reconfigure
 if [[ "$#" -eq 0 ]]; then
   set -- flash
 fi
+
+# --- Device-identity preflight (guards the 2026-07-05 mix-up) -----------------
+# If this invocation FLASHES, resolve the connected board's MAC->room and refuse
+# to proceed if it isn't the room we mean. Set FLASH_ASSERT_ROOM=theater|kitchen
+# (or it auto-derives from PIPECAT_SATELLITE_ID when that names a known room).
+# Bypass for a genuinely new/unknown board with FLASH_ASSERT_ROOM=skip.
+_want_room="${FLASH_ASSERT_ROOM:-}"
+if [[ -z "$_want_room" ]]; then
+  case "${PIPECAT_SATELLITE_ID:-}" in
+    theater|kitchen) _want_room="$PIPECAT_SATELLITE_ID" ;;
+  esac
+fi
+if [[ "$*" == *flash* && -n "$_want_room" && "$_want_room" != "skip" ]]; then
+  echo "flash-bench: device-identity preflight — asserting connected board is '$_want_room'..." >&2
+  if ! python3 "$REPO_ROOT/scripts/device_identity.py" --port "$PORT" --assert "$_want_room"; then
+    echo "flash-bench: ABORT — connected board is NOT '$_want_room'. Refusing to flash the wrong satellite." >&2
+    echo "flash-bench: (bypass for a new/unknown board with FLASH_ASSERT_ROOM=skip)" >&2
+    exit 3
+  fi
+fi
+# -----------------------------------------------------------------------------
+
 idf.py -p "$PORT" "$@"
