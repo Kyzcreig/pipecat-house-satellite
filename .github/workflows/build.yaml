@@ -22,6 +22,9 @@ jobs:
     - name: I2S role lint (ESP32 must be I2S SLAVE — XVF3800 is clock master)
       run: python3 scripts/i2s_role_lint.py
 
+    - name: ASR routing lint (OP_L must carry clean ASR beam cat-7 + ASROUTONOFF=1)
+      run: python3 scripts/asr_routing_lint.py
+
     - name: Build
       run: |
         docker run -v $PWD:/project -w /project -u 0 \
