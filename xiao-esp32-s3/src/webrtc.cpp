@@ -72,6 +72,17 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
     xTaskCreateStaticPinnedToCore(pipecat_send_audio_task, "audio_publisher",
                                   30000, NULL, 7, stack_memory, &task_buffer,
                                   0);
+    // LED ring task: owns ALL XVF control-I2C for the ring (state decision,
+    // beam telemetry read, 48-byte ring write) on core 1 at low priority, so a
+    // slow/contended XVF control transaction can never stall the audio
+    // publisher (core 0, prio 7) and cause RTP "no audio frame" churn. Created
+    // once (survives peer reconnects; it reads pipecat_webrtc_connected).
+    static bool led_task_started = false;
+    if (!led_task_started) {
+      led_task_started = true;
+      xTaskCreatePinnedToCore(pipecat_led_task, "led_ring", 4096, NULL, 2, NULL,
+                              1);
+    }
     pipecat_init_rtvi(peer_connection, &pipecat_rtvi_callbacks);
 #endif
   }

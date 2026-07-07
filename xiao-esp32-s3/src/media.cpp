@@ -416,10 +416,27 @@ static void led_render(LedState state, int beam_led) {
     case LED_WAITING:
     case LED_LISTENING: {
       // Smooth beam dot (led_beam): bright at the talker LED, linear falloff,
-      // over a dim purple base so the ring is clearly "awake".
+      // over a dim purple base so the ring is clearly "awake". The center is
+      // EASED toward the target LED (not snapped) so the purple dot floats
+      // around the ring the way the ESPHome led_beam effect did, instead of
+      // abruptly jumping to the new direction.
       const int fade = 3;
-      float center = (beam_led >= 0) ? (float)((beam_led + 5) % XVF_LED_COUNT)
-                                     : 0.0f;
+      static float beam_center = -1.0f;  // persists across ticks for easing
+      if (beam_led >= 0) {
+        float target = (float)((beam_led + 5) % XVF_LED_COUNT);
+        if (beam_center < 0.0f) {
+          beam_center = target;  // first acquisition: snap (no prior position)
+        } else {
+          // Ease toward target along the SHORTEST path around the 12-LED ring.
+          float d = target - beam_center;
+          if (d > XVF_LED_COUNT / 2.0f) d -= XVF_LED_COUNT;
+          if (d < -XVF_LED_COUNT / 2.0f) d += XVF_LED_COUNT;
+          beam_center += d * 0.25f;  // 25% per tick -> smooth float, ~5 ticks
+          if (beam_center < 0.0f) beam_center += XVF_LED_COUNT;
+          if (beam_center >= XVF_LED_COUNT) beam_center -= XVF_LED_COUNT;
+        }
+      }
+      float center = (beam_led >= 0) ? beam_center : 0.0f;
       for (int i = 0; i < XVF_LED_COUNT; i++) {
         uint32_t base = led_hsv(275.0f, 1.0f, bmax * 0.25f);  // dim purple base
         if (beam_led >= 0) {
@@ -949,26 +966,10 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
                (unsigned long)i2s_capture_buffer[6],
                (unsigned long)i2s_capture_buffer[7]);
     }
-    if (xvf3800_present && xvf_beam_telemetry_supported) {
-      float azimuth[4] = {};
-      float energy[4] = {};
-      bool az_ok =
-          xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, azimuth);
-      bool energy_ok =
-          xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, energy);
-      if (az_ok || energy_ok) {
-        int led = az_ok ? azimuth_to_led(azimuth[3]) : -1;
-        ESP_LOGI(LOG_TAG,
-                 "xvf beam: az_ok=%d auto=%.3frad led=%d spenergy=[%.0f %.0f %.0f %.0f]",
-                 az_ok ? 1 : 0, (double)azimuth[3], led,
-                 (double)energy[0], (double)energy[1], (double)energy[2],
-                 (double)energy[3]);
-      } else {
-        xvf_beam_telemetry_supported = false;
-        ESP_LOGW(LOG_TAG,
-                 "XVF3800 beam telemetry unavailable; disabling beam polls");
-      }
-    }
+    // NOTE: beam-telemetry I2C reads (azimuth/spenergy) used to run here on the
+    // audio-send task. They can block up to ~800ms (8 retries x 100ms) and were
+    // starving the RTP publisher -> "no audio frame" churn. Beam direction is
+    // now polled in pipecat_led_task() (core 1, low prio) instead.
     diag_frames = 0;
     diag_ok = 0;
     diag_zero_bytes = 0;
@@ -987,61 +988,77 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                encoded_size);
   }
+  // NOTE: LED rendering + beam telemetry moved OFF this task into led_task()
+  // (see below). Those do XVF control-I2C reads/writes that can block up to
+  // ~800ms (8 retries x 100ms), which was starving this RTP publisher and
+  // causing "No audio frame" server-side timeouts -> peer churn. The audio
+  // publisher now does ONLY i2s_read + opus_encode + RTP send.
+}
 
-  // --- LED state update (throttled to ~5 Hz for smooth breathing) -----------
-  // Runs off the 20ms audio loop. The SERVER phase (RTVI data channel) is the
-  // source of truth for the voice-assistant state (wake/thinking/speaking/idle),
-  // exactly like the old ESPHome voice_assistant_phase. Mic energy is used ONLY
-  // to refresh the beam DIRECTION during WAITING/LISTENING, never to change the
-  // state itself -- so ambient noise (e.g. the TV) can no longer flip the ring.
-  // If no fresh server phase has arrived (TTL expired / data channel down), we
-  // fall back to device-local inference so the ring still does something sane.
-  static uint32_t led_tick = 0;
-  static int led_beam = -1;
-  if (++led_tick >= 10) {  // every 10th 20ms frame = 5 Hz
-    led_tick = 0;
-    LedState st;
-    // Is there a fresh server phase?
-    int phase = g_server_phase.load();
-    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    bool phase_fresh =
-        (phase != PHASE_NONE) &&
-        ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
+// ---------------------------------------------------------------------------
+// LED task: owns ALL XVF control-I2C for the ring (state decision, beam
+// telemetry read, and the 48-byte ring write). Runs on its own low-priority
+// task so a slow/contended XVF control transaction can never stall the audio
+// publisher. ~20Hz tick; LED effects animate here, beam direction is polled
+// at ~4Hz and eased toward the target for a smooth "float", matching ESPHome.
+// ---------------------------------------------------------------------------
+static void pipecat_led_step() {
+#if !PIPECAT_LED_ENABLE
+  return;
+#else
+  static int led_beam = -1;            // target beam LED (-1 = none)
+  static uint32_t beam_poll_tick = 0;  // throttles the (blocking) az read
+  LedState st;
 
-    if (!pipecat_webrtc_connected) {
-      st = LED_OFF;
-      led_beam = -1;
-    } else if (phase_fresh) {
-      // ---- SERVER-DRIVEN (authoritative) ----
-      switch (phase) {
-        case PHASE_SPEAKING: st = LED_SPEAKING; led_beam = -1; break;
-        case PHASE_THINKING: st = LED_THINKING; led_beam = -1; break;
-        case PHASE_WAITING:
-          st = LED_WAITING;
-          // Point the purple beam at whoever triggered the wake.
-          if (xvf3800_present && xvf_beam_telemetry_supported) {
-            float az[4] = {};
-            if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
-              led_beam = azimuth_to_led(az[3]);
-            }
+  int phase = g_server_phase.load();
+  uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  bool phase_fresh =
+      (phase != PHASE_NONE) &&
+      ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
+
+  if (!pipecat_webrtc_connected) {
+    st = LED_OFF;
+    led_beam = -1;
+  } else if (phase_fresh) {
+    switch (phase) {
+      case PHASE_SPEAKING: st = LED_SPEAKING; led_beam = -1; break;
+      case PHASE_THINKING: st = LED_THINKING; led_beam = -1; break;
+      case PHASE_WAITING:
+        st = LED_WAITING;
+        // Point the purple beam at whoever triggered the wake. Poll ~4Hz
+        // (every 5th 20ms tick) so the blocking az read is infrequent, and
+        // only while we're actually in WAITING.
+        if (xvf3800_present && xvf_beam_telemetry_supported &&
+            (++beam_poll_tick % 5 == 0)) {
+          float az[4] = {};
+          if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
+            led_beam = azimuth_to_led(az[3]);
           }
-          break;
-        case PHASE_IDLE:
-        default:
-          st = LED_IDLE; led_beam = -1; break;
-      }
-    } else if (is_playing) {
-      // ---- FALLBACK: device-local inference (no fresh server phase) ----
-      st = LED_SPEAKING;
-      led_beam = -1;
-    } else {
-      // No server phase and not playing -> idle rainbow. We deliberately do NOT
-      // flip to LISTENING on mic energy here (that caused TV-driven flicker);
-      // the server tells us when we're actually listening.
-      st = LED_IDLE;
-      led_beam = -1;
+        }
+        break;
+      case PHASE_IDLE:
+      default:
+        st = LED_IDLE; led_beam = -1; break;
     }
-    g_led_state = st;
-    led_render(st, led_beam);
+  } else if (is_playing) {
+    st = LED_SPEAKING;
+    led_beam = -1;
+  } else {
+    st = LED_IDLE;
+    led_beam = -1;
+  }
+  g_led_state = st;
+  led_render(st, led_beam);
+#endif
+}
+
+#ifndef LINUX_BUILD
+void pipecat_led_task(void *arg) {
+  (void)arg;
+  const TickType_t period = pdMS_TO_TICKS(50);  // ~20Hz
+  while (1) {
+    pipecat_led_step();
+    vTaskDelay(period);
   }
 }
+#endif

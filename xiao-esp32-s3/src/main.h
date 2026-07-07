@@ -16,6 +16,7 @@ extern void pipecat_init_audio_capture();
 extern void pipecat_init_audio_decoder();
 extern void pipecat_init_audio_encoder();
 extern void pipecat_send_audio(PeerConnection *peer_connection);
+extern void pipecat_led_task(void *arg);
 extern void pipecat_audio_decode(uint8_t *data, size_t size);
 extern bool pipecat_xvf3800_present();
 
