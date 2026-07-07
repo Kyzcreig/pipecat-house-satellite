@@ -314,27 +314,33 @@ enum LedState {
 };
 
 static LedState g_led_state = LED_OFF;
-static uint8_t g_led_phase = 0;  // animation phase 0..255
 
-// Scale a 0..255 channel by the brightness cap (integer, no float).
-static inline uint8_t led_scale(uint32_t ch) {
-  return static_cast<uint8_t>((ch * PIPECAT_LED_BRIGHTNESS) / 255);
-}
-static inline uint32_t led_rgb(uint8_t r, uint8_t g, uint8_t b) {
-  return (static_cast<uint32_t>(led_scale(r)) << 16) |
-         (static_cast<uint32_t>(led_scale(g)) << 8) | led_scale(b);
+// HSV->RGB (h in [0,360), s/v in [0,1]) -> packed 0x00RRGGBB. Ported from the
+// ESPHome firmware's hsv_to_rgb used by the flowing-rainbow effect.
+static uint32_t led_hsv(float h, float s, float v) {
+  float c = v * s;
+  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+  float m = v - c;
+  float r = 0, g = 0, b = 0;
+  if (h < 60)       { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else              { r = c; g = 0; b = x; }
+  uint8_t rr = static_cast<uint8_t>((r + m) * 255.0f);
+  uint8_t gg = static_cast<uint8_t>((g + m) * 255.0f);
+  uint8_t bb = static_cast<uint8_t>((b + m) * 255.0f);
+  return (static_cast<uint32_t>(rr) << 16) |
+         (static_cast<uint32_t>(gg) << 8) | bb;
 }
 
-// Apply a breathing dim factor (0..255) to a packed color.
-static uint32_t led_dim(uint32_t rgb, uint8_t factor) {
-  uint32_t r = ((rgb >> 16) & 0xFF) * factor / 255;
-  uint32_t g = ((rgb >> 8) & 0xFF) * factor / 255;
-  uint32_t b = (rgb & 0xFF) * factor / 255;
-  return (r << 16) | (g << 8) | b;
-}
-
-// Render the current LED state to the ring. beam_led = -1 for none, else the
-// LED index (0..11) pointing at the active talker (lit brighter in LISTENING).
+// Render the current LED state to the ring, using the ESPHome effect set:
+//   IDLE      -> flowing rainbow (each LED hue-offset, whole ring rotating)
+//   LISTENING -> led_beam (a smooth bright dot pointing at the talker) + cyan base
+//   SPEAKING  -> comet_ccw (a bright head with a fading tail, rotating)
+//   OFF       -> dark
+// beam_led = -1 for none, else the LED index (0..11) at the active talker.
 static void led_render(LedState state, int beam_led) {
 #if !PIPECAT_LED_ENABLE
   (void)state; (void)beam_led;
@@ -343,33 +349,61 @@ static void led_render(LedState state, int beam_led) {
   if (!xvf3800_present) {
     return;
   }
-  g_led_phase += 8;  // advance breathing animation
-  // Triangle wave 0..255..0 for breathing.
-  uint8_t tri = g_led_phase < 128 ? (g_led_phase * 2)
-                                  : static_cast<uint8_t>((255 - g_led_phase) * 2);
-  uint8_t breathe = 60 + (tri * 195 / 255);  // 60..255, never fully dark
+  const float bmax = PIPECAT_LED_BRIGHTNESS / 255.0f;  // 0..1 master brightness
+  static float rainbow_hue = 0.0f;  // rotating rainbow offset
+  static float comet_pos = 0.0f;    // rotating comet head
 
-  uint32_t ring[XVF_LED_COUNT];
+  uint32_t ring[XVF_LED_COUNT] = {0};
   switch (state) {
     case LED_OFF:
-      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = 0x000000;
+      // all zero
       break;
     case LED_IDLE: {
-      uint32_t base = led_dim(led_rgb(0, 60, 90), breathe / 3);  // dim cyan breathe
-      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
+      // Flowing rainbow: 12 evenly-spaced hues, whole wheel rotating slowly.
+      rainbow_hue += 3.0f;  // deg per tick (~5Hz -> ~15deg/s * ... gentle)
+      if (rainbow_hue >= 360.0f) rainbow_hue -= 360.0f;
+      const float step = 360.0f / XVF_LED_COUNT;
+      float h = rainbow_hue;
+      for (int i = 0; i < XVF_LED_COUNT; i++) {
+        ring[i] = led_hsv(h, 1.0f, bmax * 0.5f);  // idle rainbow at half brightness
+        h += step;
+        if (h >= 360.0f) h -= 360.0f;
+      }
       break;
     }
     case LED_LISTENING: {
-      uint32_t base = led_rgb(0, 169, 224);  // HA cyan, solid
-      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
-      if (beam_led >= 0 && beam_led < XVF_LED_COUNT) {
-        ring[beam_led] = led_rgb(255, 255, 255);  // white dot at talker
+      // Smooth beam dot (led_beam): bright at the talker LED, linear falloff,
+      // over a dim cyan base so the ring is clearly "awake".
+      const int fade = 3;
+      float center = (beam_led >= 0) ? (float)((beam_led + 5) % XVF_LED_COUNT)
+                                     : 0.0f;
+      for (int i = 0; i < XVF_LED_COUNT; i++) {
+        uint32_t base = led_hsv(197.0f, 1.0f, bmax * 0.25f);  // dim cyan base
+        if (beam_led >= 0) {
+          float dist = fabsf(i - center);
+          if (dist > XVF_LED_COUNT / 2.0f) dist = XVF_LED_COUNT - dist;
+          float f = 1.0f - (dist / (fade + 1.0f));
+          if (f > 0.0f) {
+            uint32_t dot = led_hsv(197.0f, 1.0f, bmax * f);
+            base = dot;
+          }
+        }
+        ring[i] = base;
       }
       break;
     }
     case LED_SPEAKING: {
-      uint32_t base = led_dim(led_rgb(0, 200, 80), breathe);  // green breathe
-      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
+      // comet_ccw: a bright green head with a fading tail sweeping the ring.
+      comet_pos += 0.6f;  // LEDs per tick
+      if (comet_pos >= XVF_LED_COUNT) comet_pos -= XVF_LED_COUNT;
+      int head = (int)comet_pos;
+      const int tail = 4;
+      ring[head % XVF_LED_COUNT] = led_hsv(140.0f, 1.0f, bmax);  // green head
+      for (int i = 1; i <= tail; i++) {
+        float tf = 1.0f - (float)i / (tail + 1);
+        int idx = (head + i) % XVF_LED_COUNT;  // ccw tail
+        ring[idx] = led_hsv(140.0f, 1.0f, bmax * tf);
+      }
       break;
     }
   }
