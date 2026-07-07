@@ -123,6 +123,7 @@ static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_R = 19;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_SYS_DELAY = 26;
 
 static constexpr uint8_t XVF_AUDIO_CATEGORY_PROCESSED = 6;
+static constexpr uint8_t XVF_AUDIO_CATEGORY_ASR = 7;
 static constexpr uint8_t XVF_AUDIO_SOURCE_AUTO_SELECT = 3;
 static constexpr float PI_F = 3.14159265358979323846f;
 
@@ -485,14 +486,23 @@ static void configure_xvf3800_dsp_profile() {
     }
   };
 
-  // Route both I2S output channels to the XVF3800's auto-selected processed
-  // beam. This gives the ESP32 mono path the same AEC/beamformed/PP signal on
-  // left and right, instead of mixing the default communication + ASR channels.
+  // ASR audio routing (ported from ESPHome respeaker_xvf3800 "Phase 2c PERMANENT
+  // FIX", proven 2026-06-09 with a 6/6-vs-0/4 word-recall A/B). The ESP32 mono
+  // path reads I2S channel 0 (LEFT slot). The XVF3800 has two relevant output
+  // categories:
+  //   category 6 (PROCESSED / voice-comm) -> runs the conferencing post-processor
+  //     (aggressive NS + de-reverb) which SPECTRALLY GUTS speech for ASR. This is
+  //     what we shipped before, and it garbled STT ("what time is it" -> "a 20").
+  //   category 7 (ASR)  -> the clean post-beamformer autoselect output, no
+  //     suppression, which is what Parakeet/Riva is trained on.
+  // Put category-7 (ASR) auto-select on the LEFT slot so STT gets the clean beam,
+  // and engage AEC ASR-mode. XVF params are volatile (reset on XMOS power-cycle /
+  // DFU), so this re-applies on every boot, exactly like the ESPHome component.
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L,
-                           XVF_AUDIO_CATEGORY_PROCESSED,
+                           XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
-                           XVF_AUDIO_CATEGORY_PROCESSED,
+                           XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
 
   // Seeed's published XVF3800 tuning defaults for this board family.
@@ -506,7 +516,10 @@ static void configure_xvf3800_dsp_profile() {
   // Keep adaptive beamforming/AEC active and align the far-end reference gain
   // with the host playback path. Per-build override is useful when speaker
   // attenuation changes between bench and kitchen enclosures.
-  record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_ASROUTONOFF, 0));
+  // ASROUTONOFF=1: engage ASR-mode output (bypass the conferencing post-proc),
+  // the mate to the category-7 LEFT-slot routing above. Was 0 (OFF) before, which
+  // fed suppressed audio to STT and caused the garbling.
+  record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_ASROUTONOFF, 1));
   record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSONOFF, 0));
   record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2));
   record(xvf_write_float(XVF_RESID_AEC, XVF_CMD_AEC_FAR_EXTGAIN,
