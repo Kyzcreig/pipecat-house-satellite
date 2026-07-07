@@ -83,6 +83,29 @@ static constexpr uint8_t XVF_CMD_AEC_FIXEDBEAMSONOFF = 37;
 static constexpr uint8_t XVF_CMD_AEC_AZIMUTH_VALUES = 75;
 static constexpr uint8_t XVF_CMD_AEC_SPENERGY_VALUES = 80;
 
+// --- LED ring + mute (GPO servicer), ported from ESPHome respeaker_xvf3800 ---
+// The 12-LED ring and the mute GPIO are driven by the XVF3800 (XMOS) chip over
+// this same I2C control port. The ring takes a 48-byte payload = 12 x [B,G,R,0].
+static constexpr uint8_t XVF_RESID_GPO = 20;
+static constexpr uint8_t XVF_CMD_GPO_READ_VALUES = 0;
+static constexpr uint8_t XVF_CMD_GPO_WRITE_VALUE = 1;
+static constexpr uint8_t XVF_CMD_GPO_LED_RING_VALUE = 18;
+static constexpr uint8_t XVF_GPO_MUTE_PIN = 30;  // GPIO 30 = mic mute
+static constexpr uint8_t XVF_LED_COUNT = 12;
+
+// Master enable + one-shot self-test for the LED ring (both build-overridable).
+// LED_SELFTEST lights the whole ring dim-white once at boot to confirm the ring
+// is wired to XMOS on this board (the single hardware unknown).
+#ifndef PIPECAT_LED_ENABLE
+#define PIPECAT_LED_ENABLE 1
+#endif
+#ifndef PIPECAT_LED_SELFTEST
+#define PIPECAT_LED_SELFTEST 0
+#endif
+#ifndef PIPECAT_LED_BRIGHTNESS
+#define PIPECAT_LED_BRIGHTNESS 60  // 0-255 scale applied to each channel
+#endif
+
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_L = 15;
@@ -242,6 +265,42 @@ static int azimuth_to_led(float radians) {
   return led % 12;
 }
 
+// Write all 12 LEDs in one GPO transaction. rgb[i] is 0x00RRGGBB; the ring wants
+// per-LED [B, G, R, 0x00]. This needs a 51-byte I2C write (3 header + 48 payload),
+// which exceeds xvf_write_bytes()'s 29-byte cap, so it has its own buffer.
+// Ported from ESPHome respeaker_xvf3800::set_led_ring (GPO resid 20, cmd 18).
+static esp_err_t xvf_write_led_ring(const uint32_t rgb[XVF_LED_COUNT]) {
+  if (xvf3800 == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  uint8_t payload[3 + XVF_LED_COUNT * 4];
+  payload[0] = XVF_RESID_GPO;
+  payload[1] = XVF_CMD_GPO_LED_RING_VALUE;
+  payload[2] = XVF_LED_COUNT * 4;  // 48 data bytes
+  for (int i = 0; i < XVF_LED_COUNT; i++) {
+    uint32_t c = rgb[i];
+    payload[3 + i * 4 + 0] = static_cast<uint8_t>(c & 0xFF);          // B
+    payload[3 + i * 4 + 1] = static_cast<uint8_t>((c >> 8) & 0xFF);   // G
+    payload[3 + i * 4 + 2] = static_cast<uint8_t>((c >> 16) & 0xFF);  // R
+    payload[3 + i * 4 + 3] = 0x00;                                    // W/unused
+  }
+  esp_err_t ret = i2c_master_transmit(xvf3800, payload, sizeof(payload),
+                                      pdMS_TO_TICKS(XVF_CONTROL_TIMEOUT_MS));
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "LED ring write failed: %s", esp_err_to_name(ret));
+  }
+  return ret;
+}
+
+// Fill the whole ring with one packed 0x00RRGGBB color.
+static esp_err_t xvf_led_fill(uint32_t rgb) {
+  uint32_t ring[XVF_LED_COUNT];
+  for (int i = 0; i < XVF_LED_COUNT; i++) {
+    ring[i] = rgb;
+  }
+  return xvf_write_led_ring(ring);
+}
+
 static void configure_xvf3800_dsp_profile() {
   if (!xvf3800_present) {
     return;
@@ -307,6 +366,34 @@ static void configure_xvf3800_dsp_profile() {
            (unsigned long)ok, (unsigned long)total,
            (double)PIPECAT_AEC_FAR_EXTGAIN_DB,
            (double)PIPECAT_AGC_DESIRED_LEVEL);
+
+#if PIPECAT_LED_SELFTEST
+  // One-shot (or looping) LED-ring confirmation: cycle R -> G -> B -> dim-white so
+  // we can (a) confirm the ring is XMOS-wired on this board and (b) verify the
+  // byte->channel mapping visually. Gated OFF by default; -DPIPECAT_LED_SELFTEST=1
+  // runs one cycle, =2 loops forever (easy for a human to eyeball), then boots on.
+  {
+    const uint8_t b = PIPECAT_LED_BRIGHTNESS;
+    const uint32_t seq[] = {
+        (uint32_t)b << 16,               // red
+        (uint32_t)b << 8,                // green
+        (uint32_t)b,                     // blue
+        ((uint32_t)b << 16) | ((uint32_t)b << 8) | b,  // white
+    };
+    const char *names[] = {"RED", "GREEN", "BLUE", "WHITE"};
+    int loops = (PIPECAT_LED_SELFTEST >= 2) ? 6 : 1;
+    for (int rep = 0; rep < loops; rep++) {
+      for (int i = 0; i < 4; i++) {
+        esp_err_t r = xvf_led_fill(seq[i]);
+        ESP_LOGI(LOG_TAG, "LED selftest: fill %s (0x%06lX) -> %s", names[i],
+                 (unsigned long)seq[i], esp_err_to_name(r));
+        vTaskDelay(pdMS_TO_TICKS(600));
+      }
+    }
+    xvf_led_fill(0x000000);
+    ESP_LOGI(LOG_TAG, "LED selftest: done (ring cleared)");
+  }
+#endif
 }
 
 static void init_i2c_and_codec() {

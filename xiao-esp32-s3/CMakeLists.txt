@@ -50,6 +50,18 @@ if("${PIPECAT_AGC_DESIRED_LEVEL_VALUE}" STREQUAL "")
   set(PIPECAT_AGC_DESIRED_LEVEL_VALUE "0.0045f")
 endif()
 
+# LED ring controls (ported from ESPHome respeaker_xvf3800). All optional; the
+# self-test lights the ring once at boot to confirm it is XMOS-wired on this board.
+if(NOT "$ENV{PIPECAT_LED_ENABLE}" STREQUAL "")
+  add_compile_definitions(PIPECAT_LED_ENABLE=$ENV{PIPECAT_LED_ENABLE})
+endif()
+if(NOT "$ENV{PIPECAT_LED_SELFTEST}" STREQUAL "")
+  add_compile_definitions(PIPECAT_LED_SELFTEST=$ENV{PIPECAT_LED_SELFTEST})
+endif()
+if(NOT "$ENV{PIPECAT_LED_BRIGHTNESS}" STREQUAL "")
+  add_compile_definitions(PIPECAT_LED_BRIGHTNESS=$ENV{PIPECAT_LED_BRIGHTNESS})
+endif()
+
 foreach(secret_var
     WIFI_SSID_VALUE
     WIFI_PASSWORD_VALUE
