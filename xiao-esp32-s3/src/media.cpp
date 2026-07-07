@@ -301,6 +301,82 @@ static esp_err_t xvf_led_fill(uint32_t rgb) {
   return xvf_write_led_ring(ring);
 }
 
+// --- LED state machine (ported behavior from ESPHome respeaker_xvf3800) --------
+// Drives the ring from the device's own state signals. Wake is SERVER-side in
+// Track-B, so "listening" here is inferred from mic activity + the server's
+// wake-ack sound arriving; "speaking" from is_playing. Colors follow the HA
+// Voice PE convention. All scaled by PIPECAT_LED_BRIGHTNESS.
+enum LedState {
+  LED_OFF = 0,       // no WebRTC peer -> ring dark
+  LED_IDLE,          // connected, quiet -> dim cyan breathing
+  LED_LISTENING,     // recent mic energy -> solid cyan
+  LED_SPEAKING,      // reply audio playing -> green breathing
+};
+
+static LedState g_led_state = LED_OFF;
+static uint8_t g_led_phase = 0;  // animation phase 0..255
+
+// Scale a 0..255 channel by the brightness cap (integer, no float).
+static inline uint8_t led_scale(uint32_t ch) {
+  return static_cast<uint8_t>((ch * PIPECAT_LED_BRIGHTNESS) / 255);
+}
+static inline uint32_t led_rgb(uint8_t r, uint8_t g, uint8_t b) {
+  return (static_cast<uint32_t>(led_scale(r)) << 16) |
+         (static_cast<uint32_t>(led_scale(g)) << 8) | led_scale(b);
+}
+
+// Apply a breathing dim factor (0..255) to a packed color.
+static uint32_t led_dim(uint32_t rgb, uint8_t factor) {
+  uint32_t r = ((rgb >> 16) & 0xFF) * factor / 255;
+  uint32_t g = ((rgb >> 8) & 0xFF) * factor / 255;
+  uint32_t b = (rgb & 0xFF) * factor / 255;
+  return (r << 16) | (g << 8) | b;
+}
+
+// Render the current LED state to the ring. beam_led = -1 for none, else the
+// LED index (0..11) pointing at the active talker (lit brighter in LISTENING).
+static void led_render(LedState state, int beam_led) {
+#if !PIPECAT_LED_ENABLE
+  (void)state; (void)beam_led;
+  return;
+#else
+  if (!xvf3800_present) {
+    return;
+  }
+  g_led_phase += 8;  // advance breathing animation
+  // Triangle wave 0..255..0 for breathing.
+  uint8_t tri = g_led_phase < 128 ? (g_led_phase * 2)
+                                  : static_cast<uint8_t>((255 - g_led_phase) * 2);
+  uint8_t breathe = 60 + (tri * 195 / 255);  // 60..255, never fully dark
+
+  uint32_t ring[XVF_LED_COUNT];
+  switch (state) {
+    case LED_OFF:
+      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = 0x000000;
+      break;
+    case LED_IDLE: {
+      uint32_t base = led_dim(led_rgb(0, 60, 90), breathe / 3);  // dim cyan breathe
+      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
+      break;
+    }
+    case LED_LISTENING: {
+      uint32_t base = led_rgb(0, 169, 224);  // HA cyan, solid
+      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
+      if (beam_led >= 0 && beam_led < XVF_LED_COUNT) {
+        ring[beam_led] = led_rgb(255, 255, 255);  // white dot at talker
+      }
+      break;
+    }
+    case LED_SPEAKING: {
+      uint32_t base = led_dim(led_rgb(0, 200, 80), breathe);  // green breathe
+      for (int i = 0; i < XVF_LED_COUNT; i++) ring[i] = base;
+      break;
+    }
+  }
+  xvf_write_led_ring(ring);
+#endif
+}
+
 static void configure_xvf3800_dsp_profile() {
   if (!xvf3800_present) {
     return;
@@ -808,5 +884,43 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
   if (encoded_size > 0) {
     peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                encoded_size);
+  }
+
+  // --- LED state update (throttled to ~5 Hz for smooth breathing) -----------
+  // Runs off the 20ms audio loop. Wake is server-side, so LISTENING is inferred
+  // from sustained mic energy; SPEAKING from is_playing; else IDLE (connected)
+  // or OFF (no peer). The beam LED index comes from the last azimuth read.
+  static uint32_t led_tick = 0;
+  static int32_t led_mic_peak = 0;
+  static int led_beam = -1;
+  // Track mic energy between LED updates.
+  for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
+    int32_t s = read_buffer[i];
+    if (s < 0) s = -s;
+    if (s > led_mic_peak) led_mic_peak = s;
+  }
+  if (++led_tick >= 10) {  // every 10th 20ms frame = 5 Hz
+    led_tick = 0;
+    LedState st;
+    if (!pipecat_webrtc_connected) {
+      st = LED_OFF;
+    } else if (is_playing) {
+      st = LED_SPEAKING;
+    } else if (led_mic_peak > 800) {  // sustained voice-level energy
+      st = LED_LISTENING;
+      // Refresh beam direction only while listening (cheap I2C read).
+      if (xvf3800_present && xvf_beam_telemetry_supported) {
+        float az[4] = {};
+        if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
+          led_beam = azimuth_to_led(az[3]);
+        }
+      }
+    } else {
+      st = LED_IDLE;
+      led_beam = -1;
+    }
+    g_led_state = st;
+    led_render(st, led_beam);
+    led_mic_peak = 0;
   }
 }
