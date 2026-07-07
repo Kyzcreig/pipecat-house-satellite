@@ -254,6 +254,51 @@ static esp_err_t xvf_write_u8_pair(uint8_t resid, uint8_t cmd, uint8_t first,
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
 }
 
+// Live AEC/AUDIO_MGR tuning over HTTP (/xvf/tune) so echo-cancellation params can
+// be iterated without a reflash. Maps a small allowlist of named params to their
+// servicer resid/cmd + type. Values written here are VOLATILE (lost on XMOS
+// power-cycle) — once a winning combo is found, bake it into
+// configure_xvf3800_dsp_profile() and the runbook. Returns ESP_ERR_NOT_FOUND for
+// unknown names so the HTTP handler can 404.
+esp_err_t pipecat_xvf_tune(const char *param, float value) {
+  struct TuneEntry {
+    const char *name;
+    uint8_t resid;
+    uint8_t cmd;
+    bool is_float;  // false -> int32
+  };
+  static const TuneEntry entries[] = {
+      // AEC far-end reference gain (dB) — how hot the AEC thinks the speaker is.
+      {"far_extgain", XVF_RESID_AEC, XVF_CMD_AEC_FAR_EXTGAIN, true},
+      // ASR-path fixed output gain (AEC cmd 36 per XMOS map).
+      {"asr_gain", XVF_RESID_AEC, 36, true},
+      // AUDIO_MGR reference gain — scales the I2S far-end reference feed.
+      {"ref_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN, true},
+      // AUDIO_MGR mic gain.
+      {"mic_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN, true},
+      // System delay (samples) — time-aligns the reference with the mic path;
+      // THE critical AEC lever when the echo path length changes.
+      {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, false},
+      // PP echo suppression on/off + non-linear echo attenuation on/off.
+      {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF, false},
+      {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF, false},
+      // PP double-talk sensitivity (int; XMOS default 10; lower = favor near-end).
+      {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, false},
+  };
+  for (const auto &e : entries) {
+    if (strcmp(param, e.name) == 0) {
+      esp_err_t ret = e.is_float
+                          ? xvf_write_float(e.resid, e.cmd, value)
+                          : xvf_write_int32(e.resid, e.cmd,
+                                            static_cast<int32_t>(value));
+      ESP_LOGI(LOG_TAG, "xvf tune: %s <- %.4f (resid=%u cmd=%u) -> %s", e.name,
+               (double)value, e.resid, e.cmd, esp_err_to_name(ret));
+      return ret;
+    }
+  }
+  return ESP_ERR_NOT_FOUND;
+}
+
 static bool xvf_read_float4(uint8_t resid, uint8_t cmd, float values[4]) {
   uint8_t payload[sizeof(float) * 4] = {};
   esp_err_t ret = xvf_read_bytes(resid, cmd, payload, sizeof(payload));
@@ -537,7 +582,10 @@ static void configure_xvf3800_dsp_profile() {
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF, 1));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NS, 0.15f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NN, 0.51f));
-  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, 10));
+  // Double-talk sensitivity: XMOS default 10. Tuned 2026-07-07 via the live
+  // /xvf/tune sweep: 30 cut the self-echo tone leak from rms ~1389 to ~195-380
+  // (best single lever found; measured on kitchen with the mic un-muted).
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, 30));
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ATTNS_MODE, 1));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_NOMINAL, 1.0f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_SLOPE, 1.0f));

@@ -317,11 +317,45 @@ void pipecat_init_mdns() {
            PIPECAT_MDNS_HOSTNAME, PIPECAT_MDNS_INSTANCE);
 }
 
+// POST /xvf/tune?param=<name>&value=<float> — live AEC/AUDIO_MGR tuning without a
+// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). Volatile writes.
+static esp_err_t xvf_tune_handler(httpd_req_t *req) {
+  char query[128] = {0};
+  char param[32] = {0};
+  char value_s[32] = {0};
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "param", param, sizeof(param)) != ESP_OK ||
+      httpd_query_key_value(query, "value", value_s, sizeof(value_s)) != ESP_OK) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, "{\"error\":\"need ?param=<name>&value=<float>\"}");
+    return ESP_OK;
+  }
+  float value = strtof(value_s, NULL);
+  esp_err_t ret = pipecat_xvf_tune(param, value);
+  char body[128];
+  if (ret == ESP_OK) {
+    snprintf(body, sizeof(body), "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f}",
+             param, (double)value);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, body);
+  } else if (ret == ESP_ERR_NOT_FOUND) {
+    httpd_resp_set_status(req, "404 Not Found");
+    snprintf(body, sizeof(body), "{\"error\":\"unknown param '%s'\"}", param);
+    httpd_resp_sendstr(req, body);
+  } else {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    snprintf(body, sizeof(body), "{\"error\":\"write failed: %s\"}",
+             esp_err_to_name(ret));
+    httpd_resp_sendstr(req, body);
+  }
+  return ESP_OK;
+}
+
 void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 3;
+  config.max_uri_handlers = 4;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -345,9 +379,19 @@ void pipecat_init_ota_server() {
       .handler = ota_rollback_handler,
       .user_ctx = NULL,
   };
+  // Live XVF AEC/AUDIO_MGR tuning: POST /xvf/tune?param=<name>&value=<float>.
+  // Writes are volatile (lost on XMOS power-cycle); bake winners into
+  // configure_xvf3800_dsp_profile(). Allowlist lives in pipecat_xvf_tune().
+  httpd_uri_t tune_uri = {
+      .uri = "/xvf/tune",
+      .method = HTTP_POST,
+      .handler = xvf_tune_handler,
+      .user_ctx = NULL,
+  };
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &upload_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &rollback_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
 }
 

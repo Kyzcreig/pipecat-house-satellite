@@ -40,7 +40,10 @@ if("${PIPECAT_MDNS_INSTANCE_VALUE}" STREQUAL "")
 endif()
 
 if("${PIPECAT_AEC_FAR_EXTGAIN_DB_VALUE}" STREQUAL "")
-  set(PIPECAT_AEC_FAR_EXTGAIN_DB_VALUE "0.0f")
+  # Tuned 2026-07-07 (live /xvf/tune sweep on kitchen, mic un-muted): 12dB gave
+  # the lowest self-echo tone leak (rms 766 vs 1227 at 0dB); combined with
+  # DTSENSITIVE=30 the leak drops to ~380. Was 0.0f.
+  set(PIPECAT_AEC_FAR_EXTGAIN_DB_VALUE "12.0f")
 endif()
 
 # XVF3800 AGC target output level. Default 0.0045f = the XMOS/Seeed stock value
