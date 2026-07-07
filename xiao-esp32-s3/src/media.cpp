@@ -10,6 +10,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -103,7 +104,10 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 #define PIPECAT_LED_SELFTEST 0
 #endif
 #ifndef PIPECAT_LED_BRIGHTNESS
-#define PIPECAT_LED_BRIGHTNESS 60  // 0-255 scale applied to each channel
+#define PIPECAT_LED_BRIGHTNESS 150  // 0-255 scale applied to each channel
+#endif
+#ifndef PIPECAT_LED_BOOT_SPLASH
+#define PIPECAT_LED_BOOT_SPLASH 1  // flowing-rainbow splash at boot (visible "on")
 #endif
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
@@ -311,9 +315,39 @@ enum LedState {
   LED_IDLE,          // connected, quiet -> dim cyan breathing
   LED_LISTENING,     // recent mic energy -> solid cyan
   LED_SPEAKING,      // reply audio playing -> green breathing
+  LED_THINKING,      // server processing the command -> flowing rainbow
+  LED_WAITING,       // wake fired, waiting for command -> purple beam at talker
 };
 
 static LedState g_led_state = LED_OFF;
+
+// --- Server-driven LED phase (Stage 2b) --------------------------------------
+// The server (ACE-AI) sends the authoritative voice-assistant phase over the
+// RTVI data channel (wake fired / thinking / speaking / idle), exactly like the
+// old ESPHome firmware used voice_assistant_phase. This is the source of truth;
+// mic-energy inference is only a fallback when no server phase has arrived.
+// A phase is honored for LED_PHASE_TTL_MS after it's received, then we fall back
+// to device-local inference (so a dropped "idle" message can't stick forever).
+enum ServerPhase {
+  PHASE_NONE = 0,   // no server signal -> device-local inference
+  PHASE_IDLE,       // server says idle (waiting for wake) -> rainbow, no flicker
+  PHASE_WAITING,    // wake fired -> purple beam at the wake direction
+  PHASE_THINKING,   // processing -> flowing rainbow
+  PHASE_SPEAKING,   // replying -> green comet
+};
+static std::atomic<int> g_server_phase{PHASE_NONE};
+static std::atomic<uint32_t> g_server_phase_ms{0};  // millis() of last phase msg
+// TTL: server sends idle explicitly, so a long TTL is safe; the fallback only
+// matters if the data channel dies mid-turn.
+static constexpr uint32_t LED_PHASE_TTL_MS = 30000;
+
+// Called from the RTVI data-channel callbacks (rtvi_callbacks.cpp) to set the
+// authoritative phase. Thread-safe (atomics); the LED render loop reads it.
+extern "C" void pipecat_led_set_phase(int phase) {
+  g_server_phase.store(phase);
+  g_server_phase_ms.store((uint32_t)(esp_timer_get_time() / 1000));
+  ESP_LOGI(LOG_TAG, "LED phase <- server: %d", phase);
+}
 
 // HSV->RGB (h in [0,360), s/v in [0,1]) -> packed 0x00RRGGBB. Ported from the
 // ESPHome firmware's hsv_to_rgb used by the flowing-rainbow effect.
@@ -358,33 +392,36 @@ static void led_render(LedState state, int beam_led) {
     case LED_OFF:
       // all zero
       break;
+    case LED_THINKING:
     case LED_IDLE: {
-      // Flowing rainbow: 12 evenly-spaced hues, whole wheel rotating slowly.
-      rainbow_hue += 3.0f;  // deg per tick (~5Hz -> ~15deg/s * ... gentle)
+      // Flowing rainbow: 12 evenly-spaced hues, whole wheel rotating.
+      // THINKING spins faster than IDLE for a more "working" feel.
+      rainbow_hue += (state == LED_THINKING) ? 9.0f : 3.0f;  // deg per tick
       if (rainbow_hue >= 360.0f) rainbow_hue -= 360.0f;
       const float step = 360.0f / XVF_LED_COUNT;
       float h = rainbow_hue;
       for (int i = 0; i < XVF_LED_COUNT; i++) {
-        ring[i] = led_hsv(h, 1.0f, bmax * 0.5f);  // idle rainbow at half brightness
+        ring[i] = led_hsv(h, 1.0f, bmax);  // rainbow at full brightness
         h += step;
         if (h >= 360.0f) h -= 360.0f;
       }
       break;
     }
+    case LED_WAITING:
     case LED_LISTENING: {
       // Smooth beam dot (led_beam): bright at the talker LED, linear falloff,
-      // over a dim cyan base so the ring is clearly "awake".
+      // over a dim purple base so the ring is clearly "awake".
       const int fade = 3;
       float center = (beam_led >= 0) ? (float)((beam_led + 5) % XVF_LED_COUNT)
                                      : 0.0f;
       for (int i = 0; i < XVF_LED_COUNT; i++) {
-        uint32_t base = led_hsv(197.0f, 1.0f, bmax * 0.25f);  // dim cyan base
+        uint32_t base = led_hsv(275.0f, 1.0f, bmax * 0.25f);  // dim purple base
         if (beam_led >= 0) {
           float dist = fabsf(i - center);
           if (dist > XVF_LED_COUNT / 2.0f) dist = XVF_LED_COUNT - dist;
           float f = 1.0f - (dist / (fade + 1.0f));
           if (f > 0.0f) {
-            uint32_t dot = led_hsv(197.0f, 1.0f, bmax * f);
+            uint32_t dot = led_hsv(275.0f, 1.0f, bmax * f);  // purple beam at talker
             base = dot;
           }
         }
@@ -476,6 +513,31 @@ static void configure_xvf3800_dsp_profile() {
            (unsigned long)ok, (unsigned long)total,
            (double)PIPECAT_AEC_FAR_EXTGAIN_DB,
            (double)PIPECAT_AGC_DESIRED_LEVEL);
+
+#if PIPECAT_LED_ENABLE && PIPECAT_LED_BOOT_SPLASH
+  // Boot rainbow splash: run the flowing-rainbow effect for a few seconds at
+  // startup so "turning on" is clearly visible (matches ESPHome boot behavior).
+  if (xvf3800_present) {
+    const float bmax = PIPECAT_LED_BRIGHTNESS / 255.0f;
+    const float step = 360.0f / XVF_LED_COUNT;
+    float hue = 0.0f;
+    for (int frame = 0; frame < 90; frame++) {  // ~90 * 40ms = 3.6s
+      uint32_t ring[XVF_LED_COUNT] = {0};
+      float h = hue;
+      for (int i = 0; i < XVF_LED_COUNT; i++) {
+        ring[i] = led_hsv(h, 1.0f, bmax);
+        h += step;
+        if (h >= 360.0f) h -= 360.0f;
+      }
+      xvf_write_led_ring(ring);
+      hue += 6.0f;
+      if (hue >= 360.0f) hue -= 360.0f;
+      vTaskDelay(pdMS_TO_TICKS(40));
+    }
+    xvf_led_fill(0x000000);
+    ESP_LOGI(LOG_TAG, "LED boot splash: rainbow done");
+  }
+#endif
 
 #if PIPECAT_LED_SELFTEST
   // One-shot (or looping) LED-ring confirmation: cycle R -> G -> B -> dim-white so
@@ -921,40 +983,59 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
   }
 
   // --- LED state update (throttled to ~5 Hz for smooth breathing) -----------
-  // Runs off the 20ms audio loop. Wake is server-side, so LISTENING is inferred
-  // from sustained mic energy; SPEAKING from is_playing; else IDLE (connected)
-  // or OFF (no peer). The beam LED index comes from the last azimuth read.
+  // Runs off the 20ms audio loop. The SERVER phase (RTVI data channel) is the
+  // source of truth for the voice-assistant state (wake/thinking/speaking/idle),
+  // exactly like the old ESPHome voice_assistant_phase. Mic energy is used ONLY
+  // to refresh the beam DIRECTION during WAITING/LISTENING, never to change the
+  // state itself -- so ambient noise (e.g. the TV) can no longer flip the ring.
+  // If no fresh server phase has arrived (TTL expired / data channel down), we
+  // fall back to device-local inference so the ring still does something sane.
   static uint32_t led_tick = 0;
-  static int32_t led_mic_peak = 0;
   static int led_beam = -1;
-  // Track mic energy between LED updates.
-  for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
-    int32_t s = read_buffer[i];
-    if (s < 0) s = -s;
-    if (s > led_mic_peak) led_mic_peak = s;
-  }
   if (++led_tick >= 10) {  // every 10th 20ms frame = 5 Hz
     led_tick = 0;
     LedState st;
+    // Is there a fresh server phase?
+    int phase = g_server_phase.load();
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    bool phase_fresh =
+        (phase != PHASE_NONE) &&
+        ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
+
     if (!pipecat_webrtc_connected) {
       st = LED_OFF;
-    } else if (is_playing) {
-      st = LED_SPEAKING;
-    } else if (led_mic_peak > 800) {  // sustained voice-level energy
-      st = LED_LISTENING;
-      // Refresh beam direction only while listening (cheap I2C read).
-      if (xvf3800_present && xvf_beam_telemetry_supported) {
-        float az[4] = {};
-        if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
-          led_beam = azimuth_to_led(az[3]);
-        }
+      led_beam = -1;
+    } else if (phase_fresh) {
+      // ---- SERVER-DRIVEN (authoritative) ----
+      switch (phase) {
+        case PHASE_SPEAKING: st = LED_SPEAKING; led_beam = -1; break;
+        case PHASE_THINKING: st = LED_THINKING; led_beam = -1; break;
+        case PHASE_WAITING:
+          st = LED_WAITING;
+          // Point the purple beam at whoever triggered the wake.
+          if (xvf3800_present && xvf_beam_telemetry_supported) {
+            float az[4] = {};
+            if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
+              led_beam = azimuth_to_led(az[3]);
+            }
+          }
+          break;
+        case PHASE_IDLE:
+        default:
+          st = LED_IDLE; led_beam = -1; break;
       }
+    } else if (is_playing) {
+      // ---- FALLBACK: device-local inference (no fresh server phase) ----
+      st = LED_SPEAKING;
+      led_beam = -1;
     } else {
+      // No server phase and not playing -> idle rainbow. We deliberately do NOT
+      // flip to LISTENING on mic energy here (that caused TV-driven flicker);
+      // the server tells us when we're actually listening.
       st = LED_IDLE;
       led_beam = -1;
     }
     g_led_state = st;
     led_render(st, led_beam);
-    led_mic_peak = 0;
   }
 }

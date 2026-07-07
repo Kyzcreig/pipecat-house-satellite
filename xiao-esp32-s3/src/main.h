@@ -42,6 +42,17 @@ typedef struct {
 
 extern rtvi_callbacks_t pipecat_rtvi_callbacks;
 
+// LED phase (Stage 2b): server -> device authoritative voice-assistant state.
+// Values MUST match the ServerPhase enum in media.cpp.
+enum PipecatLedPhase {
+  PIPECAT_LED_PHASE_NONE = 0,
+  PIPECAT_LED_PHASE_IDLE = 1,
+  PIPECAT_LED_PHASE_WAITING = 2,   // wake fired
+  PIPECAT_LED_PHASE_THINKING = 3,  // processing
+  PIPECAT_LED_PHASE_SPEAKING = 4,  // replying
+};
+extern "C" void pipecat_led_set_phase(int phase);
+
 extern void pipecat_init_rtvi(PeerConnection *peer_connection, rtvi_callbacks_t *callbacks);
 extern void pipecat_rtvi_send_client_ready();
 extern void pipecat_rtvi_handle_message(const char* msg);

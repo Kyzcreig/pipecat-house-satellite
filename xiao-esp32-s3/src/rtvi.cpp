@@ -93,6 +93,36 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
       rtvi_callbacks->on_bot_tts_text(j_text->valuestring);
       break;
     }
+    case hash("server-message"): {
+      // App-specific message from webrtc_server.py. We use it to drive the LED
+      // ring phase: {"data":{"t":"led","phase":"waiting|thinking|speaking|idle"}}
+      ESP_LOGI(LOG_TAG, "RTVI server-message received");
+      cJSON *j_data = cJSON_GetObjectItem(msg->msg, "data");
+      if (j_data == NULL) break;
+      cJSON *j_t = cJSON_GetObjectItem(j_data, "t");
+      if (j_t == NULL || j_t->valuestring == NULL) break;
+      if (hash(j_t->valuestring) == hash("led")) {
+        cJSON *j_phase = cJSON_GetObjectItem(j_data, "phase");
+        if (j_phase == NULL || j_phase->valuestring == NULL) break;
+        switch (hash(j_phase->valuestring)) {
+          case hash("idle"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_IDLE);
+            break;
+          case hash("waiting"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_WAITING);
+            break;
+          case hash("thinking"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_THINKING);
+            break;
+          case hash("speaking"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_SPEAKING);
+            break;
+          default:
+            break;
+        }
+      }
+      break;
+    }
     default:
       break;
   }
