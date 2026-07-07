@@ -54,8 +54,14 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
            peer_connection_state_to_string(state));
 
   if (state == PEER_CONNECTION_DISCONNECTED ||
-      state == PEER_CONNECTION_CLOSED) {
+      state == PEER_CONNECTION_CLOSED ||
+      state == PEER_CONNECTION_FAILED) {
+    // FAILED covers the case where the server process restarts and the ICE
+    // path goes dead without a clean DISCONNECTED — the device would otherwise
+    // sit believing it is still CONNECTED forever (observed on server restart).
 #ifndef LINUX_BUILD
+    ESP_LOGW(LOG_TAG, "Peer connection lost (%s); restarting to re-offer",
+             peer_connection_state_to_string(state));
     esp_restart();
 #endif
   } else if (state == PEER_CONNECTION_CONNECTED) {

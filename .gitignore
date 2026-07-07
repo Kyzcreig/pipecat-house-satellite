@@ -2,3 +2,7 @@ build
 sdkconfig
 sdkconfig.old
 managed_components
+
+# clangd/build caches + device backups (local only)
+**/.cache/
+backups/

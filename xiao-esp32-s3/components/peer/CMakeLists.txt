@@ -13,5 +13,10 @@ if(NOT IDF_TARGET STREQUAL linux)
 endif()
 
 # Force ECDSA, because aiortc doesn't want to use RSA.
-# Disable KeepAlives
-add_definitions("-DHTTP_DO_NOT_USE_CUSTOM_CONFIG -DMQTT_DO_NOT_USE_CUSTOM_CONFIG -DCONFIG_DTLS_USE_ECDSA=1 -DCONFIG_USE_USRSCTP=0 -DDISABLE_PEER_SIGNALING=0 -DCONFIG_KEEPALIVE_TIMEOUT=0")
+# KeepAlive timeout (ms): the server sends periodic STUN binding keepalives; if
+# none arrive for this long the peer transitions to CLOSED and the device
+# esp_restart()s to re-offer. Upstream default is 10000. It was previously set to
+# 0 (disabled), which left the device stuck in COMPLETED forever when the server
+# process restarted/vanished — requiring a manual power-cycle. Re-enabled so the
+# satellite self-heals on server restart (verified 2026-07-06).
+add_definitions("-DHTTP_DO_NOT_USE_CUSTOM_CONFIG -DMQTT_DO_NOT_USE_CUSTOM_CONFIG -DCONFIG_DTLS_USE_ECDSA=1 -DCONFIG_USE_USRSCTP=0 -DDISABLE_PEER_SIGNALING=0 -DCONFIG_KEEPALIVE_TIMEOUT=10000")
