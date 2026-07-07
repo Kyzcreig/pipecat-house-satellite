@@ -43,6 +43,12 @@ static constexpr uint8_t AIC3104_PAGE_CTRL = 0x00;
 static constexpr uint8_t AIC3104_LEFT_DAC_VOLUME = 0x2B;
 static constexpr uint8_t AIC3104_RIGHT_DAC_VOLUME = 0x2C;
 
+// AIC3104 DAC digital volume register value (0x00 = 0 dB loudest,
+// each increment = -0.5 dB). Overridable at build via -DPIPECAT_DAC_ATTEN=.
+#ifndef PIPECAT_DAC_ATTEN
+#define PIPECAT_DAC_ATTEN 0x00
+#endif
+
 // XVF3800 control port. Pre-flashed via DFU; we just need to confirm it's
 // alive on I2C and that it's clocking BCLK/WS as I2S master (otherwise our
 // secondary-mode i2s_channel_read / i2s_channel_write will time out forever).
@@ -331,9 +337,12 @@ static void init_i2c_and_codec() {
 
   // ESPHome's AIC3104 component uses these DAC volume registers for unmute.
   // The XMOS firmware owns the deeper codec clocking/routing setup.
+  // DAC digital volume: 0x00 = 0 dB (loudest), each step = -0.5 dB attenuation.
+  // Was 0x10 (-8 dB); 0x00 = 0 dB, ~8 dB louder. Env-tunable so speaker loudness
+  // can be adjusted without a code change (PIPECAT_DAC_ATTEN = register value).
   aic3104_write(AIC3104_PAGE_CTRL, 0x00);
-  aic3104_write(AIC3104_LEFT_DAC_VOLUME, 0x10);
-  aic3104_write(AIC3104_RIGHT_DAC_VOLUME, 0x10);
+  aic3104_write(AIC3104_LEFT_DAC_VOLUME, PIPECAT_DAC_ATTEN);
+  aic3104_write(AIC3104_RIGHT_DAC_VOLUME, PIPECAT_DAC_ATTEN);
 
   // XVF3800 control port. If this probe fails, the XMOS DFU firmware is
   // missing -- no I2S clocks will ever appear and our slave-mode reads/writes
