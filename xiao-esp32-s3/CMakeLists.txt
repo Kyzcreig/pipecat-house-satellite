@@ -62,6 +62,14 @@ if(NOT "$ENV{PIPECAT_LED_BRIGHTNESS}" STREQUAL "")
   add_compile_definitions(PIPECAT_LED_BRIGHTNESS=$ENV{PIPECAT_LED_BRIGHTNESS})
 endif()
 
+# XVF3800 mic input gain (AUDIO_MGR MIC_GAIN). High values (90) saturate loud/
+# near-field speech before the limiter acts -> clipping (peak pinned at 32768),
+# which degrades the wake model. Lower it for headroom; AGC boosts far-field
+# back up. Env: PIPECAT_MIC_GAIN (float, e.g. 60).
+if(NOT "$ENV{PIPECAT_MIC_GAIN}" STREQUAL "")
+  add_compile_definitions(PIPECAT_MIC_GAIN=$ENV{PIPECAT_MIC_GAIN})
+endif()
+
 foreach(secret_var
     WIFI_SSID_VALUE
     WIFI_PASSWORD_VALUE

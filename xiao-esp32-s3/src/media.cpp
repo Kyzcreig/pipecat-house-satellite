@@ -109,6 +109,12 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 #ifndef PIPECAT_LED_BOOT_SPLASH
 #define PIPECAT_LED_BOOT_SPLASH 1  // flowing-rainbow splash at boot (visible "on")
 #endif
+// XVF3800 mic input gain. 90 (old default) clipped loud/near speech before the
+// limiter -> peak pinned at 32768, degrading wake. 60 gives ~+9.5dB of headroom;
+// AGC (maxgain 64) still boosts far-field back toward the wake threshold.
+#ifndef PIPECAT_MIC_GAIN
+#define PIPECAT_MIC_GAIN 60.0f
+#endif
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
@@ -476,7 +482,7 @@ static void configure_xvf3800_dsp_profile() {
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
                          8.0f));
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
-                         90.0f));
+                         PIPECAT_MIC_GAIN));
   record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
                          12));
 
