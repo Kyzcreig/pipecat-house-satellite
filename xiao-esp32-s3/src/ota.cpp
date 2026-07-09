@@ -351,11 +351,54 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
+// Crackle triage: underruns>0 during crackle = delivery timing (raise
+// prebuffer_ms); clean counters during crackle = look below the ring
+// (XVF/codec registers). prebuffer_ms is volatile (default 100).
+extern volatile uint32_t g_play_stat_frames;
+extern volatile uint32_t g_play_stat_write_fail;
+extern volatile uint32_t g_play_stat_underruns;
+extern volatile uint32_t g_play_prebuffer_samples;
+void pipecat_play_selftest_clip();
+
+// POST /playback/selftest — play the flash-embedded clip straight into the
+// playback ring: NO opus, NO network. Splits opus/transport vs DAC/analog.
+static esp_err_t playback_selftest_handler(httpd_req_t *req) {
+  pipecat_play_selftest_clip();
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"ok\":true,\"path\":\"flash->ring->FIR->I2S (no opus/network)\"}");
+  return ESP_OK;
+}
+
+static esp_err_t playback_stats_handler(httpd_req_t *req) {
+  char query[64] = {0};
+  char val[16] = {0};
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "prebuffer_ms", val, sizeof(val)) ==
+          ESP_OK) {
+    int ms = atoi(val);
+    if (ms >= 20 && ms <= 1000) {
+      g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
+    }
+  }
+  char body[192];
+  snprintf(body, sizeof(body),
+           "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,"
+           "\"prebuffer_ms\":%lu}",
+           (unsigned long)g_play_stat_frames,
+           (unsigned long)g_play_stat_write_fail,
+           (unsigned long)g_play_stat_underruns,
+           (unsigned long)(g_play_prebuffer_samples / 16));
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, body);
+  return ESP_OK;
+}
+
 void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 4;
+  config.max_uri_handlers = 6;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -388,10 +431,24 @@ void pipecat_init_ota_server() {
       .handler = xvf_tune_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t stats_uri = {
+      .uri = "/playback/stats",
+      .method = HTTP_GET,
+      .handler = playback_stats_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t selftest_uri = {
+      .uri = "/playback/selftest",
+      .method = HTTP_POST,
+      .handler = playback_selftest_handler,
+      .user_ctx = NULL,
+  };
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &upload_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &rollback_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
 }
 

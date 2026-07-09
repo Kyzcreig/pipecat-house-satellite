@@ -46,8 +46,11 @@ static constexpr uint8_t AIC3104_RIGHT_DAC_VOLUME = 0x2C;
 
 // AIC3104 DAC digital volume register value (0x00 = 0 dB loudest,
 // each increment = -0.5 dB). Overridable at build via -DPIPECAT_DAC_ATTEN=.
+// 2026-07-09 crackle hunt: 0x00 (0dB wide open) overdrives the output stage
+// on peaks — ESPHome always ran attenuated via the HA volume slider. 0x0C
+// (−6 dB) = crackle-free by ear at full program level with ref_gain=1.0.
 #ifndef PIPECAT_DAC_ATTEN
-#define PIPECAT_DAC_ATTEN 0x00
+#define PIPECAT_DAC_ATTEN 0x0C
 #endif
 
 // XVF3800 control port. Pre-flashed via DFU; we just need to confirm it's
@@ -295,6 +298,21 @@ esp_err_t pipecat_xvf_tune(const char *param, float value) {
                (double)value, e.resid, e.cmd, esp_err_to_name(ret));
       return ret;
     }
+  }
+  // AIC3104 DAC digital attenuation (not an XVF param): value = attenuation
+  // steps of 0.5 dB (0 = 0dB loudest … 127 = -63.5dB, 128 = mute). Live lever
+  // for the overdrive-crackle hunt: ESPHome always ran attenuated via the HA
+  // volume slider; Track-B ran 0dB wide open. Volatile — bake the winner into
+  // PIPECAT_DAC_ATTEN.
+  if (strcmp(param, "dac_atten") == 0) {
+    int atten = (int)value;
+    if (atten < 0 || atten > 128) return ESP_ERR_INVALID_ARG;
+    bool ok = aic3104_write(AIC3104_PAGE_CTRL, 0x00) &&
+              aic3104_write(AIC3104_LEFT_DAC_VOLUME, (uint8_t)atten) &&
+              aic3104_write(AIC3104_RIGHT_DAC_VOLUME, (uint8_t)atten);
+    ESP_LOGI(LOG_TAG, "dac tune: dac_atten <- %d (-%.1f dB) -> %s", atten,
+             atten * 0.5, ok ? "ESP_OK" : "ESP_FAIL");
+    return ok ? ESP_OK : ESP_FAIL;
   }
   return ESP_ERR_NOT_FOUND;
 }
@@ -550,9 +568,12 @@ static void configure_xvf3800_dsp_profile() {
                            XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
 
-  // Seeed's published XVF3800 tuning defaults for this board family.
+  // Speaker/far-end reference gain. Seeed's sample default is 8.0 (linear,
+  // ≈ +18 dB) which OVERDRIVES the analog output stage — the 2026-07-09
+  // crackle hunt proved it by ear + stats (delivery clean, crackle scaled
+  // with level, gone at ref_gain=1.0 + DAC −6dB). Keep at 1.0.
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
-                         8.0f));
+                         1.0f));
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
                          PIPECAT_MIC_GAIN));
   record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
@@ -922,7 +943,6 @@ static OpusDecoder *opus_decoder = nullptr;
 // pause just drains the ring and re-arms PREBUFFER.
 #define PLAY_RING_SAMPLES 32768  // power of two; ~2.05s @16k mono; 64KB PSRAM
 #define PLAY_RING_MASK (PLAY_RING_SAMPLES - 1)
-#define PLAY_PREBUFFER_SAMPLES 1600  // 100ms @16k (ESPHome ran ~100ms too)
 static int16_t *play_ring = nullptr;
 static volatile uint32_t play_ring_head = 0;  // free-running; producer-owned
 static volatile uint32_t play_ring_tail = 0;  // free-running; consumer-owned
@@ -930,6 +950,49 @@ static volatile uint32_t play_ring_drops = 0;
 
 static inline uint32_t play_ring_count() {
   return play_ring_head - play_ring_tail;  // free-running counters
+}
+
+// Cumulative playback stats, queryable via GET /playback/stats (ota.cpp).
+// Theater has no USB serial, so crackle diagnosis needs these over HTTP:
+// crackle + underruns>0 = delivery timing (raise prebuffer); crackle with
+// clean counters = corruption below the ring (XVF/codec register layer).
+volatile uint32_t g_play_stat_frames = 0;
+volatile uint32_t g_play_stat_write_fail = 0;
+volatile uint32_t g_play_stat_underruns = 0;
+
+// Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
+// the 100 vs 200ms experiment needs no rebuild. Default 100ms (ESPHome's).
+volatile uint32_t g_play_prebuffer_samples = 1600;
+
+// Flash-embedded selftest clip (16k mono s16le, -6dB headroom). Playing it
+// via pipecat_play_selftest_clip() exercises ring->FIR->I2S->DAC->speaker
+// with NO opus and NO network — the definitive opus-vs-analog splitter for
+// crackle triage: embedded clean + streamed crackly => opus/transport;
+// embedded crackly too => DAC/analog/speaker.
+extern const uint8_t selftest_clip_start[] asm("_binary_selftest_clip_pcm_start");
+extern const uint8_t selftest_clip_end[] asm("_binary_selftest_clip_pcm_end");
+
+void pipecat_play_selftest_clip() {
+  const int16_t *pcm = (const int16_t *)selftest_clip_start;
+  size_t total = (selftest_clip_end - selftest_clip_start) / sizeof(int16_t);
+  size_t pushed = 0;
+  while (pushed < total) {
+    uint32_t free_space = PLAY_RING_SAMPLES - play_ring_count();
+    if (free_space == 0) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    size_t n = total - pushed;
+    if (n > free_space) n = free_space;
+    for (size_t i = 0; i < n; i++) {
+      play_ring[(play_ring_head + i) & PLAY_RING_MASK] = pcm[pushed + i];
+    }
+    __sync_synchronize();
+    play_ring_head += n;
+    pushed += n;
+  }
+  ESP_LOGI(LOG_TAG, "selftest clip queued: %u samples (no opus, no network)",
+           (unsigned)total);
 }
 
 static void pipecat_playback_task(void *arg) {
@@ -940,7 +1003,7 @@ static void pipecat_playback_task(void *arg) {
   for (;;) {
     uint32_t avail = play_ring_count();
     if (prebuffering) {
-      if (avail < PLAY_PREBUFFER_SAMPLES) {
+      if (avail < g_play_prebuffer_samples) {
         vTaskDelay(pdMS_TO_TICKS(5));
         continue;
       }
@@ -950,7 +1013,10 @@ static void pipecat_playback_task(void *arg) {
       // Ring drained: end of utterance (normal) or a >100ms network gap
       // (counted underrun). Either way: stop feeding, let DMA go silent,
       // re-arm the prebuffer so the next burst starts with headroom.
-      if (avail > 0) underruns++;  // partial frame stranded = mid-speech gap
+      if (avail > 0) {
+        underruns++;  // partial frame stranded = mid-speech gap
+        g_play_stat_underruns++;
+      }
       prebuffering = true;
       continue;
     }
@@ -969,9 +1035,11 @@ static void pipecat_playback_task(void *arg) {
                                       bytes_to_write, &bytes_written,
                                       pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
     frames++;
+    g_play_stat_frames++;
     if (ret == ESP_OK) {
       ok++;
     } else {
+      g_play_stat_write_fail++;
       ESP_LOGW(LOG_TAG, "i2s write failed: %s (%lu/%lu bytes)",
                esp_err_to_name(ret), (unsigned long)bytes_written,
                (unsigned long)bytes_to_write);

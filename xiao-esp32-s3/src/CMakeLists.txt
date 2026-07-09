@@ -9,6 +9,7 @@ else()
 	idf_component_register(
 		SRCS ${COMMON_SRC} "wifi.cpp" "media.cpp" "ota.cpp" "rtvi.cpp" "rtvi_callbacks.cpp"
 		INCLUDE_DIRS "${CMAKE_BINARY_DIR}/generated"
+		EMBED_FILES "selftest_clip.pcm"
 		REQUIRES app_update driver esp_timer esp_wifi esp_http_server mdns nvs_flash peer esp_psram esp-libopus esp_http_client json)
 endif()
 
