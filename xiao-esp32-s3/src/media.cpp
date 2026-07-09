@@ -824,13 +824,26 @@ static void update_is_playing(int16_t *in_buf, size_t in_samples) {
 
 static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
                                          int32_t *dst) {
+  // LINEAR-INTERPOLATION upsampler (2026-07-08). The previous zero-order-hold
+  // (each sample repeated 3x) created strong spectral images above 8kHz —
+  // audible as metallic RASP on every reply (Ace: "sounds a lot worse
+  // streaming to the xvf3800" while the server-side wavs were clean).
+  // ESPHome used a real resampler component; this is the cheap port: linear
+  // interp kills the worst imaging for ~3 adds/sample. State carries the last
+  // sample of the previous frame so chunk boundaries stay continuous.
+  static int16_t prev = 0;
   size_t out = 0;
   for (size_t i = 0; i < src_samples; i++) {
-    int32_t sample = ((int32_t)src[i]) << 16;
+    int32_t a = (int32_t)prev;
+    int32_t b = (int32_t)src[i];
     for (int j = 0; j < UPSAMPLE_RATIO; j++) {
+      // Interpolate a->b across the 3 output slots: t = (j+1)/3
+      int32_t sample16 = a + ((b - a) * (j + 1)) / UPSAMPLE_RATIO;
+      int32_t sample = sample16 << 16;
       dst[out++] = sample;
       dst[out++] = sample;
     }
+    prev = src[i];
   }
 }
 
