@@ -742,8 +742,14 @@ static void init_i2s() {
   i2s_chan_config_t chan_cfg = {
       .id = I2S_NUM_0,
       .role = I2S_ROLE_SLAVE,
-      .dma_desc_num = 8,
-      .dma_frame_num = 240,
+      // Jitter headroom (2026-07-08): 12 descriptors x 511 frames ≈ 128ms of
+      // DMA at 48k (was 8x240 ≈ 40ms). WebRTC delivers 20ms opus packets with
+      // real network jitter; a 40ms ring ran dry on every late packet -> gaps
+      // -> the "raspy streaming" Ace kept hearing. ESPHome ran buffer_duration
+      // 100ms on this exact path. Paired with the silence pre-roll in
+      // pipecat_audio_decode() which fills this ring before speech starts.
+      .dma_desc_num = 12,
+      .dma_frame_num = 511,
       .auto_clear_after_cb = true,
       .auto_clear_before_cb = false,
       .intr_priority = 0,
@@ -924,9 +930,28 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
   }
 
   update_is_playing(decoder_buffer, decoded_size);
+  static bool was_playing = false;
   if (!is_playing) {
+    was_playing = false;
     return;
   }
+
+  // PRE-ROLL (2026-07-08): on the first frame of a new utterance, prime the
+  // I2S DMA ring with ~80ms of silence BEFORE the speech. The write below then
+  // queues behind it, so the ring always has ~80ms of headroom against WebRTC
+  // packet jitter — late packets eat pre-roll instead of underrunning (gaps =
+  // the streaming rasp). Costs 80ms first-audio latency; inaudible vs the
+  // multi-second turn latency, and the wake beep masks it anyway.
+  if (!was_playing) {
+    static int32_t preroll_zeros[960];  // 10ms @ 48k stereo (480 frames x 2)
+    memset(preroll_zeros, 0, sizeof(preroll_zeros));
+    size_t wrote = 0;
+    for (int k = 0; k < 8; k++) {  // 8 x 10ms = 80ms
+      i2s_channel_write(tx_handle, preroll_zeros, sizeof(preroll_zeros),
+                        &wrote, pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
+    }
+  }
+  was_playing = true;
 
   mono_16k_to_stereo_48k_32bit(decoder_buffer, decoded_size, i2s_play_buffer);
 
