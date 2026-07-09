@@ -905,6 +905,90 @@ static int16_t *decoder_buffer = nullptr;
 static int32_t *i2s_play_buffer = nullptr;
 static OpusDecoder *opus_decoder = nullptr;
 
+// ===== Ring-buffered playback (2026-07-09) =====
+// ROOT CAUSE of the "raspy streaming" saga: pipecat_audio_decode() ran on the
+// webrtc loop thread and wrote straight into i2s_channel_write — every I2S
+// write's timing was slaved to network packet arrival + whatever else that
+// loop was doing (keepalive, RTVI, ICE). Any hiccup = DMA starve = micro-gap
+// = rasp on real speech. A perfectly-paced /test-tone measured clean (THD
+// -46dBc) while streamed TTS rasped: static-clean, dynamic-dirty = timing.
+// ESPHome (A/B "super clean", same hardware 2026-07-09) decouples via a
+// ~100ms buffered speaker component with its own task. This is that port:
+//   producer (webrtc thread): opus decode -> push 16k mono PCM into ring
+//   consumer (playback_task, core 1 prio 6): PREBUFFER 100ms -> pop 20ms
+//     frames -> sinc upsample -> blocking i2s write (DMA paces the task)
+// Prebuffer keys off RING OCCUPANCY, never is_playing edges — the mid-speech
+// pre-roll trap (see NOTE below) structurally can't recur: an intra-utterance
+// pause just drains the ring and re-arms PREBUFFER.
+#define PLAY_RING_SAMPLES 32768  // power of two; ~2.05s @16k mono; 64KB PSRAM
+#define PLAY_RING_MASK (PLAY_RING_SAMPLES - 1)
+#define PLAY_PREBUFFER_SAMPLES 1600  // 100ms @16k (ESPHome ran ~100ms too)
+static int16_t *play_ring = nullptr;
+static volatile uint32_t play_ring_head = 0;  // free-running; producer-owned
+static volatile uint32_t play_ring_tail = 0;  // free-running; consumer-owned
+static volatile uint32_t play_ring_drops = 0;
+
+static inline uint32_t play_ring_count() {
+  return play_ring_head - play_ring_tail;  // free-running counters
+}
+
+static void pipecat_playback_task(void *arg) {
+  (void)arg;
+  static int16_t pop_buf[PCM_SAMPLES_PER_FRAME];
+  bool prebuffering = true;
+  uint32_t frames = 0, ok = 0, underruns = 0;
+  for (;;) {
+    uint32_t avail = play_ring_count();
+    if (prebuffering) {
+      if (avail < PLAY_PREBUFFER_SAMPLES) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
+      prebuffering = false;
+    }
+    if (avail < PCM_SAMPLES_PER_FRAME) {
+      // Ring drained: end of utterance (normal) or a >100ms network gap
+      // (counted underrun). Either way: stop feeding, let DMA go silent,
+      // re-arm the prebuffer so the next burst starts with headroom.
+      if (avail > 0) underruns++;  // partial frame stranded = mid-speech gap
+      prebuffering = true;
+      continue;
+    }
+    for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
+      pop_buf[i] = play_ring[(play_ring_tail + i) & PLAY_RING_MASK];
+    }
+    __sync_synchronize();
+    play_ring_tail += PCM_SAMPLES_PER_FRAME;
+
+    mono_16k_to_stereo_48k_32bit(pop_buf, PCM_SAMPLES_PER_FRAME,
+                                 i2s_play_buffer);
+    size_t bytes_written = 0;
+    size_t bytes_to_write =
+        PCM_SAMPLES_PER_FRAME * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
+    esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer,
+                                      bytes_to_write, &bytes_written,
+                                      pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
+    frames++;
+    if (ret == ESP_OK) {
+      ok++;
+    } else {
+      ESP_LOGW(LOG_TAG, "i2s write failed: %s (%lu/%lu bytes)",
+               esp_err_to_name(ret), (unsigned long)bytes_written,
+               (unsigned long)bytes_to_write);
+    }
+    if (frames >= 50) {
+      ESP_LOGI(LOG_TAG,
+               "i2s playback: %lu/%lu frames ok, %lu underruns, %lu drops%s",
+               (unsigned long)ok, (unsigned long)frames,
+               (unsigned long)underruns, (unsigned long)play_ring_drops,
+               xvf3800_present ? "" : " [XVF3800 ABSENT]");
+      frames = 0;
+      ok = 0;
+      underruns = 0;
+    }
+  }
+}
+
 void pipecat_init_audio_decoder() {
   int decoder_error = 0;
   opus_decoder = opus_decoder_create(WEBRTC_SAMPLE_RATE, 1, &decoder_error);
@@ -916,9 +1000,21 @@ void pipecat_init_audio_decoder() {
   decoder_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
   i2s_play_buffer =
       (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
-  if (decoder_buffer == nullptr || i2s_play_buffer == nullptr) {
-    ESP_LOGE(LOG_TAG, "Failed to allocate playback buffers");
+  play_ring = (int16_t *)heap_caps_malloc(
+      PLAY_RING_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  if (play_ring == nullptr) {  // PSRAM unavailable? fall back to internal
+    play_ring = (int16_t *)heap_caps_malloc(PLAY_RING_SAMPLES * sizeof(int16_t),
+                                            MALLOC_CAP_8BIT);
   }
+  if (decoder_buffer == nullptr || i2s_play_buffer == nullptr ||
+      play_ring == nullptr) {
+    ESP_LOGE(LOG_TAG, "Failed to allocate playback buffers");
+    return;
+  }
+  // Consumer task: core 1 (away from audio_publisher on core 0 prio 7),
+  // prio 6 (above led_ring prio 2). Blocking i2s_channel_write paces it.
+  xTaskCreatePinnedToCore(pipecat_playback_task, "playback", 4096, NULL, 6,
+                          NULL, 1);
 }
 
 void pipecat_audio_decode(uint8_t *data, size_t size) {
@@ -940,33 +1036,22 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
   // pre-roll returns, key it off a real utterance boundary (RTVI
   // bot-started-speaking), never the is_playing edge.
 
-  mono_16k_to_stereo_48k_32bit(decoder_buffer, decoded_size, i2s_play_buffer);
-
-  size_t bytes_written = 0;
-  size_t bytes_to_write =
-      decoded_size * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
-  esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer, bytes_to_write,
-                                    &bytes_written,
-                                    pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
-  // Throttled diagnostic so we can correlate "i2s write failed" bursts with
-  // XVF3800 clock loss vs occasional underruns.
-  static uint32_t play_frames = 0;
-  static uint32_t play_ok = 0;
-  play_frames++;
-  if (ret == ESP_OK) {
-    play_ok++;
-  } else {
-    ESP_LOGW(LOG_TAG, "i2s write failed: %s (%lu/%lu bytes)",
-             esp_err_to_name(ret), (unsigned long)bytes_written,
-             (unsigned long)bytes_to_write);
+  // PRODUCER ONLY (2026-07-09): push decoded PCM into the playback ring and
+  // return. The dedicated playback task owns all I2S writes — never write
+  // I2S from this (webrtc loop) thread; that inline write was the root cause
+  // of the streaming rasp (see ring-buffer block above).
+  uint32_t free_space = PLAY_RING_SAMPLES - play_ring_count();
+  if (free_space < (uint32_t)decoded_size) {
+    // Ring full (consumer stalled or >2s burst): drop-oldest by advancing
+    // tail. Counted, never blocks the network thread.
+    play_ring_tail += (uint32_t)decoded_size - free_space;
+    play_ring_drops++;
   }
-  if (play_frames >= 50) {
-    ESP_LOGI(LOG_TAG, "i2s playback: %lu/%lu frames ok%s",
-             (unsigned long)play_ok, (unsigned long)play_frames,
-             xvf3800_present ? "" : " [XVF3800 ABSENT]");
-    play_frames = 0;
-    play_ok = 0;
+  for (int i = 0; i < decoded_size; i++) {
+    play_ring[(play_ring_head + i) & PLAY_RING_MASK] = decoder_buffer[i];
   }
+  __sync_synchronize();
+  play_ring_head += decoded_size;
 }
 
 static OpusEncoder *opus_encoder = nullptr;
