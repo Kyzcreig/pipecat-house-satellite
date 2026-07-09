@@ -930,28 +930,14 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
   }
 
   update_is_playing(decoder_buffer, decoded_size);
-  static bool was_playing = false;
   if (!is_playing) {
-    was_playing = false;
     return;
   }
-
-  // PRE-ROLL (2026-07-08): on the first frame of a new utterance, prime the
-  // I2S DMA ring with ~80ms of silence BEFORE the speech. The write below then
-  // queues behind it, so the ring always has ~80ms of headroom against WebRTC
-  // packet jitter — late packets eat pre-roll instead of underrunning (gaps =
-  // the streaming rasp). Costs 80ms first-audio latency; inaudible vs the
-  // multi-second turn latency, and the wake beep masks it anyway.
-  if (!was_playing) {
-    static int32_t preroll_zeros[960];  // 10ms @ 48k stereo (480 frames x 2)
-    memset(preroll_zeros, 0, sizeof(preroll_zeros));
-    size_t wrote = 0;
-    for (int k = 0; k < 8; k++) {  // 8 x 10ms = 80ms
-      i2s_channel_write(tx_handle, preroll_zeros, sizeof(preroll_zeros),
-                        &wrote, pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
-    }
-  }
-  was_playing = true;
+  // NOTE (2026-07-08): an 80ms silence PRE-ROLL was tried here and REVERTED —
+  // update_is_playing() flaps during natural intra-utterance pauses, so the
+  // pre-roll injected 80ms silence blocks MID-SPEECH ("way raspier"). If
+  // pre-roll returns, key it off a real utterance boundary (RTVI
+  // bot-started-speaking), never the is_playing edge.
 
   mono_16k_to_stereo_48k_32bit(decoder_buffer, decoded_size, i2s_play_buffer);
 
