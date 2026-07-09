@@ -1,9 +1,14 @@
 set(PEER_PROJECT_PATH "../../../esp32-s3-box-3/deps/libpeer")
 file(GLOB CODES "${PEER_PROJECT_PATH}/src/*.c")
 list(FILTER CODES EXCLUDE REGEX ".*/peer_connection\\.c$")
+# rtp.c vendored locally: adds RTP seq-gap detection + PLC signaling (NULL
+# payload callback per lost packet) to rtp_decode_generic — upstream ignores
+# seq numbers entirely, which produced audible clicks on every lost UDP packet
+# (the 2026-07-09 residual-crackle root cause).
+list(FILTER CODES EXCLUDE REGEX ".*/rtp\\.c$")
 
 idf_component_register(
-  SRCS ${CODES} "peer_connection.c"
+  SRCS ${CODES} "peer_connection.c" "rtp.c"
   INCLUDE_DIRS "${PEER_PROJECT_PATH}/src"
   REQUIRES mbedtls srtp json esp_netif
 )

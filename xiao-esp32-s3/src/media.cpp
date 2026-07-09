@@ -959,6 +959,7 @@ static inline uint32_t play_ring_count() {
 volatile uint32_t g_play_stat_frames = 0;
 volatile uint32_t g_play_stat_write_fail = 0;
 volatile uint32_t g_play_stat_underruns = 0;
+volatile uint32_t g_play_stat_plc = 0;  // opus PLC frames (lost RTP packets concealed)
 
 // Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
 // the 100 vs 200ms experiment needs no rebuild. Default 100ms (ESPHome's).
@@ -1086,9 +1087,20 @@ void pipecat_init_audio_decoder() {
 }
 
 void pipecat_audio_decode(uint8_t *data, size_t size) {
-  int decoded_size =
-      opus_decode(opus_decoder, data, size, decoder_buffer,
-                  PCM_SAMPLES_PER_FRAME, 0);
+  // NULL data = PLC signal from the vendored libpeer rtp.c: one RTP packet
+  // (20ms opus frame) was lost in transit. opus_decode(NULL) synthesizes a
+  // concealment frame from decoder state (interpolation) instead of leaving
+  // a discontinuity — the discontinuity was the residual "tiny crackle"
+  // (2026-07-09; selftest clean, streamed crackly, counters clean).
+  int decoded_size;
+  if (data == NULL) {
+    decoded_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
+                               PCM_SAMPLES_PER_FRAME, 0);
+    g_play_stat_plc++;
+  } else {
+    decoded_size = opus_decode(opus_decoder, data, size, decoder_buffer,
+                               PCM_SAMPLES_PER_FRAME, 0);
+  }
 
   if (decoded_size <= 0) {
     return;

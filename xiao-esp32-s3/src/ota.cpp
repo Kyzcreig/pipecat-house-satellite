@@ -358,6 +358,7 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
 extern volatile uint32_t g_play_stat_frames;
 extern volatile uint32_t g_play_stat_write_fail;
 extern volatile uint32_t g_play_stat_underruns;
+extern volatile uint32_t g_play_stat_plc;
 extern volatile uint32_t g_play_prebuffer_samples;
 void pipecat_play_selftest_clip();
 
@@ -383,11 +384,12 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   }
   char body[192];
   snprintf(body, sizeof(body),
-           "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,"
+           "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
            "\"prebuffer_ms\":%lu}",
            (unsigned long)g_play_stat_frames,
            (unsigned long)g_play_stat_write_fail,
            (unsigned long)g_play_stat_underruns,
+           (unsigned long)g_play_stat_plc,
            (unsigned long)(g_play_prebuffer_samples / 16));
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);
