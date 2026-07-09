@@ -266,6 +266,10 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
   return 0;
 }
 
+// Reorder-vs-loss counters (2026-07-09): exposed via /playback/stats.
+volatile uint32_t g_rtp_late_drops = 0;   // packets arriving behind playback (reordering)
+volatile uint32_t g_rtp_gap_events = 0;   // distinct seq gaps (PLC bursts fired)
+
 static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
   RtpPacket* rtp_packet = (RtpPacket*)buf;
   // --- VENDORED PATCH (2026-07-09, pipecat-house-satellite) ---
@@ -298,11 +302,17 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
       int16_t delta = (int16_t)(seq - expected);
       if (delta < 0) {
         // Late or duplicate packet — playback has moved on; drop it.
+        // COUNTED (2026-07-09): late-drops vs gap-events splits REORDERING
+        // from true LOSS. High plc + high late = reordering (fix = small
+        // reorder buffer here, no WiFi change); high plc + late≈0 = real
+        // loss (fix = WiFi/AP). Query via GET /playback/stats.
+        g_rtp_late_drops++;
         return (int)size;
       }
       if (delta > 0 && delta <= 16 && rtp_decoder->on_packet != NULL) {
         // Gap: delta packets lost. Cap the PLC burst (>16 ≈ >320ms means a
         // real outage — resync instead of interpolating a long stretch).
+        g_rtp_gap_events++;
         for (int16_t i = 0; i < delta; i++) {
           rtp_decoder->on_packet(NULL, 0, rtp_decoder->user_data);
         }

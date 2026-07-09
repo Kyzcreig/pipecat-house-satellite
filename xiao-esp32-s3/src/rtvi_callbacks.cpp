@@ -8,6 +8,9 @@
 // phases arrive as RTVI server-messages (see pipecat_led_on_server_message).
 
 static void on_bot_started_speaking() {
+  // Fresh opus decoder state per utterance: PLC-heavy idle pollutes the
+  // predictive state and crackles the first syllable (escalation §2).
+  pipecat_reset_audio_decoder();
   pipecat_led_set_phase(PIPECAT_LED_PHASE_SPEAKING);
 }
 

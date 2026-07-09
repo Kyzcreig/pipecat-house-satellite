@@ -359,7 +359,13 @@ extern volatile uint32_t g_play_stat_frames;
 extern volatile uint32_t g_play_stat_write_fail;
 extern volatile uint32_t g_play_stat_underruns;
 extern volatile uint32_t g_play_stat_plc;
+extern volatile uint32_t g_play_stat_fec;
 extern volatile uint32_t g_play_prebuffer_samples;
+// From vendored components/peer/rtp.c — splits reordering from true loss.
+extern "C" {
+extern volatile uint32_t g_rtp_late_drops;
+extern volatile uint32_t g_rtp_gap_events;
+}
 void pipecat_play_selftest_clip();
 
 // POST /playback/selftest — play the flash-embedded clip straight into the
@@ -382,14 +388,17 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[192];
+  char body[256];
   snprintf(body, sizeof(body),
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
-           "\"prebuffer_ms\":%lu}",
+           "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,\"prebuffer_ms\":%lu}",
            (unsigned long)g_play_stat_frames,
            (unsigned long)g_play_stat_write_fail,
            (unsigned long)g_play_stat_underruns,
            (unsigned long)g_play_stat_plc,
+           (unsigned long)g_play_stat_fec,
+           (unsigned long)g_rtp_late_drops,
+           (unsigned long)g_rtp_gap_events,
            (unsigned long)(g_play_prebuffer_samples / 16));
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);

@@ -1086,52 +1086,101 @@ void pipecat_init_audio_decoder() {
                           NULL, 1);
 }
 
-void pipecat_audio_decode(uint8_t *data, size_t size) {
-  // NULL data = PLC signal from the vendored libpeer rtp.c: one RTP packet
-  // (20ms opus frame) was lost in transit. opus_decode(NULL) synthesizes a
-  // concealment frame from decoder state (interpolation) instead of leaving
-  // a discontinuity — the discontinuity was the residual "tiny crackle"
-  // (2026-07-09; selftest clean, streamed crackly, counters clean).
-  int decoded_size;
-  if (data == NULL) {
-    decoded_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
-                               PCM_SAMPLES_PER_FRAME, 0);
-    g_play_stat_plc++;
-  } else {
-    decoded_size = opus_decode(opus_decoder, data, size, decoder_buffer,
-                               PCM_SAMPLES_PER_FRAME, 0);
+// Shared producer push: gate on is_playing and push PCM into the play ring.
+// Factored out (2026-07-09b) so the FEC/PLC gap-fill path uses the identical
+// gating + ring semantics as the normal decode path.
+static void push_decoded_to_ring(int16_t *pcm, int nsamples) {
+  update_is_playing(pcm, nsamples);
+  if (!is_playing) {
+    return;
   }
+  uint32_t free_space = PLAY_RING_SAMPLES - play_ring_count();
+  if (free_space < (uint32_t)nsamples) {
+    play_ring_tail += (uint32_t)nsamples - free_space;
+    play_ring_drops++;
+  }
+  for (int i = 0; i < nsamples; i++) {
+    play_ring[(play_ring_head + i) & PLAY_RING_MASK] = pcm[i];
+  }
+  __sync_synchronize();
+  play_ring_head += nsamples;
+}
+
+// Reset the opus decoder to a clean state at utterance start (escalation §2,
+// 2026-07-09): after PLC-heavy idle (concealing background packet loss for
+// minutes), the decoder's predictive state is polluted with synthetic frames —
+// suspected cause of the "first syllable of a reply crackles" report. RTVI
+// bot-started-speaking (rtvi_callbacks.cpp) calls this so each reply decodes
+// from a fresh state. Cheap (CTL reset, no realloc), safe on the webrtc thread.
+void pipecat_reset_audio_decoder() {
+  // GATED (2026-07-09b): the RTVI bot-started-speaking message rides the data
+  // channel and can arrive AFTER the first audio packets — resetting the
+  // decoder mid-stream discards live predictive state and STUTTERS the first
+  // syllable (observed). Only reset when playback is idle (ring empty), i.e.
+  // the reset genuinely precedes the utterance's audio.
+  if (opus_decoder != nullptr && play_ring_count() == 0 && !is_playing) {
+    opus_decoder_ctl(opus_decoder, OPUS_RESET_STATE);
+    ESP_LOGI(LOG_TAG, "opus decoder state reset (utterance start, idle)");
+  }
+}
+
+static uint32_t s_pending_gap = 0;   // gaps signaled but not yet filled
+volatile uint32_t g_play_stat_fec = 0;  // gaps recovered via in-band FEC (real audio)
+
+void pipecat_audio_decode(uint8_t *data, size_t size) {
+  // NULL data = gap signal from the vendored libpeer rtp.c: one RTP packet
+  // (20ms opus frame) was lost in transit. Recovery ladder (2026-07-09b):
+  //   1. single gap + FEC-enabled encoder -> decode the redundant copy
+  //      embedded in the NEXT packet (opus in-band FEC): REAL audio.
+  //   2. multi-gap / no next packet -> opus_decode(NULL) PLC synthesis.
+  // The server encoder ships fec=1,packet_loss=10 (aiortc monkey-patch in
+  // webrtc_server.py) — 94% of measured gap events are single-packet, the
+  // exact profile in-band FEC exists for.
+  if (data == NULL) {
+    s_pending_gap++;
+    return;  // defer: the NEXT packet decides FEC vs PLC
+  }
+
+  if (s_pending_gap > 0) {
+    // Fill the most recent missing frame from THIS packet's FEC payload if
+    // it was a single gap; synthesize PLC for anything deeper.
+    while (s_pending_gap > 1) {
+      int plc_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
+                                 PCM_SAMPLES_PER_FRAME, 0);
+      g_play_stat_plc++;
+      s_pending_gap--;
+      if (plc_size > 0) {
+        push_decoded_to_ring(decoder_buffer, plc_size);
+      }
+    }
+    int fec_size = opus_decode(opus_decoder, data, size, decoder_buffer,
+                               PCM_SAMPLES_PER_FRAME, 1 /* decode_fec */);
+    s_pending_gap = 0;
+    if (fec_size > 0) {
+      g_play_stat_fec++;
+      push_decoded_to_ring(decoder_buffer, fec_size);
+    } else {
+      // Encoder had no FEC data — fall back to PLC for the lost frame.
+      int plc_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
+                                 PCM_SAMPLES_PER_FRAME, 0);
+      g_play_stat_plc++;
+      if (plc_size > 0) {
+        push_decoded_to_ring(decoder_buffer, plc_size);
+      }
+    }
+  }
+
+  int decoded_size = opus_decode(opus_decoder, data, size, decoder_buffer,
+                                 PCM_SAMPLES_PER_FRAME, 0);
 
   if (decoded_size <= 0) {
     return;
   }
 
-  update_is_playing(decoder_buffer, decoded_size);
-  if (!is_playing) {
-    return;
-  }
-  // NOTE (2026-07-08): an 80ms silence PRE-ROLL was tried here and REVERTED —
-  // update_is_playing() flaps during natural intra-utterance pauses, so the
-  // pre-roll injected 80ms silence blocks MID-SPEECH ("way raspier"). If
-  // pre-roll returns, key it off a real utterance boundary (RTVI
-  // bot-started-speaking), never the is_playing edge.
-
-  // PRODUCER ONLY (2026-07-09): push decoded PCM into the playback ring and
-  // return. The dedicated playback task owns all I2S writes — never write
-  // I2S from this (webrtc loop) thread; that inline write was the root cause
-  // of the streaming rasp (see ring-buffer block above).
-  uint32_t free_space = PLAY_RING_SAMPLES - play_ring_count();
-  if (free_space < (uint32_t)decoded_size) {
-    // Ring full (consumer stalled or >2s burst): drop-oldest by advancing
-    // tail. Counted, never blocks the network thread.
-    play_ring_tail += (uint32_t)decoded_size - free_space;
-    play_ring_drops++;
-  }
-  for (int i = 0; i < decoded_size; i++) {
-    play_ring[(play_ring_head + i) & PLAY_RING_MASK] = decoder_buffer[i];
-  }
-  __sync_synchronize();
-  play_ring_head += decoded_size;
+  // NOTE (2026-07-08): pre-roll on is_playing edges was tried and REVERTED
+  // (injected silence mid-speech). PRODUCER ONLY: all I2S writes live in the
+  // playback task; this thread only decodes and pushes to the ring.
+  push_decoded_to_ring(decoder_buffer, decoded_size);
 }
 
 static OpusEncoder *opus_encoder = nullptr;
