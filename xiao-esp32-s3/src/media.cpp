@@ -1014,8 +1014,11 @@ volatile uint32_t g_play_stat_underruns = 0;
 volatile uint32_t g_play_stat_plc = 0;  // opus PLC frames (lost RTP packets concealed)
 
 // Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
-// the 100 vs 200ms experiment needs no rebuild. Default 100ms (ESPHome's).
-volatile uint32_t g_play_prebuffer_samples = 1600;
+// the experiment needs no rebuild. Default 40ms (Ace 2026-07-10: wake-ack felt
+// slow; 100ms was ESPHome's default). FEC heals single gaps from the N+1
+// packet (20ms lookahead), so 40ms still covers the dominant single-packet
+// loss profile; underruns counter pages if this proves too tight.
+volatile uint32_t g_play_prebuffer_samples = 640;
 
 // Flash-embedded selftest clip (16k mono s16le, -6dB headroom). Playing it
 // via pipecat_play_selftest_clip() exercises ring->FIR->I2S->DAC->speaker
