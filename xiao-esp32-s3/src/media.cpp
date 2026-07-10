@@ -121,6 +121,9 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
+#if PIPECAT_DUAL_STREAM
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_UPSAMPLE = 14;
+#endif
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_L = 15;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_R = 19;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_SYS_DELAY = 26;
@@ -561,12 +564,23 @@ static void configure_xvf3800_dsp_profile() {
   // Put category-7 (ASR) auto-select on the LEFT slot so STT gets the clean beam,
   // and engage AEC ASR-mode. XVF params are volatile (reset on XMOS power-cycle /
   // DFU), so this re-applies on every boot, exactly like the ESPHome component.
+#if PIPECAT_DUAL_STREAM
+  // Both independent 16 kHz lanes must be upsampled onto the 48 kHz I2S slots.
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR,
+                           XVF_CMD_AUDIO_MGR_OP_UPSAMPLE, 1, 1));
+#endif
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L,
                            XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
+#if PIPECAT_DUAL_STREAM
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
+                           XVF_AUDIO_CATEGORY_PROCESSED,
+                           XVF_AUDIO_SOURCE_AUTO_SELECT));
+#else
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
                            XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
+#endif
 
   // Speaker/far-end reference gain. Seeed's sample default is 8.0 (linear,
   // ≈ +18 dB) which OVERDRIVES the analog output stage — the 2026-07-09
@@ -886,6 +900,32 @@ static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
   }
 }
 
+#if PIPECAT_DUAL_STREAM
+static void stereo_48k_32bit_to_stereo_16k(int32_t *src,
+                                           size_t src_samples, int16_t *dst) {
+  size_t out = 0;
+  for (size_t i = 0; i + 5 < src_samples &&
+                     out < PCM_SAMPLES_PER_FRAME * 2;
+       i += UPSAMPLE_RATIO * 2) {
+    int32_t left = (src[i + 0] >> 16) + (src[i + 2] >> 16) +
+                   (src[i + 4] >> 16);
+    int32_t right = (src[i + 1] >> 16) + (src[i + 3] >> 16) +
+                    (src[i + 5] >> 16);
+    left /= UPSAMPLE_RATIO;
+    right /= UPSAMPLE_RATIO;
+    if (left > 32767) left = 32767;
+    if (left < -32768) left = -32768;
+    if (right > 32767) right = 32767;
+    if (right < -32768) right = -32768;
+    dst[out++] = static_cast<int16_t>(left);
+    dst[out++] = static_cast<int16_t>(right);
+  }
+  while (out < PCM_SAMPLES_PER_FRAME * 2) {
+    dst[out++] = 0;
+  }
+}
+#endif
+
 static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
                                          int16_t *dst) {
   // ANTI-ALIASED decimator (2026-07-08). The previous max-of-6 peak-picker
@@ -921,6 +961,18 @@ static void fill_bench_tone(int16_t *dst, size_t samples) {
     phase = (phase + 1) % 36;
   }
 }
+
+#if PIPECAT_DUAL_STREAM
+static void fill_bench_stereo_tone(int16_t *dst, size_t frames) {
+  static uint32_t phase = 0;
+  for (size_t i = 0; i < frames; i++) {
+    int16_t sample = (phase < 18) ? 6000 : -6000;
+    dst[i * 2] = sample;
+    dst[i * 2 + 1] = sample;
+    phase = (phase + 1) % 36;
+  }
+}
+#endif
 
 static int16_t *decoder_buffer = nullptr;
 static int32_t *i2s_play_buffer = nullptr;
@@ -1190,18 +1242,33 @@ static int32_t *i2s_capture_buffer = nullptr;
 
 void pipecat_init_audio_encoder() {
   int encoder_error;
+#if PIPECAT_DUAL_STREAM
+  opus_encoder = opus_encoder_create(WEBRTC_SAMPLE_RATE, 2,
+                                     OPUS_APPLICATION_VOIP, &encoder_error);
+#else
   opus_encoder = opus_encoder_create(WEBRTC_SAMPLE_RATE, 1,
                                      OPUS_APPLICATION_VOIP, &encoder_error);
+#endif
   if (encoder_error != OPUS_OK) {
     ESP_LOGE(LOG_TAG, "Failed to create OPUS encoder: %d", encoder_error);
     return;
   }
 
+#if PIPECAT_DUAL_STREAM
+  opus_encoder_ctl(opus_encoder,
+                   OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE * 2));
+#else
   opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
+#endif
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
 
+#if PIPECAT_DUAL_STREAM
+  read_buffer =
+      (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE * 2, MALLOC_CAP_8BIT);
+#else
   read_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
+#endif
   i2s_capture_buffer =
       (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
   encoder_output_buffer = (uint8_t *)malloc(OPUS_BUFFER_SIZE);
@@ -1213,7 +1280,11 @@ void pipecat_init_audio_encoder() {
 
 void pipecat_send_audio(PeerConnection *peer_connection) {
 #ifdef PIPECAT_BENCH_SEND_TONE
+#if PIPECAT_DUAL_STREAM
+  fill_bench_stereo_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
+#else
   fill_bench_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
+#endif
 #else
   size_t bytes_read = 0;
   esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
@@ -1248,15 +1319,28 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
       if (s < 0) s = -s;
       if (s > diag_peak) diag_peak = s;
     }
+#if PIPECAT_DUAL_STREAM
+    stereo_48k_32bit_to_stereo_16k(i2s_capture_buffer,
+                                   bytes_read / sizeof(int32_t), read_buffer);
+#else
     stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
                                  bytes_read / sizeof(int32_t), read_buffer);
+#endif
+#if PIPECAT_DUAL_STREAM
+    for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME * 2; i++) {
+#else
     for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
+#endif
       int32_t s = read_buffer[i];
       if (s < 0) s = -s;
       if (s > diag_mono_peak) diag_mono_peak = s;
     }
   } else {
+#if PIPECAT_DUAL_STREAM
+    memset(read_buffer, 0, PCM_BUFFER_SIZE * 2);
+#else
     memset(read_buffer, 0, PCM_BUFFER_SIZE);
+#endif
   }
   // PCM frames are 20ms => 50 per second.
   if (diag_frames >= 50) {
