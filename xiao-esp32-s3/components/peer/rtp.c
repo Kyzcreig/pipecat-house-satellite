@@ -349,7 +349,11 @@ static portMUX_TYPE s_nack_mux = portMUX_INITIALIZER_UNLOCKED;
 // Staging FIFO: in-window rtx payloads parked by the RTVI task until the
 // decode task splices them (opus frames are <400B; server rtx cap matches).
 // Sized to NACK_MAX_SEQS so one full 8-seq burst can land between packets.
-#define NACK_RTX_MAX_PAYLOAD 512
+// RED-wrapped rtx = primary + 2 redundant blocks + headers (~3x bare opus).
+// MUST match the rtvi.cpp decode buffer (1024) — 512 silently rejected every
+// RED-wrapped rtx BEFORE take(), which is why RTT stayed 0 while arrivals
+// counted (the 2026-07-12 trace).
+#define NACK_RTX_MAX_PAYLOAD 1024
 static struct {
   uint16_t len;
   uint8_t data[NACK_RTX_MAX_PAYLOAD];
@@ -380,7 +384,17 @@ static void nack_sweep_and_drain(uint32_t now_ms) {
       break;
     }
     if (s_audio_on_packet != NULL) {
-      s_audio_on_packet(buf, len, s_audio_user_data);
+      // The ring stores EXACT wire bytes — RED-wrapped when RED is armed.
+      // The normal receive path unwraps RED before on_packet; do the same
+      // here or the opus decoder eats RED headers as audio. Safety rule as
+      // everywhere: any parse failure -> treat as bare opus.
+      RedParsed red;
+      if (red_unwrap(buf, len, PT_OPUS, &red) == 0) {
+        s_audio_on_packet((uint8_t*)red.primary, red.primary_size,
+                          s_audio_user_data);
+      } else {
+        s_audio_on_packet(buf, len, s_audio_user_data);
+      }
     }
   }
   portENTER_CRITICAL(&s_nack_mux);

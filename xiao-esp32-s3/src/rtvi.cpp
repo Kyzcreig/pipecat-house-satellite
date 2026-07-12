@@ -19,6 +19,14 @@
 #define MAX_ID_LEN 64
 
 static int rtvi_id = 0;
+
+// rtx-delivery trace counters (2026-07-12): exposed via /playback/stats to
+// find WHERE server->device messages die. Volatile: written on the RTVI task,
+// read from the httpd task.
+volatile uint32_t g_rtvi_rx_total = 0;       // every parsed data-channel msg
+volatile uint32_t g_rtvi_rx_server_msg = 0;  // type == server-message
+volatile uint32_t g_rtvi_rx_rtx = 0;         // ... with data.t == rtx
+volatile uint32_t g_rtvi_rx_parse_fail = 0;  // cJSON_Parse failures
 static QueueHandle_t rtvi_queue;
 static PeerConnection *peer_connection = NULL;
 static rtvi_callbacks_t *rtvi_callbacks = NULL;
@@ -81,6 +89,7 @@ static char *rtvi_message_to_string(rtvi_msg_t *msg) {
 }
 
 static void rtvi_handle_message(const rtvi_msg_t *msg) {
+  g_rtvi_rx_total++;
   cJSON *j_type = cJSON_GetObjectItem(msg->msg, "type");
   if (j_type == NULL) {
     ESP_LOGE(LOG_TAG, "Unable to find `type` field in RTVI message");
@@ -101,6 +110,7 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
       break;
     }
     case hash("server-message"): {
+      g_rtvi_rx_server_msg++;
       // App-specific message from webrtc_server.py. We use it to drive the LED
       // ring phase: {"data":{"t":"led","phase":"waiting|thinking|speaking|idle"}}
       ESP_LOGI(LOG_TAG, "RTVI server-message received");
@@ -138,13 +148,17 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
       // task — see the threading note in rtp.c). Late/unknown seqs are
       // counted and dropped there.
       else if (hash(j_t->valuestring) == hash("rtx")) {
+        g_rtvi_rx_rtx++;
         cJSON *j_seq = cJSON_GetObjectItem(j_data, "seq");
         cJSON *j_b64 = cJSON_GetObjectItem(j_data, "payload_b64");
         if (!cJSON_IsNumber(j_seq) || j_b64 == NULL ||
             j_b64->valuestring == NULL) {
           break;
         }
-        unsigned char opus[512];  // opus frames <400B; server caps to match
+        // RED-wrapped rtx = primary + up to 2 redundant blocks + headers
+        // (~3x a bare opus frame). 512 truncated 7/11 real rtx (measured
+        // 2026-07-12: rtvi_rx_rtx=11 vs nack_rtx_arrived=4).
+        unsigned char opus[1024];
         size_t opus_len = 0;
         if (mbedtls_base64_decode(opus, sizeof(opus), &opus_len,
                                   (const unsigned char *)j_b64->valuestring,
@@ -198,6 +212,7 @@ void pipecat_rtvi_send_client_ready() {
 void pipecat_rtvi_handle_message(const char *msg) {
   cJSON *j_msg = cJSON_Parse(msg);
   if (j_msg == NULL) {
+    g_rtvi_rx_parse_fail++;
     ESP_LOGE(LOG_TAG, "Error parsing RTVI message");
     return;
   }

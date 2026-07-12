@@ -36,28 +36,34 @@ int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
   return count;
 }
 
-/* Find the pending slot holding `seq` (active), or -1. */
+/* Find the pending slot holding `seq` (armed OR expired), or -1. */
 static int find_slot(const NackClient* c, uint16_t seq) {
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
-    if (c->pending[i].active && c->pending[i].seq == seq) {
+    if (c->pending[i].active != NACK_SLOT_FREE && c->pending[i].seq == seq) {
       return i;
     }
   }
   return -1;
 }
 
-/* First free slot, or the slot with the oldest (smallest) deadline if full. */
+/* First free slot, else oldest EXPIRED, else oldest armed (table pressure). */
 static int alloc_slot(const NackClient* c) {
   int oldest = 0;
+  int oldest_expired = -1;
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
-    if (!c->pending[i].active) {
+    if (c->pending[i].active == NACK_SLOT_FREE) {
       return i;
+    }
+    if (c->pending[i].active == NACK_SLOT_EXPIRED &&
+        (oldest_expired < 0 ||
+         c->pending[i].deadline_ms < c->pending[oldest_expired].deadline_ms)) {
+      oldest_expired = i;
     }
     if (c->pending[i].deadline_ms < c->pending[oldest].deadline_ms) {
       oldest = i;
     }
   }
-  return oldest; /* table full: reuse the oldest (its rtx never came) */
+  return oldest_expired >= 0 ? oldest_expired : oldest;
 }
 
 void nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms) {
@@ -70,7 +76,7 @@ void nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms) {
   }
   c->pending[slot].seq = seq;
   c->pending[slot].deadline_ms = now_ms + NACK_WAIT_MS;
-  c->pending[slot].active = 1;
+  c->pending[slot].active = NACK_SLOT_ARMED;
   c->nack_sent++;
 }
 
@@ -82,8 +88,10 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
   if (slot < 0) {
     return NACK_TAKE_UNKNOWN;
   }
-  c->pending[slot].active = 0; /* consume either way */
-  /* RTT = now - arm time (deadline was arm + NACK_WAIT_MS). */
+  uint8_t was = c->pending[slot].active;
+  c->pending[slot].active = NACK_SLOT_FREE; /* consume either way */
+  /* RTT = now - arm time (deadline was arm + NACK_WAIT_MS). Recorded for
+   * armed AND expired slots — measuring stragglers is the whole point. */
   {
     uint32_t arm_ms = c->pending[slot].deadline_ms - (uint32_t)NACK_WAIT_MS;
     uint32_t rtt = now_ms - arm_ms; /* wraps correctly in unsigned math */
@@ -93,11 +101,14 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
     }
   }
   /* Signed compare so wrap of the 32-bit ms clock is handled correctly. */
-  if ((int32_t)(now_ms - c->pending[slot].deadline_ms) <= 0) {
+  if (was == NACK_SLOT_ARMED &&
+      (int32_t)(now_ms - c->pending[slot].deadline_ms) <= 0) {
     c->nack_recovered++;
     return NACK_TAKE_INWINDOW;
   }
-  c->nack_late++;
+  if (was == NACK_SLOT_ARMED) {
+    c->nack_late++; /* expired slots were already counted late at sweep */
+  }
   return NACK_TAKE_LATE;
 }
 
@@ -107,9 +118,9 @@ int nack_client_sweep(NackClient* c, uint32_t now_ms) {
   }
   int expired = 0;
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
-    if (c->pending[i].active &&
+    if (c->pending[i].active == NACK_SLOT_ARMED &&
         (int32_t)(now_ms - c->pending[i].deadline_ms) > 0) {
-      c->pending[i].active = 0;
+      c->pending[i].active = NACK_SLOT_EXPIRED; /* keep for RTT; freed on take/reuse */
       c->nack_late++;
       expired++;
     }

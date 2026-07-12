@@ -52,7 +52,7 @@ extern "C" {
  * deadline is armed before the JSON even leaves the device, and the reply path
  * crosses the server event loop + SCTP + the RTVI queue task. 60ms fits the
  * measured RTT with margin and still beats the prebuffer. */
-#define NACK_WAIT_MS 60
+#define NACK_WAIT_MS 250
 
 /* Pending-rtx table size: how many in-flight NACKed seqs we track at once. One
  * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps. */
@@ -65,10 +65,18 @@ typedef enum NackTakeResult {
   NACK_TAKE_LATE = 2,     /* armed but the window expired -> drop, count late */
 } NackTakeResult;
 
+/* Slot states: sweep EXPIRES a slot (counts late once) but keeps it resident
+ * so a straggler rtx can still compute its true RTT — the whole point of the
+ * RTT counters is sizing NACK_WAIT_MS from measurement, which is impossible
+ * if sweeping destroys the arm time before the reply lands. */
+#define NACK_SLOT_FREE 0
+#define NACK_SLOT_ARMED 1
+#define NACK_SLOT_EXPIRED 2
+
 typedef struct NackPending {
   uint16_t seq;
   uint32_t deadline_ms; /* now_ms + NACK_WAIT_MS at arm time */
-  uint8_t active;
+  uint8_t active;       /* NACK_SLOT_* */
 } NackPending;
 
 typedef struct NackClient {

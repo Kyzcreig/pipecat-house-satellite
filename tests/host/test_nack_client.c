@@ -114,11 +114,15 @@ static void test_sweep_never_arrived(void) {
   nack_client_arm(&c, 2, 1000);            /* deadline 1020 */
   /* Before expiry: nothing swept. */
   assert(nack_client_sweep(&c, 1010) == 0);
-  /* After expiry: both tallied late and freed. */
+  /* After expiry: both tallied late; slots kept EXPIRED for RTT capture. */
   assert(nack_client_sweep(&c, 1010 + NACK_WAIT_MS) == 2);
   assert(c.nack_late == 2);
-  /* Freed: a take now returns UNKNOWN. */
-  assert(nack_client_take(&c, 1, 1031) == NACK_TAKE_UNKNOWN);
+  /* A straggler rtx on an expired slot: LATE result, RTT recorded, no
+   * double late-count, slot then freed. */
+  assert(nack_client_take(&c, 1, 1200) == NACK_TAKE_LATE);
+  assert(c.nack_late == 2);           /* counted once, at sweep */
+  assert(c.last_rtt_ms == 200);       /* 1200 - arm(1000) */
+  assert(nack_client_take(&c, 1, 1300) == NACK_TAKE_UNKNOWN); /* now freed */
 }
 
 static void test_arm_full_table_evicts_oldest(void) {
@@ -172,7 +176,9 @@ static void test_swept_seq_rejects_rtx(void) {
   nack_client_arm(&c, 11, 1000);           /* will expire via sweep */
   assert(nack_client_take(&c, 10, 1010) == NACK_TAKE_INWINDOW);
   assert(nack_client_sweep(&c, 1030 + NACK_WAIT_MS) == 1);  /* only seq 11 */
-  assert(nack_client_take(&c, 11, 1051) == NACK_TAKE_UNKNOWN); /* no splice */
+  /* Straggler rtx on the swept slot: LATE (rtp.c only splices INWINDOW),
+   * RTT captured, late counted once (at sweep). */
+  assert(nack_client_take(&c, 11, 1051) == NACK_TAKE_LATE); /* no splice */
   assert(c.nack_recovered == 1 && c.nack_late == 1 && c.nack_sent == 2);
 }
 
