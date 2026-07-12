@@ -365,6 +365,12 @@ extern volatile uint32_t g_play_prebuffer_samples;
 extern "C" {
 extern volatile uint32_t g_rtp_late_drops;
 extern volatile uint32_t g_rtp_gap_events;
+// RED / RFC 2198 counters (audio-resilience ladder Phase 3, 2026-07-11).
+// packets_received is the frozen loss_burden denominator (ladder spec REV 3):
+//   loss_burden = (plc + fec + red_recovered + nack_recovered) / packets_received
+extern volatile uint32_t g_rtp_packets_received;
+extern volatile uint32_t g_red_recovered;
+extern volatile uint32_t g_red_dup_drops;
 }
 void pipecat_play_selftest_clip();
 
@@ -388,10 +394,12 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[256];
+  char body[384];
   snprintf(body, sizeof(body),
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
-           "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,\"prebuffer_ms\":%lu}",
+           "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
+           "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
+           "\"prebuffer_ms\":%lu}",
            (unsigned long)g_play_stat_frames,
            (unsigned long)g_play_stat_write_fail,
            (unsigned long)g_play_stat_underruns,
@@ -399,6 +407,9 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_play_stat_fec,
            (unsigned long)g_rtp_late_drops,
            (unsigned long)g_rtp_gap_events,
+           (unsigned long)g_rtp_packets_received,
+           (unsigned long)g_red_recovered,
+           (unsigned long)g_red_dup_drops,
            (unsigned long)(g_play_prebuffer_samples / 16));
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);

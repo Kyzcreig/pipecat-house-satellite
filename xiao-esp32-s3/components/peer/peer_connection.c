@@ -478,7 +478,24 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
       sdp_append_pcmu(pc->sdp);
       break;
     case CODEC_OPUS:
-      sdp_append_opus(pc->sdp);
+      // VENDORED PATCH (2026-07-11): offer RED (RFC 2198) alongside opus so
+      // the audio downlink can carry N-2 redundancy (audio-resilience ladder
+      // Phase 3; pipecat-house-voice docs/SPEC-red-rfc2198-burst-redundancy.md).
+      // Inline replacement for the submodule's sdp_append_opus() — same lines
+      // plus PT 63 on the m-line, its rtpmap, and the fmtp mapping RED->opus.
+      // The server side is env-gated (PIPECAT_RED_ENABLED); offering RED here
+      // is inert until the hub actually sends PT-63 packets. Uplink mic audio
+      // stays plain opus PT 111 (rtp_encoder is untouched).
+      sdp_append(pc->sdp, "m=audio 9 UDP/TLS/RTP/SAVP 111 63");
+      sdp_append(pc->sdp, "c=IN IP4 0.0.0.0");
+      sdp_append(pc->sdp, "a=rtpmap:111 opus/48000/2");
+      sdp_append(pc->sdp, "a=rtpmap:63 red/48000/2");
+      sdp_append(pc->sdp, "a=fmtp:63 111/111");
+      sdp_append(pc->sdp, "a=ssrc:6 cname:webrtc-opus");
+      sdp_append(pc->sdp, "a=sendrecv");
+      sdp_append(pc->sdp, "a=mid:audio");
+      sdp_append(pc->sdp, "a=rtcp-mux");
+      break;
     default:
       break;
   }

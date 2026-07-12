@@ -4,6 +4,7 @@
 #include "address.h"
 #include "config.h"
 #include "peer_connection.h"
+#include "red_unwrap.h"
 #include "rtp.h"
 #include "utils.h"
 
@@ -270,8 +271,42 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
 volatile uint32_t g_rtp_late_drops = 0;   // packets arriving behind playback (reordering)
 volatile uint32_t g_rtp_gap_events = 0;   // distinct seq gaps (PLC bursts fired)
 
+// RED / RFC 2198 counters (2026-07-11, audio-resilience ladder Phase 3).
+// packets_received is the frozen loss_burden denominator (ladder spec REV 3):
+//   loss_burden = (plc + fec + red_recovered + nack_recovered) / packets_received
+volatile uint32_t g_rtp_packets_received = 0;  // ALL audio RTP packets in
+volatile uint32_t g_red_recovered = 0;         // lost frames recovered from RED blocks
+volatile uint32_t g_red_dup_drops = 0;         // late/dup RED packets dropped (redundancy discarded)
+
 static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
   RtpPacket* rtp_packet = (RtpPacket*)buf;
+  if (size < sizeof(RtpHeader)) {
+    return -1;
+  }
+  g_rtp_packets_received++;
+
+  // --- VENDORED PATCH (2026-07-11): RED / RFC 2198 unwrap -------------------
+  // The server (webrtc_server.py, PIPECAT_RED_ENABLED=1) wraps opus in RED:
+  // every packet carries full copies of the previous 2 frames (N-2), so any
+  // <=2-packet burst is recovered LOSSLESSLY (FEC only reaches N-1; deeper
+  // bursts previously fell to synthetic PLC). Parse the RED chain here; the
+  // primary block rides the normal decode path, redundant blocks fill seq
+  // gaps below. SAFETY RULE (spec): if parsing fails in ANY way, treat the
+  // whole payload as bare opus — RED bugs degrade to yesterday's behavior.
+  uint8_t* payload = rtp_packet->payload;
+  size_t payload_size = size - sizeof(RtpHeader);
+  RedParsed red;
+  int red_ok = 0;
+  if (rtp_packet->header.type == RED_PAYLOAD_TYPE) {
+    if (red_unwrap(payload, payload_size, PT_OPUS, &red) == 0) {
+      red_ok = 1;
+      payload = (uint8_t*)red.primary;
+      payload_size = red.primary_size;
+    }
+    // else: fail-safe fallthrough — payload stays the full buffer (bare opus)
+  }
+  // --- END RED unwrap --------------------------------------------------------
+
   // --- VENDORED PATCH (2026-07-09, pipecat-house-satellite) ---
   // Upstream ignores RTP sequence numbers entirely: no loss detection, no
   // reorder handling, no PLC signal. Opus is a predictive codec — feeding it
@@ -280,14 +315,16 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
   // bytes clean without opus/network, crackly with; delivery counters clean).
   // Fix: track seq per decoder; on a gap, signal the consumer BEFORE the new
   // payload with (NULL, 0) callbacks so it can run opus PLC
-  // (opus_decode(dec, NULL, ...)) once per missing frame. Late/duplicate
-  // packets (seq behind) are dropped — the ring already played past them.
-  // Seq state lives in a tiny side-table keyed by decoder pointer (can't add
-  // fields to RtpDecoder — rtp.h stays in the pristine submodule).
+  // (opus_decode(dec, NULL, ...)) once per missing frame — unless a RED
+  // redundant block covers the missing frame, in which case feed REAL audio.
+  // Late/duplicate packets (seq behind) are dropped — the ring already played
+  // past them. Seq state lives in a tiny side-table keyed by decoder pointer
+  // (can't add fields to RtpDecoder — rtp.h stays in the pristine submodule).
   enum { RTP_SEQ_SLOTS = 4 };
   static struct {
     RtpDecoder* dec;
     uint16_t last_seq;
+    uint32_t last_ts;
     uint8_t initialized;
   } seq_state[RTP_SEQ_SLOTS];
   int slot = -1;
@@ -297,6 +334,7 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
   }
   if (slot >= 0) {
     uint16_t seq = ntohs(rtp_packet->header.seq_number);
+    uint32_t ts = ntohl(rtp_packet->header.timestamp);
     if (seq_state[slot].dec == rtp_decoder && seq_state[slot].initialized) {
       uint16_t expected = (uint16_t)(seq_state[slot].last_seq + 1);
       int16_t delta = (int16_t)(seq - expected);
@@ -306,25 +344,50 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
         // from true LOSS. High plc + high late = reordering (fix = small
         // reorder buffer here, no WiFi change); high plc + late≈0 = real
         // loss (fix = WiFi/AP). Query via GET /playback/stats.
+        // RED (2026-07-11): NEVER feed a late packet's redundant blocks —
+        // their successors already decoded (decoder-state corruption
+        // otherwise, spec §Decoder-feed-order). Count the discard.
         g_rtp_late_drops++;
+        if (red_ok) {
+          g_red_dup_drops++;
+        }
         return (int)size;
       }
       if (delta > 0 && delta <= 16 && rtp_decoder->on_packet != NULL) {
-        // Gap: delta packets lost. Cap the PLC burst (>16 ≈ >320ms means a
-        // real outage — resync instead of interpolating a long stretch).
+        // Gap: delta packets lost. Cap the recovery burst (>16 ≈ >320ms means
+        // a real outage — resync instead of interpolating a long stretch).
+        // RED first: a redundant block whose ts_offset matches a missing
+        // frame carries the REAL encoded audio — feed it in timestamp order
+        // (oldest first) so the opus decoder state stays coherent. Frames
+        // without a covering block keep the (NULL, 0) PLC/FEC signal.
         g_rtp_gap_events++;
+        int8_t actions[RED_MAX_GAP];
+        int planned = 0;
+        if (red_ok) {
+          // RTP ts units per packet, derived from the actual stream (960 for
+          // 20ms opus @48k) so a ptime change can't silently break mapping.
+          uint32_t ts_step = (ts - seq_state[slot].last_ts) / (uint32_t)(delta + 1);
+          planned = red_recover_plan(&red, delta, ts_step, actions);
+        }
         for (int16_t i = 0; i < delta; i++) {
-          rtp_decoder->on_packet(NULL, 0, rtp_decoder->user_data);
+          if (i < planned && actions[i] >= 0) {
+            RedBlock* b = &red.blocks[actions[i]];
+            rtp_decoder->on_packet((uint8_t*)b->data, b->length, rtp_decoder->user_data);
+            g_red_recovered++;
+          } else {
+            rtp_decoder->on_packet(NULL, 0, rtp_decoder->user_data);
+          }
         }
       }
     }
     seq_state[slot].dec = rtp_decoder;
     seq_state[slot].last_seq = seq;
+    seq_state[slot].last_ts = ts;
     seq_state[slot].initialized = 1;
   }
   // --- END VENDORED PATCH ---
   if (rtp_decoder->on_packet != NULL)
-    rtp_decoder->on_packet(rtp_packet->payload, size - sizeof(RtpHeader), rtp_decoder->user_data);
+    rtp_decoder->on_packet(payload, payload_size, rtp_decoder->user_data);
   // even if there is no callback set, assume everything is ok for caller and do not return an error
   return (int)size;
 }
