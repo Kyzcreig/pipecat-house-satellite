@@ -30,6 +30,15 @@ if("$ENV{PIPECAT_ADAPTIVE_PREBUFFER}" STREQUAL "1")
   add_compile_definitions(PIPECAT_ADAPTIVE_PREBUFFER=1)
 endif()
 
+# Phase 5 NACK retransmit lane: on a >=3-packet seq gap (beyond RED's N-2
+# reach) re-request the missing seqs over the RTVI data channel; an rtx that
+# lands within 20ms is spliced as REAL audio (bit-exact — beats concealment).
+# Requires the server side (pipecat-house-voice nack_retransmit.py). DARK by
+# default — set PIPECAT_NACK=1 at configure time to enable.
+if("$ENV{PIPECAT_NACK}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_NACK=1)
+endif()
+
 # Gap-resume window (ms): a FULL playback-ring drain followed by a refill
 # within this window is counted as a mid-speech gap (`gap_resumes` in
 # /playback/stats) instead of silently re-arming as end-of-utterance.

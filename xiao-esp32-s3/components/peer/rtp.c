@@ -3,6 +3,7 @@
 
 #include "address.h"
 #include "config.h"
+#include "nack_client.h"
 #include "peer_connection.h"
 #include "red_unwrap.h"
 #include "rtp.h"
@@ -278,12 +279,204 @@ volatile uint32_t g_rtp_packets_received = 0;  // ALL audio RTP packets in
 volatile uint32_t g_red_recovered = 0;         // lost frames recovered from RED blocks
 volatile uint32_t g_red_dup_drops = 0;         // late/dup RED packets dropped (redundancy discarded)
 
+// --- NACK retransmit client (2026-07-12, audio-resilience ladder Phase 5) -----
+// On a seq gap of >= NACK_MIN_GAP (3) packets — deeper than RED's N-2 reach —
+// re-request the missing seqs over the RTVI data channel; a resend that lands
+// within NACK_WAIT_MS (20ms, inside the 80ms prebuffer) is spliced as REAL
+// audio. Bit-exact recovery that beats concealment. DARK unless PIPECAT_NACK is
+// compiled in (top CMakeLists add_compile_definitions). Pure decision + table
+// logic lives in nack_client.{c,h} (host-tested); this file owns the wiring:
+// building the request JSON, calling the registered data-channel sender, and
+// feeding an arriving rtx back into the live decoder.
+//
+// DEFERRED CONCEALMENT (the ordering problem): the pre-NACK code conceals a
+// gap SYNCHRONOUSLY (RED block or (NULL,0) PLC signal per missing frame,
+// inline in rtp_decode_generic). If we both concealed immediately AND spliced
+// an rtx ~3ms later, the ring would get TWO frames for the same timestamp
+// (PLC + real = audible time stretch). Fix: for seqs we NACK we emit NOTHING
+// at gap time — the seq is only "pending" in g_nack's table. Resolution is
+// exclusive by construction of nack_client:
+//   * rtx arrives in-window  -> nack_client_take() consumes the slot
+//     (recovered); a later sweep can no longer see it -> no PLC. Real audio.
+//   * rtx never arrives      -> on the NEXT packet arrival (~20ms, matching
+//     NACK_WAIT_MS, still inside the 80ms prebuffer) nack_client_sweep()
+//     consumes the expired slot (late) and we emit the deferred (NULL,0) PLC
+//     signal THEN; a later rtx take() returns UNKNOWN -> not spliced.
+// Exactly one of {rtx splice, deferred PLC} ever fires per NACKed seq.
+//
+// THREADING: rtp_decode_generic runs on the peer-connection task while
+// rtp_nack_feed_rtx is called from the RTVI message task. The opus decoder
+// behind s_audio_on_packet is NOT thread-safe, so feed_rtx never calls it —
+// an in-window rtx is validated (take) and parked in a tiny staging FIFO;
+// the decode task drains the FIFO into the decoder at the next packet
+// arrival (same instant the deferred-PLC sweep runs). g_nack + the FIFO are
+// the only shared state and are guarded by one portMUX with tiny critical
+// sections (table scans + <=512B memcpy; the heavy opus work stays outside).
+//
+// Counters exposed via /playback/stats (ota.cpp):
+//   nack_sent      seqs requested
+//   nack_recovered rtx spliced in-window (real audio)
+//   nack_late      rtx arrived after the 20ms window / never arrived (PLC ran)
+static NackClient g_nack;
+volatile uint32_t g_nack_sent = 0;
+volatile uint32_t g_nack_recovered = 0;
+volatile uint32_t g_nack_late = 0;
+
+// Data-channel sender, registered by the C++ side (webrtc.cpp). NULL until a
+// peer is up; a NULL sender means we simply don't NACK (degrade to RED/PLC).
+static NackSendFn s_nack_send = NULL;
+
+// The live audio decoder's callback, captured in rtp_decoder_init so an rtx
+// arriving OUTSIDE rtp_decode_generic (over the data channel, later) can be
+// injected into the same decode path a normal packet takes. One audio
+// decoder -> one slot.
+static RtpOnPacket s_audio_on_packet = NULL;
+static void* s_audio_user_data = NULL;
+
+#ifdef PIPECAT_NACK
+#include "freertos/FreeRTOS.h"
+
+#include "esp_timer.h"
+
+static portMUX_TYPE s_nack_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Staging FIFO: in-window rtx payloads parked by the RTVI task until the
+// decode task splices them (opus frames are <400B; server rtx cap matches).
+// Sized to NACK_MAX_SEQS so one full 8-seq burst can land between packets.
+#define NACK_RTX_MAX_PAYLOAD 512
+static struct {
+  uint16_t len;
+  uint8_t data[NACK_RTX_MAX_PAYLOAD];
+} s_rtx_q[NACK_MAX_SEQS];
+static volatile uint8_t s_rtx_head = 0;  // producer: rtvi task
+static volatile uint8_t s_rtx_tail = 0;  // consumer: decode task
+
+static inline uint32_t nack_now_ms(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+// Decode-task side of deferred concealment, run once per arriving packet
+// BEFORE the packet's own gap handling: (1) splice any staged rtx frames
+// (real recovered audio) into the decoder, (2) emit the deferred (NULL,0)
+// PLC signal for every NACKed seq whose 20ms window expired without an rtx.
+static void nack_sweep_and_drain(uint32_t now_ms) {
+  for (;;) {
+    uint8_t buf[NACK_RTX_MAX_PAYLOAD];
+    uint16_t len = 0;
+    portENTER_CRITICAL(&s_nack_mux);
+    if (s_rtx_tail != s_rtx_head) {
+      len = s_rtx_q[s_rtx_tail].len;
+      memcpy(buf, s_rtx_q[s_rtx_tail].data, len);
+      s_rtx_tail = (uint8_t)((s_rtx_tail + 1) % NACK_MAX_SEQS);
+    }
+    portEXIT_CRITICAL(&s_nack_mux);
+    if (len == 0) {
+      break;
+    }
+    if (s_audio_on_packet != NULL) {
+      s_audio_on_packet(buf, len, s_audio_user_data);
+    }
+  }
+  portENTER_CRITICAL(&s_nack_mux);
+  int expired = nack_client_sweep(&g_nack, now_ms);
+  g_nack_late = g_nack.nack_late;
+  portEXIT_CRITICAL(&s_nack_mux);
+  for (int i = 0; i < expired; i++) {
+    if (s_audio_on_packet != NULL) {
+      s_audio_on_packet(NULL, 0, s_audio_user_data);
+    }
+  }
+}
+
+// Build "{\"t\":\"nack\",\"seqs\":[s0,s1,...]}" for `count` seqs and send it over
+// the data channel. Arms each seq BEFORE sending: an armed entry is what
+// drives the deferred PLC (sweep), so even a lost/failed request degrades to
+// correct concealment ~20ms later — and the rtx can never race an unarmed
+// table (LAN RTT is ~1-3ms).
+static void nack_request(const uint16_t* seqs, int count, uint32_t now_ms) {
+  if (s_nack_send == NULL || count <= 0) {
+    return;
+  }
+  portENTER_CRITICAL(&s_nack_mux);
+  for (int i = 0; i < count; i++) {
+    nack_client_arm(&g_nack, seqs[i], now_ms);
+  }
+  g_nack_sent = g_nack.nack_sent;
+  portEXIT_CRITICAL(&s_nack_mux);
+  // Max envelope: {"t":"nack","seqs":[]} = 20 chars + up to 8 * 6 ("65535,") .
+  char buf[96];
+  int n = 0;
+  n += snprintf(buf + n, sizeof(buf) - (size_t)n, "{\"t\":\"nack\",\"seqs\":[");
+  for (int i = 0; i < count && n < (int)sizeof(buf) - 8; i++) {
+    n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s%u", i ? "," : "",
+                  (unsigned)seqs[i]);
+  }
+  n += snprintf(buf + n, sizeof(buf) - (size_t)n, "]}");
+  s_nack_send(buf, (size_t)n);
+}
+#endif  // PIPECAT_NACK
+
+void rtp_nack_register_sender(NackSendFn fn) {
+  s_nack_send = fn;
+  nack_client_init(&g_nack);
+}
+
+// Fed by rtvi.cpp when a {"t":"rtx","seq":..,"payload_b64":..} message
+// arrives (RTVI task). Returns 1 if the rtx was accepted for splicing
+// (in-window; staged for the decode task), 0 otherwise (late/unknown/full).
+int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
+                      uint32_t now_ms) {
+#ifdef PIPECAT_NACK
+  if (payload == NULL || len == 0 || len > NACK_RTX_MAX_PAYLOAD) {
+    return 0;
+  }
+  int staged = 0;
+  portENTER_CRITICAL(&s_nack_mux);
+  NackTakeResult r = nack_client_take(&g_nack, seq, now_ms);
+  if (r == NACK_TAKE_INWINDOW) {
+    uint8_t next = (uint8_t)((s_rtx_head + 1) % NACK_MAX_SEQS);
+    if (next != s_rtx_tail) {  // FIFO not full
+      s_rtx_q[s_rtx_head].len = (uint16_t)len;
+      memcpy(s_rtx_q[s_rtx_head].data, payload, len);
+      s_rtx_head = next;
+      staged = 1;
+    }
+    // FIFO full (can't happen with slots == NACK_MAX_SEQS unless the server
+    // misbehaves): the frame is dropped; take() already consumed the slot so
+    // the sweep won't double-conceal — the frame is simply lost, as pre-NACK.
+  }
+  g_nack_recovered = g_nack.nack_recovered;
+  g_nack_late = g_nack.nack_late;
+  portEXIT_CRITICAL(&s_nack_mux);
+  return staged;
+#else
+  (void)seq;
+  (void)payload;
+  (void)len;
+  (void)now_ms;
+  return 0;
+#endif
+}
+
+
 static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
   RtpPacket* rtp_packet = (RtpPacket*)buf;
   if (size < sizeof(RtpHeader)) {
     return -1;
   }
   g_rtp_packets_received++;
+
+#ifdef PIPECAT_NACK
+  // Deferred-concealment resolution point (see the NACK block above): on
+  // EVERY audio packet arrival — ~20ms after the previous one, matching
+  // NACK_WAIT_MS — first splice any staged rtx frames (real recovered audio),
+  // then emit the deferred PLC signal for NACKed seqs whose window expired.
+  // Runs BEFORE this packet's own gap handling and payload delivery.
+  if (rtp_decoder->on_packet != NULL &&
+      rtp_decoder->on_packet == s_audio_on_packet) {
+    nack_sweep_and_drain(nack_now_ms());
+  }
+#endif
 
   // --- VENDORED PATCH (2026-07-11): RED / RFC 2198 unwrap -------------------
   // The server (webrtc_server.py, PIPECAT_RED_ENABLED=1) wraps opus in RED:
@@ -369,7 +562,34 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
           uint32_t ts_step = (ts - seq_state[slot].last_ts) / (uint32_t)(delta + 1);
           planned = red_recover_plan(&red, delta, ts_step, actions);
         }
+#ifdef PIPECAT_NACK
+        // NACK lane (Phase 5): gaps of >= NACK_MIN_GAP (3) are beyond RED's
+        // N-2 reach — re-request the OLDEST min(delta, 8) missing seqs over
+        // the data channel. DEFERRED CONCEALMENT: the seqs we NACK emit
+        // NOTHING here (the conceal loop below skips i < nacked); each one
+        // resolves ~20ms later in nack_sweep_and_drain() as EITHER a spliced
+        // rtx (real audio) or a deferred PLC signal — never both, so the ring
+        // gets exactly one frame per lost packet (no time stretch). Gaps of
+        // <= 2 never reach this (delta < NACK_MIN_GAP -> plan returns 0), so
+        // the RED/FEC path below stays byte-identical for them. Frames past
+        // the 8-seq cap (9..15 of a monster gap) keep immediate RED/PLC.
+        int nacked = 0;
+        if (delta >= NACK_MIN_GAP && s_nack_send != NULL &&
+            rtp_decoder->on_packet == s_audio_on_packet) {
+          uint16_t nack_seqs[NACK_MAX_SEQS];
+          nacked = nack_client_plan_gap(expected, delta, nack_seqs,
+                                        NACK_MAX_SEQS);
+          if (nacked > 0) {
+            nack_request(nack_seqs, nacked, nack_now_ms());
+          }
+        }
+#endif
         for (int16_t i = 0; i < delta; i++) {
+#ifdef PIPECAT_NACK
+          if (i < nacked) {
+            continue;  // deferred: resolved by rtx splice or sweep-PLC
+          }
+#endif
           if (i < planned && actions[i] >= 0) {
             RedBlock* b = &red.blocks[actions[i]];
             rtp_decoder->on_packet((uint8_t*)b->data, b->length, rtp_decoder->user_data);
@@ -404,6 +624,11 @@ void rtp_decoder_init(RtpDecoder* rtp_decoder, MediaCodec codec, RtpOnPacket on_
     case CODEC_PCMU:
     case CODEC_OPUS:
       rtp_decoder->decode_func = rtp_decode_generic;
+      // Capture the audio decoder's consumer so an rtx arriving over the data
+      // channel (rtp_nack_feed_rtx, outside any rtp_decode_generic call) can
+      // be injected into the SAME decode path. One audio decoder per device.
+      s_audio_on_packet = on_packet;
+      s_audio_user_data = user_data;
     default:
       break;
   }

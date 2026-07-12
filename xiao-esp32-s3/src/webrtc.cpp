@@ -9,6 +9,10 @@
 
 #include "main.h"
 
+#ifdef PIPECAT_NACK
+#include "nack_client.h"
+#endif
+
 static PeerConnection *peer_connection = NULL;
 
 // Connection watchdog: set true once the peer reaches CONNECTED. The main loop
@@ -38,11 +42,28 @@ static void pipecat_ondatachannel_onmessage_task(char *msg, size_t len,
   pipecat_rtvi_handle_message(msg);
 }
 
+#ifdef PIPECAT_NACK
+// NACK request sender (audio-resilience ladder Phase 5): the vendored rtp.c
+// calls this (via rtp_nack_register_sender) with a ready-made
+// {"t":"nack","seqs":[...]} JSON when it detects a >=3-packet seq gap. Rides
+// the same reliable RTVI data channel the server already listens on
+// (nack_retransmit.py); replies come back as server-message rtx (rtvi.cpp).
+static void pipecat_nack_datachannel_send(const char *json, size_t len) {
+  peer_connection_datachannel_send(peer_connection, (char *)json, len);
+}
+#endif
+
 static void pipecat_ondatachannel_onopen_task(void *userdata) {
   if (peer_connection_create_datachannel(peer_connection, DATA_CHANNEL_RELIABLE,
                                          0, 0, (char *)"rtvi-ai",
                                          (char *)"") != -1) {
     ESP_LOGI(LOG_TAG, "DataChannel created");
+#ifdef PIPECAT_NACK
+    // Channel is up — arm the NACK lane (also resets the pending table for
+    // the fresh peer). Before this registration rtp.c has a NULL sender and
+    // simply never NACKs (pure RED/FEC/PLC, yesterday's behavior).
+    rtp_nack_register_sender(pipecat_nack_datachannel_send);
+#endif
   } else {
     ESP_LOGE(LOG_TAG, "Failed to create DataChannel");
   }

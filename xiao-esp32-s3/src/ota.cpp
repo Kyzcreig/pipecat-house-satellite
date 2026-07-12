@@ -380,6 +380,12 @@ extern volatile uint32_t g_rtp_gap_events;
 extern volatile uint32_t g_rtp_packets_received;
 extern volatile uint32_t g_red_recovered;
 extern volatile uint32_t g_red_dup_drops;
+// NACK retransmit counters (audio-resilience ladder Phase 5, 2026-07-12).
+// Always linked (rtp.c defines them unconditionally); they stay 0 unless the
+// firmware was built with PIPECAT_NACK=1 AND the server lane is enabled.
+extern volatile uint32_t g_nack_sent;
+extern volatile uint32_t g_nack_recovered;
+extern volatile uint32_t g_nack_late;
 }
 void pipecat_play_selftest_clip();
 
@@ -403,11 +409,12 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[512];
+  char body[640];
   snprintf(body, sizeof(body),
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
            "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
            "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
+           "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
@@ -420,6 +427,9 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_rtp_packets_received,
            (unsigned long)g_red_recovered,
            (unsigned long)g_red_dup_drops,
+           (unsigned long)g_nack_sent,
+           (unsigned long)g_nack_recovered,
+           (unsigned long)g_nack_late,
            (unsigned long)g_play_stat_gap_resumes,
            (unsigned long)(g_play_prebuffer_samples / 16),
            (unsigned long)g_play_prebuffer_effective_ms,
