@@ -1013,12 +1013,46 @@ volatile uint32_t g_play_stat_write_fail = 0;
 volatile uint32_t g_play_stat_underruns = 0;
 volatile uint32_t g_play_stat_plc = 0;  // opus PLC frames (lost RTP packets concealed)
 
+// Underrun BLIND-SPOT fix (2026-07-11, ladder instrumentation): a FULL ring
+// drain re-arms the prebuffer as "normal end of utterance" and was NOT
+// counted — only partial-frame strands incremented underruns. Ace HEARD
+// mid-speech syllable gaps while underruns=0. When the ring fully drains and
+// NEW audio arrives within the resume window (default 750ms, build env
+// PIPECAT_GAP_RESUME_MS), that IS a mid-speech gap -> gap_resumes. A genuine
+// end of utterance won't refill within the window (TTS turn gaps are
+// seconds). Pure counting — zero behavior change.
+volatile uint32_t g_play_stat_gap_resumes = 0;
+
+// Phase 6 adaptive prebuffer (NetEQ-lite) observability: current effective
+// prebuffer + cumulative step transitions. With PIPECAT_ADAPTIVE_PREBUFFER
+// off (default), effective == prebuffer_ms and steps stays 0.
+volatile uint32_t g_play_prebuffer_effective_ms = 0;
+volatile uint32_t g_play_prebuffer_steps = 0;
+
+// Gap accounting + adaptive prebuffer controller (host-testable pure C —
+// tests/host/test_prebuffer_ctl.c).
+#include "prebuffer_ctl.h"
+#ifndef PIPECAT_ADAPTIVE_PREBUFFER
+#define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
+#endif
+#ifndef PIPECAT_GAP_RESUME_MS
+#define PIPECAT_GAP_RESUME_MS 750  // full-drain -> refill window = mid-speech gap
+#endif
+// Recovery-event inputs to the adaptive controller. g_play_stat_fec is
+// defined further down this file; g_red_recovered lives in the vendored
+// components/peer/rtp.c.
+extern volatile uint32_t g_play_stat_fec;
+extern "C" {
+extern volatile uint32_t g_red_recovered;
+}
+
 // Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
-// the experiment needs no rebuild. Default 40ms (Ace 2026-07-10: wake-ack felt
-// slow; 100ms was ESPHome's default). FEC heals single gaps from the N+1
-// packet (20ms lookahead), so 40ms still covers the dominant single-packet
-// loss profile; underruns counter pages if this proves too tight.
-volatile uint32_t g_play_prebuffer_samples = 640;
+// the experiment needs no rebuild. Default 80ms (2026-07-11 live finding:
+// 40ms cannot cover RED N-2 recovery latency — two 20ms redundant frames
+// arrive up to 40ms late, leaving zero margin; 80ms verified gap-free by
+// Ace's ear). History: 100ms was ESPHome's default; 40ms was the 2026-07-10
+// wake-ack-latency experiment.
+volatile uint32_t g_play_prebuffer_samples = 1280;
 
 // Flash-embedded selftest clip (16k mono s16le, -6dB headroom). Playing it
 // via pipecat_play_selftest_clip() exercises ring->FIR->I2S->DAC->speaker
@@ -1056,22 +1090,53 @@ static void pipecat_playback_task(void *arg) {
   static int16_t pop_buf[PCM_SAMPLES_PER_FRAME];
   bool prebuffering = true;
   uint32_t frames = 0, ok = 0, underruns = 0;
+
+  // Gap accounting + Phase 6 adaptive prebuffer (NetEQ-lite). Both env-gated
+  // at BUILD time; adaptive defaults OFF (dark), gap_resumes counting is
+  // always on (pure instrumentation, no behavior change).
+  prebuffer_ctl pbc;
+  pbc_init(&pbc, PIPECAT_ADAPTIVE_PREBUFFER, PIPECAT_GAP_RESUME_MS);
+  g_play_prebuffer_effective_ms =
+      pbc_effective_ms(&pbc, g_play_prebuffer_samples / 16);
+
   for (;;) {
     uint32_t avail = play_ring_count();
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // Feed cumulative recovery events (PLC + FEC + RED) to the adaptive
+    // controller; a no-op unless PIPECAT_ADAPTIVE_PREBUFFER=1 was baked in.
+    pbc_track_recoveries(
+        &pbc, g_play_stat_plc + g_play_stat_fec + g_red_recovered, now_ms);
+    uint32_t effective_ms = pbc_effective_ms(&pbc, g_play_prebuffer_samples / 16);
+    g_play_prebuffer_effective_ms = effective_ms;
+    g_play_prebuffer_steps = pbc.transitions;
+
     if (prebuffering) {
-      if (avail < g_play_prebuffer_samples) {
+      if (avail < effective_ms * 16) {  // 16 samples/ms @16k
         vTaskDelay(pdMS_TO_TICKS(5));
         continue;
+      }
+      // Ring refilled: if a FULL drain happened within the resume window,
+      // that drain was a mid-speech gap, not end of utterance.
+      if (pbc_on_refill(&pbc, now_ms)) {
+        g_play_stat_gap_resumes = pbc.gap_resumes;
+        ESP_LOGW(LOG_TAG, "gap resume: ring refilled %lums after full drain "
+                 "(mid-speech gap, total %lu)",
+                 (unsigned long)(now_ms - pbc.drain_at_ms),
+                 (unsigned long)pbc.gap_resumes);
       }
       prebuffering = false;
     }
     if (avail < PCM_SAMPLES_PER_FRAME) {
-      // Ring drained: end of utterance (normal) or a >100ms network gap
-      // (counted underrun). Either way: stop feeding, let DMA go silent,
-      // re-arm the prebuffer so the next burst starts with headroom.
+      // Ring drained: end of utterance (normal) or a network gap. A partial
+      // frame stranded = definite mid-speech gap (counted immediately). A
+      // FULL drain is ambiguous — arm the resume window; if new audio
+      // arrives within it, pbc_on_refill counts it as gap_resumes.
       if (avail > 0) {
         underruns++;  // partial frame stranded = mid-speech gap
         g_play_stat_underruns++;
+      } else {
+        pbc_on_full_drain(&pbc, now_ms);
       }
       prebuffering = true;
       continue;

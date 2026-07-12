@@ -360,7 +360,16 @@ extern volatile uint32_t g_play_stat_write_fail;
 extern volatile uint32_t g_play_stat_underruns;
 extern volatile uint32_t g_play_stat_plc;
 extern volatile uint32_t g_play_stat_fec;
+// gap_resumes: full-ring-drain followed by refill within the resume window
+// (default 750ms) = a mid-speech gap the old underruns counter missed
+// (blind spot proven 2026-07-11: audible gaps with underruns=0).
+extern volatile uint32_t g_play_stat_gap_resumes;
 extern volatile uint32_t g_play_prebuffer_samples;
+// Phase 6 adaptive prebuffer (NetEQ-lite, dark unless
+// PIPECAT_ADAPTIVE_PREBUFFER=1): effective prebuffer actually in force +
+// cumulative step transitions. Adaptive off => effective==prebuffer_ms, steps=0.
+extern volatile uint32_t g_play_prebuffer_effective_ms;
+extern volatile uint32_t g_play_prebuffer_steps;
 // From vendored components/peer/rtp.c — splits reordering from true loss.
 extern "C" {
 extern volatile uint32_t g_rtp_late_drops;
@@ -394,12 +403,13 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[384];
+  char body[512];
   snprintf(body, sizeof(body),
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
            "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
            "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
-           "\"prebuffer_ms\":%lu}",
+           "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
+           "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
            (unsigned long)g_play_stat_write_fail,
            (unsigned long)g_play_stat_underruns,
@@ -410,7 +420,10 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_rtp_packets_received,
            (unsigned long)g_red_recovered,
            (unsigned long)g_red_dup_drops,
-           (unsigned long)(g_play_prebuffer_samples / 16));
+           (unsigned long)g_play_stat_gap_resumes,
+           (unsigned long)(g_play_prebuffer_samples / 16),
+           (unsigned long)g_play_prebuffer_effective_ms,
+           (unsigned long)g_play_prebuffer_steps);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);
   return ESP_OK;

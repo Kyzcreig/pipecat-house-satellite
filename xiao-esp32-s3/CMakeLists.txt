@@ -22,6 +22,22 @@ if("$ENV{PIPECAT_DUAL_STREAM}" STREQUAL "1")
   add_compile_definitions(PIPECAT_DUAL_STREAM=1)
 endif()
 
+# Phase 6 adaptive prebuffer (NetEQ-lite): grow the playback prebuffer
+# 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
+# in a rolling window; decay back one step after a quiet period. DARK by
+# default — set PIPECAT_ADAPTIVE_PREBUFFER=1 at configure time to enable.
+if("$ENV{PIPECAT_ADAPTIVE_PREBUFFER}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_ADAPTIVE_PREBUFFER=1)
+endif()
+
+# Gap-resume window (ms): a FULL playback-ring drain followed by a refill
+# within this window is counted as a mid-speech gap (`gap_resumes` in
+# /playback/stats) instead of silently re-arming as end-of-utterance.
+# Default 750ms (in media.cpp); pure instrumentation, no behavior change.
+if(NOT "$ENV{PIPECAT_GAP_RESUME_MS}" STREQUAL "")
+  add_compile_definitions(PIPECAT_GAP_RESUME_MS=$ENV{PIPECAT_GAP_RESUME_MS})
+endif()
+
 set(WIFI_SSID_VALUE "$ENV{WIFI_SSID}")
 set(WIFI_PASSWORD_VALUE "$ENV{WIFI_PASSWORD}")
 set(PIPECAT_SMALLWEBRTC_URL_VALUE "$ENV{PIPECAT_SMALLWEBRTC_URL}")
