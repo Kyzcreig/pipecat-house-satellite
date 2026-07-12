@@ -321,6 +321,12 @@ static NackClient g_nack;
 volatile uint32_t g_nack_sent = 0;
 volatile uint32_t g_nack_recovered = 0;
 volatile uint32_t g_nack_late = 0;
+volatile uint32_t g_nack_last_rtt_ms = 0;
+volatile uint32_t g_nack_max_rtt_ms = 0;
+// Raw arrivals at feed_rtx BEFORE take() — splits "rtx never delivered"
+// (arrived=0) from "delivered but slot already swept/late" (arrived>0,
+// recovered=0). The UNKNOWN take path is otherwise invisible.
+volatile uint32_t g_nack_rtx_arrived = 0;
 
 // Data-channel sender, registered by the C++ side (webrtc.cpp). NULL until a
 // peer is up; a NULL sender means we simply don't NACK (degrade to RED/PLC).
@@ -403,10 +409,14 @@ static void nack_request(const uint16_t* seqs, int count, uint32_t now_ms) {
   }
   g_nack_sent = g_nack.nack_sent;
   portEXIT_CRITICAL(&s_nack_mux);
-  // Max envelope: {"t":"nack","seqs":[]} = 20 chars + up to 8 * 6 ("65535,") .
-  char buf[96];
+  // Max envelope: {"type":"nack","t":"nack","seqs":[]} = 35 chars + 8 * 6.
+  // The "type" key exists ONLY because pipecat's SmallWebRTC on_message does
+  // json_message["type"] (KeyError -> message dropped before app-message
+  // handlers run); the server's parse_nack_message keys on "t" == "nack".
+  char buf[128];
   int n = 0;
-  n += snprintf(buf + n, sizeof(buf) - (size_t)n, "{\"t\":\"nack\",\"seqs\":[");
+  n += snprintf(buf + n, sizeof(buf) - (size_t)n,
+                "{\"type\":\"nack\",\"t\":\"nack\",\"seqs\":[");
   for (int i = 0; i < count && n < (int)sizeof(buf) - 8; i++) {
     n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s%u", i ? "," : "",
                   (unsigned)seqs[i]);
@@ -426,6 +436,7 @@ void rtp_nack_register_sender(NackSendFn fn) {
 // (in-window; staged for the decode task), 0 otherwise (late/unknown/full).
 int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
                       uint32_t now_ms) {
+  g_nack_rtx_arrived++;
 #ifdef PIPECAT_NACK
   if (payload == NULL || len == 0 || len > NACK_RTX_MAX_PAYLOAD) {
     return 0;
@@ -446,6 +457,8 @@ int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
     // the sweep won't double-conceal — the frame is simply lost, as pre-NACK.
   }
   g_nack_recovered = g_nack.nack_recovered;
+  g_nack_last_rtt_ms = g_nack.last_rtt_ms;
+  g_nack_max_rtt_ms = g_nack.max_rtt_ms;
   g_nack_late = g_nack.nack_late;
   portEXIT_CRITICAL(&s_nack_mux);
   return staged;

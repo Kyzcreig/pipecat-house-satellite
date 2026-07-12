@@ -386,6 +386,9 @@ extern volatile uint32_t g_red_dup_drops;
 extern volatile uint32_t g_nack_sent;
 extern volatile uint32_t g_nack_recovered;
 extern volatile uint32_t g_nack_late;
+extern volatile uint32_t g_nack_last_rtt_ms;
+extern volatile uint32_t g_nack_max_rtt_ms;
+extern volatile uint32_t g_nack_rtx_arrived;
 }
 void pipecat_play_selftest_clip();
 
@@ -415,6 +418,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
            "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
            "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
+           "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
@@ -430,6 +434,9 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_nack_sent,
            (unsigned long)g_nack_recovered,
            (unsigned long)g_nack_late,
+           (unsigned long)g_nack_last_rtt_ms,
+           (unsigned long)g_nack_max_rtt_ms,
+           (unsigned long)g_nack_rtx_arrived,
            (unsigned long)g_play_stat_gap_resumes,
            (unsigned long)(g_play_prebuffer_samples / 16),
            (unsigned long)g_play_prebuffer_effective_ms,

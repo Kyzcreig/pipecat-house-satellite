@@ -93,9 +93,9 @@ static void test_recover_at_exact_deadline(void) {
 static void test_late_rtx_dropped(void) {
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 9, 1000);            /* deadline = 1020 */
-  /* rtx at 1021 (1ms late) -> LATE, not spliced. */
-  assert(nack_client_take(&c, 9, 1021) == NACK_TAKE_LATE);
+  nack_client_arm(&c, 9, 1000);            /* deadline = 1000 + NACK_WAIT_MS */
+  /* rtx 1ms past the deadline -> LATE, not spliced. */
+  assert(nack_client_take(&c, 9, 1001 + NACK_WAIT_MS) == NACK_TAKE_LATE);
   assert(c.nack_recovered == 0 && c.nack_late == 1);
 }
 
@@ -115,7 +115,7 @@ static void test_sweep_never_arrived(void) {
   /* Before expiry: nothing swept. */
   assert(nack_client_sweep(&c, 1010) == 0);
   /* After expiry: both tallied late and freed. */
-  assert(nack_client_sweep(&c, 1030) == 2);
+  assert(nack_client_sweep(&c, 1010 + NACK_WAIT_MS) == 2);
   assert(c.nack_late == 2);
   /* Freed: a take now returns UNKNOWN. */
   assert(nack_client_take(&c, 1, 1031) == NACK_TAKE_UNKNOWN);
@@ -140,8 +140,8 @@ static void test_ms_clock_wrap_boundary(void) {
   /* deadline computed near the 32-bit ms wrap; signed delta keeps it correct. */
   NackClient c;
   nack_client_init(&c);
-  uint32_t near_wrap = 0xFFFFFFF0u;        /* +20 wraps past 2^32 */
-  nack_client_arm(&c, 3, near_wrap);       /* deadline = near_wrap + 20 (wrapped) */
+  uint32_t near_wrap = 0xFFFFFFF0u;        /* +NACK_WAIT_MS wraps past 2^32 */
+  nack_client_arm(&c, 3, near_wrap);       /* deadline wraps (near_wrap + WAITd) */
   uint32_t after = near_wrap + 10;         /* 10ms later, still in window */
   assert(nack_client_take(&c, 3, after) == NACK_TAKE_INWINDOW);
 }
@@ -159,7 +159,7 @@ static void test_recovered_seq_not_swept(void) {
   nack_client_init(&c);
   nack_client_arm(&c, 42, 1000);           /* deadline 1020 */
   assert(nack_client_take(&c, 42, 1005) == NACK_TAKE_INWINDOW);
-  assert(nack_client_sweep(&c, 1030) == 0);  /* nothing left to expire */
+  assert(nack_client_sweep(&c, 1010 + NACK_WAIT_MS) == 0);  /* nothing left to expire */
   assert(c.nack_recovered == 1 && c.nack_late == 0);
 }
 
@@ -171,7 +171,7 @@ static void test_swept_seq_rejects_rtx(void) {
   nack_client_arm(&c, 10, 1000);           /* will recover in-window */
   nack_client_arm(&c, 11, 1000);           /* will expire via sweep */
   assert(nack_client_take(&c, 10, 1010) == NACK_TAKE_INWINDOW);
-  assert(nack_client_sweep(&c, 1050) == 1);            /* only seq 11 */
+  assert(nack_client_sweep(&c, 1030 + NACK_WAIT_MS) == 1);  /* only seq 11 */
   assert(nack_client_take(&c, 11, 1051) == NACK_TAKE_UNKNOWN); /* no splice */
   assert(c.nack_recovered == 1 && c.nack_late == 1 && c.nack_sent == 2);
 }

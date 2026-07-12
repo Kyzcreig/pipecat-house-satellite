@@ -47,8 +47,12 @@ extern "C" {
 #define NACK_MAX_SEQS 8
 
 /* Splice window: an rtx must arrive within this long after the NACK was sent to
- * be usable (well inside the 80ms prebuffer). Later arrivals are counted late. */
-#define NACK_WAIT_MS 20
+ * be usable (inside the 80ms prebuffer). 20ms was too tight for the REAL round
+ * trip (measured 2026-07-12: 41/41 rtx arrived but ALL counted late) — the
+ * deadline is armed before the JSON even leaves the device, and the reply path
+ * crosses the server event loop + SCTP + the RTVI queue task. 60ms fits the
+ * measured RTT with margin and still beats the prebuffer. */
+#define NACK_WAIT_MS 60
 
 /* Pending-rtx table size: how many in-flight NACKed seqs we track at once. One
  * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps. */
@@ -73,6 +77,11 @@ typedef struct NackClient {
   uint32_t nack_sent;      /* seqs requested (sum over requests) */
   uint32_t nack_recovered; /* rtx spliced in-window (real audio) */
   uint32_t nack_late;      /* rtx arrived after the window (dropped) */
+  /* RTT instrumentation: arm->rtx delta of the most recent / worst rtx that
+   * REACHED feed_rtx (regardless of in-window/late). Sizes NACK_WAIT_MS from
+   * measurement instead of guesswork. */
+  uint32_t last_rtt_ms;
+  uint32_t max_rtt_ms;
 } NackClient;
 
 /* Zero a client (all slots free, counters 0). */

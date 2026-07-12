@@ -83,6 +83,15 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
     return NACK_TAKE_UNKNOWN;
   }
   c->pending[slot].active = 0; /* consume either way */
+  /* RTT = now - arm time (deadline was arm + NACK_WAIT_MS). */
+  {
+    uint32_t arm_ms = c->pending[slot].deadline_ms - (uint32_t)NACK_WAIT_MS;
+    uint32_t rtt = now_ms - arm_ms; /* wraps correctly in unsigned math */
+    c->last_rtt_ms = rtt;
+    if (rtt > c->max_rtt_ms) {
+      c->max_rtt_ms = rtt;
+    }
+  }
   /* Signed compare so wrap of the 32-bit ms clock is handled correctly. */
   if ((int32_t)(now_ms - c->pending[slot].deadline_ms) <= 0) {
     c->nack_recovered++;
