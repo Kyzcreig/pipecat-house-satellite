@@ -41,20 +41,14 @@ bool pipecat_webrtc_server_heartbeat_fresh() {
 StaticTask_t task_buffer;
 void pipecat_send_audio_task(void *user_data) {
   pipecat_init_audio_encoder();
+  TickType_t next_frame_at = xTaskGetTickCount();
 
   while (1) {
     pipecat_send_audio(peer_connection);
-#ifdef PIPECAT_BENCH_SEND_TONE
-    // Synthetic tone generation has no blocking I2S producer to pace it.
-    vTaskDelay(pdMS_TO_TICKS(20));
-#else
-    // i2s_channel_read() captures one 20 ms frame and is the production clock.
-    // An additional fixed sleep made processing time cumulative and produced
-    // only 85.58 s of RTP media over 89.94 s wall time in the synchronized
-    // uplink baseline. Yield without adding another cadence interval; if the
-    // task ever falls behind, the queued real capture frames can catch up.
-    taskYIELD();
-#endif
+    // Pace to absolute 20 ms frame deadlines. A fixed post-processing sleep
+    // under-produced RTP media by 4.85%; a tight yield loop starved the
+    // lower-priority peer/data-channel task and lost heartbeat replies.
+    vTaskDelayUntil(&next_frame_at, pdMS_TO_TICKS(20));
   }
 }
 #endif
