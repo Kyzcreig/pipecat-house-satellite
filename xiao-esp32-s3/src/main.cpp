@@ -9,7 +9,7 @@
 
 #include "nvs_flash.h"
 
-static constexpr unsigned WEBRTC_LOOP_TASK_PRIORITY = 6;
+static constexpr unsigned WEBRTC_LOOP_TASK_PRIORITY = 8;
 
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
@@ -39,8 +39,8 @@ extern "C" void app_main(void) {
   uint32_t ticks_since_boot = 0;
 
   // audio_publisher runs at priority 7 on this core. Keep peer/SCTP handling
-  // immediately below it so continuous media cannot strand a staged pong on
-  // the default low-priority app_main task.
+  // above it so an overrun in full-duplex audio cannot strand a server ping or
+  // staged pong on the default low-priority app_main task.
   vTaskPrioritySet(nullptr, WEBRTC_LOOP_TASK_PRIORITY);
 
   while (1) {
