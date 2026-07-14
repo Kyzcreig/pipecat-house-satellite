@@ -138,6 +138,26 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
             break;
         }
       }
+      else if (hash(j_t->valuestring) == hash("ping")) {
+        // Application-level liveness: echo the nonce as a raw app message.
+        // This stays outside RTVI message types, just like the NACK request lane,
+        // so standard RTVI audio/phase handling is untouched.
+        cJSON *j_nonce = cJSON_GetObjectItem(j_data, "nonce");
+        if (!cJSON_IsNumber(j_nonce)) break;
+        cJSON *pong = cJSON_CreateObject();
+        if (pong == NULL) break;
+        if (cJSON_AddStringToObject(pong, "t", "pong") == NULL ||
+            cJSON_AddNumberToObject(pong, "nonce", j_nonce->valuedouble) == NULL) {
+          cJSON_Delete(pong);
+          break;
+        }
+        char *pong_str = cJSON_PrintUnformatted(pong);
+        if (pong_str != NULL) {
+          peer_connection_datachannel_send(peer_connection, pong_str, strlen(pong_str));
+          cJSON_free(pong_str);
+        }
+        cJSON_Delete(pong);
+      }
 #ifdef PIPECAT_NACK
       // NACK retransmit reply (audio-resilience ladder Phase 5, server
       // nack_retransmit.py): {"data":{"t":"rtx","seq":<u16>,
