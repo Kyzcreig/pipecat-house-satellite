@@ -32,7 +32,7 @@ assert send_call in webrtc_text
 assert webrtc_text.index(loop_call) < webrtc_text.index(send_call)
 priority_call = "vTaskPrioritySet(nullptr, WEBRTC_LOOP_TASK_PRIORITY);"
 main_loop = "while (1) {"
-assert "WEBRTC_LOOP_TASK_PRIORITY = 6" in main_text
+assert "WEBRTC_LOOP_TASK_PRIORITY = 8" in main_text
 assert priority_call in main_text
 assert main_text.index(priority_call) < main_text.index(main_loop)
 print("rtvi heartbeat source contract: PASS")
