@@ -4,6 +4,8 @@
 #include <esp_log.h>
 #include <peer.h>
 
+#include "reconnect_watchdog.h"
+
 #ifndef LINUX_BUILD
 #include "nvs_flash.h"
 
@@ -27,24 +29,24 @@ extern "C" void app_main(void) {
   pipecat_init_webrtc();
   pipecat_validate_ota_if_healthy();
 
-  // Initial-connection watchdog: if the peer never reaches CONNECTED within
-  // ~30s of boot (e.g. the SmallWebRTC server was down/restarting so our offer
-  // got no answer), restart to re-offer instead of sitting idle forever.
-  // Once connected, the DISCONNECTED handler owns re-connection via esp_restart.
-  const uint32_t connect_deadline_ticks = 30000 / TICK_INTERVAL;
-  uint32_t ticks_since_boot = 0;
+  // Persistent reconnect watchdog. A peer-state callback is not guaranteed for
+  // a half-open SCTP/ICE path, so require both a connected peer and recent
+  // server heartbeat traffic. Restarting is the firmware's safe re-offer path;
+  // the 30s unhealthy window prevents a reboot loop during brief jitter.
+  PipecatReconnectWatchdog reconnect_watchdog;
 
   while (1) {
     pipecat_webrtc_loop();
     pipecat_validate_ota_if_healthy();
-    if (!pipecat_webrtc_connected) {
-      ticks_since_boot++;
-      if (ticks_since_boot >= connect_deadline_ticks) {
-        ESP_LOGW(LOG_TAG,
-                 "WebRTC not connected %us after boot; restarting to re-offer",
-                 (unsigned)(30000 / 1000));
-        esp_restart();
-      }
+    const bool heartbeat_fresh = pipecat_webrtc_server_heartbeat_fresh();
+    if (reconnect_watchdog.update(pipecat_webrtc_connected, heartbeat_fresh,
+                                  TICK_INTERVAL)) {
+      ESP_LOGW(LOG_TAG,
+               "WebRTC unhealthy for %us (peer_connected=%d "
+               "server_heartbeat_fresh=%d); restarting to re-offer",
+               (unsigned)(PipecatReconnectWatchdog::kReconnectAfterMs / 1000),
+               pipecat_webrtc_connected, heartbeat_fresh);
+      esp_restart();
     }
     vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
   }

@@ -35,6 +35,8 @@ extern bool pipecat_ota_server_started();
 extern void pipecat_init_webrtc();
 extern void pipecat_webrtc_loop();
 extern volatile bool pipecat_webrtc_connected;
+extern void pipecat_webrtc_note_server_ping();
+extern bool pipecat_webrtc_server_heartbeat_fresh();
 extern void pipecat_http_request(char *offer, char *answer);
 
 // RTVI

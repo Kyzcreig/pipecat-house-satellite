@@ -109,6 +109,8 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
     return false;
   }
 
+  pipecat_webrtc_note_server_ping();
+
   // Stage the reply in the data-channel callback, then send it immediately
   // after peer_connection_loop() returns. Sending reentrantly from this
   // callback causes SCTP retransmit storms; sending from the RTVI task can

@@ -7,6 +7,7 @@
 
 #include <esp_event.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <string.h>
 
 #include "main.h"
@@ -17,12 +18,24 @@
 
 static PeerConnection *peer_connection = NULL;
 
-// Connection watchdog: set true once the peer reaches CONNECTED. The main loop
-// checks this against a boot deadline; if we never connect (e.g. the SmallWebRTC
-// server was down/restarting when we booted, so the offer got no answer and the
-// firmware would otherwise sit idle forever), we esp_restart() to re-offer. This
-// makes the satellite self-heal instead of needing a manual power-cycle.
+// Persistent connection watchdog inputs. Peer state alone is insufficient: a
+// server-side eviction can leave the local ICE/SCTP stack half-open without a
+// state callback. The server heartbeat timestamp detects that silent wedge.
 volatile bool pipecat_webrtc_connected = false;
+static volatile uint32_t last_server_ping_ms = 0;
+static constexpr uint32_t WEBRTC_SERVER_HEARTBEAT_STALE_MS = 35000;
+
+void pipecat_webrtc_note_server_ping() {
+  last_server_ping_ms = (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+bool pipecat_webrtc_server_heartbeat_fresh() {
+  const uint32_t last_ping_ms = last_server_ping_ms;
+  if (last_ping_ms == 0) return false;
+  const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  return (uint32_t)(now_ms - last_ping_ms) <=
+         WEBRTC_SERVER_HEARTBEAT_STALE_MS;
+}
 
 #ifndef LINUX_BUILD
 StaticTask_t task_buffer;
@@ -90,13 +103,10 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
   if (state == PEER_CONNECTION_DISCONNECTED ||
       state == PEER_CONNECTION_CLOSED ||
       state == PEER_CONNECTION_FAILED) {
-    // FAILED covers the case where the server process restarts and the ICE
-    // path goes dead without a clean DISCONNECTED — the device would otherwise
-    // sit believing it is still CONNECTED forever (observed on server restart).
+    pipecat_webrtc_connected = false;
 #ifndef LINUX_BUILD
-    ESP_LOGW(LOG_TAG, "Peer connection lost (%s); restarting to re-offer",
+    ESP_LOGW(LOG_TAG, "Peer connection lost (%s); reconnect watchdog armed",
              peer_connection_state_to_string(state));
-    esp_restart();
 #endif
   } else if (state == PEER_CONNECTION_CONNECTED) {
 #ifndef LINUX_BUILD
@@ -119,6 +129,10 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
     }
     pipecat_init_rtvi(peer_connection, &pipecat_rtvi_callbacks);
 #endif
+  } else if (state == PEER_CONNECTION_COMPLETED) {
+    pipecat_webrtc_connected = true;
+  } else {
+    pipecat_webrtc_connected = false;
   }
 }
 
