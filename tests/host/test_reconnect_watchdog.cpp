@@ -23,7 +23,7 @@ static void test_fresh_heartbeat_resets_accumulated_unhealthy_time() {
 
   assert(!watchdog.update(false, false, 20000));
   assert(!watchdog.update(true, true, 15));
-  assert(!watchdog.update(false, false, 20000));
+  assert(!watchdog.update(false, true, 20000));
 }
 
 static void test_peer_state_and_heartbeat_must_both_be_healthy() {
@@ -48,6 +48,13 @@ static void test_disconnected_peer_still_gets_thirty_second_grace() {
   assert(watchdog.update(false, true, 1));
 }
 
+static void test_expired_heartbeat_supersedes_disconnect_grace() {
+  PipecatReconnectWatchdog watchdog;
+
+  assert(!watchdog.update(true, true, 1));
+  assert(watchdog.update(false, false, 1));
+}
+
 int main() {
   test_reconnects_after_thirty_seconds_unhealthy();
   test_connected_peer_without_server_heartbeat_is_unhealthy();
@@ -55,6 +62,7 @@ int main() {
   test_peer_state_and_heartbeat_must_both_be_healthy();
   test_stale_heartbeat_after_healthy_peer_restarts_immediately();
   test_disconnected_peer_still_gets_thirty_second_grace();
+  test_expired_heartbeat_supersedes_disconnect_grace();
   puts("reconnect watchdog host tests: PASS");
   return 0;
 }

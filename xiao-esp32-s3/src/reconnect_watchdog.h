@@ -17,8 +17,7 @@ class PipecatReconnectWatchdog {
     // Heartbeat freshness already includes the server's full ping interval
     // plus jitter grace. Once a connection has proved healthy, adding another
     // 30s here would make eviction-to-reoffer exceed the 60s acceptance bound.
-    if (healthy_connection_seen_ && peer_connected &&
-        !server_heartbeat_fresh) {
+    if (healthy_connection_seen_ && !server_heartbeat_fresh) {
       return true;
     }
 
