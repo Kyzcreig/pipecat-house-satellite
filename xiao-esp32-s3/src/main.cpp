@@ -32,7 +32,8 @@ extern "C" void app_main(void) {
   // Persistent reconnect watchdog. A peer-state callback is not guaranteed for
   // a half-open SCTP/ICE path, so require both a connected peer and recent
   // server heartbeat traffic. Restarting is the firmware's safe re-offer path;
-  // the 30s unhealthy window prevents a reboot loop during brief jitter.
+  // disconnects get a 30s grace, while an expired heartbeat freshness window
+  // already includes one full server ping interval plus jitter grace.
   PipecatReconnectWatchdog reconnect_watchdog;
 
   while (1) {
@@ -42,9 +43,8 @@ extern "C" void app_main(void) {
     if (reconnect_watchdog.update(pipecat_webrtc_connected, heartbeat_fresh,
                                   TICK_INTERVAL)) {
       ESP_LOGW(LOG_TAG,
-               "WebRTC unhealthy for %us (peer_connected=%d "
+               "WebRTC reconnect deadline reached (peer_connected=%d "
                "server_heartbeat_fresh=%d); restarting to re-offer",
-               (unsigned)(PipecatReconnectWatchdog::kReconnectAfterMs / 1000),
                pipecat_webrtc_connected, heartbeat_fresh);
       esp_restart();
     }
