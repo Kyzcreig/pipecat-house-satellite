@@ -30,6 +30,10 @@ volatile uint32_t g_rtvi_rx_parse_fail = 0;  // cJSON_Parse failures
 static QueueHandle_t rtvi_queue;
 static PeerConnection *peer_connection = NULL;
 static rtvi_callbacks_t *rtvi_callbacks = NULL;
+static char pending_pong[256];
+static size_t pending_pong_len = 0;
+static uint16_t pending_pong_sid = 0;
+static bool pending_pong_ready = false;
 
 typedef struct {
   cJSON *msg;
@@ -105,9 +109,10 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
     return false;
   }
 
-  // Reply synchronously on the inbound data-channel stream. libpeer's SCTP
-  // sender is driven by this callback context; queueing the reply onto the
-  // RTVI task can leave it unsent while audio and normal RTVI continue.
+  // Stage the reply in the data-channel callback, then send it immediately
+  // after peer_connection_loop() returns. Sending reentrantly from this
+  // callback causes SCTP retransmit storms; sending from the RTVI task can
+  // leave the message unsent.
   rtvi_msg_t *pong = create_rtvi_message("client-message");
   cJSON *pong_data = pong ? cJSON_AddObjectToObject(pong->msg, "data") : NULL;
   if (pong_data != NULL &&
@@ -115,14 +120,26 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
       cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) != NULL) {
     char *pong_str = rtvi_message_to_string(pong);
     if (pong_str != NULL) {
-      peer_connection_datachannel_send_sid(peer_connection, pong_str,
-                                           strlen(pong_str), sid);
+      size_t pong_len = strlen(pong_str);
+      if (pong_len < sizeof(pending_pong)) {
+        memcpy(pending_pong, pong_str, pong_len + 1);
+        pending_pong_len = pong_len;
+        pending_pong_sid = sid;
+        pending_pong_ready = true;
+      }
       cJSON_free(pong_str);
     }
   }
   if (pong != NULL) destroy_rtvi_message(pong);
   cJSON_Delete(j_msg);
   return true;
+}
+
+void pipecat_rtvi_send_pending_heartbeat() {
+  if (!pending_pong_ready) return;
+  int sent = peer_connection_datachannel_send_sid(
+      peer_connection, pending_pong, pending_pong_len, pending_pong_sid);
+  if (sent >= 0) pending_pong_ready = false;
 }
 
 static void rtvi_handle_message(const rtvi_msg_t *msg) {

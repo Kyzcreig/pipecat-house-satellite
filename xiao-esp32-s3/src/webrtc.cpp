@@ -159,4 +159,5 @@ void pipecat_init_webrtc() {
 
 void pipecat_webrtc_loop() {
   peer_connection_loop(peer_connection);
+  pipecat_rtvi_send_pending_heartbeat();
 }
