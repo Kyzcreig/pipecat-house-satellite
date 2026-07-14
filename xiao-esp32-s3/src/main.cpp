@@ -7,7 +7,11 @@
 #include "reconnect_watchdog.h"
 
 #ifndef LINUX_BUILD
+#include <freertos/task.h>
+
 #include "nvs_flash.h"
+
+static constexpr unsigned WEBRTC_LOOP_TASK_PRIORITY = 6;
 
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
@@ -35,6 +39,11 @@ extern "C" void app_main(void) {
   // disconnects get a 30s grace, while an expired heartbeat freshness window
   // already includes one full server ping interval plus jitter grace.
   PipecatReconnectWatchdog reconnect_watchdog;
+
+  // audio_publisher runs at priority 7 on this core. Keep peer/SCTP handling
+  // immediately below it so continuous media cannot strand a staged pong on
+  // the default low-priority app_main task.
+  vTaskPrioritySet(nullptr, WEBRTC_LOOP_TASK_PRIORITY);
 
   while (1) {
     pipecat_webrtc_loop();
