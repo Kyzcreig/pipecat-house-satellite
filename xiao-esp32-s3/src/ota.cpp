@@ -318,7 +318,8 @@ void pipecat_init_mdns() {
 }
 
 // POST /xvf/tune?param=<name>&value=<float> — live AEC/AUDIO_MGR tuning without a
-// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). Volatile writes.
+// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). XVF writes are
+// read back from the register before success is reported. All writes are volatile.
 static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   char query[128] = {0};
   char param[32] = {0};
@@ -331,11 +332,22 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     return ESP_OK;
   }
   float value = strtof(value_s, NULL);
-  esp_err_t ret = pipecat_xvf_tune(param, value);
-  char body[128];
+  PipecatXvfTuneResult result = {};
+  esp_err_t ret = pipecat_xvf_tune(param, value, &result);
+  char body[192];
   if (ret == ESP_OK) {
-    snprintf(body, sizeof(body), "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f}",
-             param, (double)value);
+    if (result.readback_valid) {
+      snprintf(body, sizeof(body),
+               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
+               "\"readback\":%.4f,\"applied\":%s}",
+               param, (double)value, (double)result.readback,
+               result.applied ? "true" : "false");
+    } else {
+      snprintf(body, sizeof(body),
+               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
+               "\"readback\":null,\"applied\":null}",
+               param, (double)value);
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, body);
   } else if (ret == ESP_ERR_NOT_FOUND) {
@@ -344,7 +356,7 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, body);
   } else {
     httpd_resp_set_status(req, "500 Internal Server Error");
-    snprintf(body, sizeof(body), "{\"error\":\"write failed: %s\"}",
+    snprintf(body, sizeof(body), "{\"error\":\"tune/readback failed: %s\"}",
              esp_err_to_name(ret));
     httpd_resp_sendstr(req, body);
   }
