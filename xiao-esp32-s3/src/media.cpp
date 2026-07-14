@@ -29,6 +29,13 @@
 #define OPUS_ENCODER_BITRATE 30000
 #define OPUS_ENCODER_COMPLEXITY 0
 #define OPUS_EXPECTED_PACKET_LOSS_PCT 10
+
+// TRANSPORT-DIRECTION-SYMMETRY:
+// | mechanism | server -> satellite | satellite -> server |
+// | Opus FEC | server hint + firmware FEC decode | firmware hint + server FEC decode |
+// | RFC 2198 | server wrap + firmware unwrap | firmware wrap + server unwrap |
+// | seq gaps | firmware PLC | server PLC |
+// | counters | /playback/stats | /health.uplink_loss |
 #define I2S_WRITE_TIMEOUT_MS 200
 #define XVF_CONTROL_TIMEOUT_MS 100
 #define XVF_CONTROL_RETRIES 8
