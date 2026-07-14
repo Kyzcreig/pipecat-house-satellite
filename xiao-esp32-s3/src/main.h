@@ -59,7 +59,7 @@ extern "C" void pipecat_led_set_phase(int phase);
 
 extern void pipecat_init_rtvi(PeerConnection *peer_connection, rtvi_callbacks_t *callbacks);
 extern void pipecat_rtvi_send_client_ready();
-extern void pipecat_rtvi_handle_message(const char* msg);
+extern void pipecat_rtvi_handle_message(const char* msg, uint16_t sid);
 
 // Screen
 extern void pipecat_init_screen();
