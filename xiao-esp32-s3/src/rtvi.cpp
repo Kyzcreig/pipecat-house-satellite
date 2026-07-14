@@ -33,7 +33,6 @@ static rtvi_callbacks_t *rtvi_callbacks = NULL;
 
 typedef struct {
   cJSON *msg;
-  uint16_t sid;
 } rtvi_msg_t;
 
 // Simple hashing function so we can fake pattern matching and switch on strings
@@ -70,7 +69,6 @@ static rtvi_msg_t *create_rtvi_message(const char *type) {
 
   rtvi_msg_t *msg = (rtvi_msg_t *)malloc(sizeof(rtvi_msg_t));
   msg->msg = j_msg;
-  msg->sid = 0;
 
   return msg;
 }
@@ -88,6 +86,43 @@ static char *rtvi_message_to_string(rtvi_msg_t *msg) {
   char *msg_str = cJSON_Print(msg->msg);
 
   return msg_str;
+}
+
+bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
+  cJSON *j_msg = cJSON_Parse(msg);
+  if (j_msg == NULL) return false;
+
+  cJSON *j_type = cJSON_GetObjectItem(j_msg, "type");
+  cJSON *j_data = cJSON_GetObjectItem(j_msg, "data");
+  cJSON *j_t = cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "t") : NULL;
+  cJSON *j_nonce = cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "nonce") : NULL;
+  bool is_ping = cJSON_IsString(j_type) &&
+                 strcmp(j_type->valuestring, "server-message") == 0 &&
+                 cJSON_IsString(j_t) && strcmp(j_t->valuestring, "ping") == 0 &&
+                 cJSON_IsNumber(j_nonce);
+  if (!is_ping) {
+    cJSON_Delete(j_msg);
+    return false;
+  }
+
+  // Reply synchronously on the inbound data-channel stream. libpeer's SCTP
+  // sender is driven by this callback context; queueing the reply onto the
+  // RTVI task can leave it unsent while audio and normal RTVI continue.
+  rtvi_msg_t *pong = create_rtvi_message("client-message");
+  cJSON *pong_data = pong ? cJSON_AddObjectToObject(pong->msg, "data") : NULL;
+  if (pong_data != NULL &&
+      cJSON_AddStringToObject(pong_data, "t", "pong") != NULL &&
+      cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) != NULL) {
+    char *pong_str = rtvi_message_to_string(pong);
+    if (pong_str != NULL) {
+      peer_connection_datachannel_send_sid(peer_connection, pong_str,
+                                           strlen(pong_str), sid);
+      cJSON_free(pong_str);
+    }
+  }
+  if (pong != NULL) destroy_rtvi_message(pong);
+  cJSON_Delete(j_msg);
+  return true;
 }
 
 static void rtvi_handle_message(const rtvi_msg_t *msg) {
@@ -139,28 +174,6 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
           default:
             break;
         }
-      }
-      else if (hash(j_t->valuestring) == hash("ping")) {
-        // Application-level liveness: echo the nonce in a client-message
-        // envelope so Pipecat routes it to app-message handlers. Standard RTVI
-        // audio/phase handling is untouched.
-        cJSON *j_nonce = cJSON_GetObjectItem(j_data, "nonce");
-        if (!cJSON_IsNumber(j_nonce)) break;
-        rtvi_msg_t *pong = create_rtvi_message("client-message");
-        if (pong == NULL) break;
-        cJSON *pong_data = cJSON_AddObjectToObject(pong->msg, "data");
-        if (pong_data == NULL ||
-            cJSON_AddStringToObject(pong_data, "t", "pong") == NULL ||
-            cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) == NULL) {
-          destroy_rtvi_message(pong);
-          break;
-        }
-        char *pong_str = rtvi_message_to_string(pong);
-        if (pong_str != NULL) {
-          peer_connection_datachannel_send_sid(peer_connection, pong_str, strlen(pong_str), msg->sid);
-          cJSON_free(pong_str);
-        }
-        destroy_rtvi_message(pong);
       }
 #ifdef PIPECAT_NACK
       // NACK retransmit reply (audio-resilience ladder Phase 5, server
@@ -233,7 +246,7 @@ void pipecat_rtvi_send_client_ready() {
   destroy_rtvi_message(msg);
 }
 
-void pipecat_rtvi_handle_message(const char *msg, uint16_t sid) {
+void pipecat_rtvi_handle_message(const char *msg) {
   cJSON *j_msg = cJSON_Parse(msg);
   if (j_msg == NULL) {
     g_rtvi_rx_parse_fail++;
@@ -241,7 +254,7 @@ void pipecat_rtvi_handle_message(const char *msg, uint16_t sid) {
     return;
   }
 
-  rtvi_msg_t rtvi_msg = {.msg = j_msg, .sid = sid};
+  rtvi_msg_t rtvi_msg = {.msg = j_msg};
 
   xQueueSend(rtvi_queue, &rtvi_msg, portMAX_DELAY);
 }

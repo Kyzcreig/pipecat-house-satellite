@@ -39,7 +39,8 @@ static void pipecat_ondatachannel_onmessage_task(char *msg, size_t len,
 #ifdef LOG_DATACHANNEL_MESSAGES
   ESP_LOGI(LOG_TAG, "DataChannel Message: %s", msg);
 #endif
-  pipecat_rtvi_handle_message(msg, sid);
+  if (pipecat_rtvi_handle_heartbeat(msg, sid)) return;
+  pipecat_rtvi_handle_message(msg);
 }
 
 #ifdef PIPECAT_NACK
