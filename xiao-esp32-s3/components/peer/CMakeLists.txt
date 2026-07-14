@@ -8,7 +8,7 @@ list(FILTER CODES EXCLUDE REGEX ".*/peer_connection\\.c$")
 list(FILTER CODES EXCLUDE REGEX ".*/rtp\\.c$")
 
 idf_component_register(
-  SRCS ${CODES} "peer_connection.c" "rtp.c" "red_unwrap.c" "nack_client.c"
+  SRCS ${CODES} "peer_connection.c" "rtp.c" "red_unwrap.c" "red_wrap.c" "nack_client.c"
   INCLUDE_DIRS "${PEER_PROJECT_PATH}/src" "."
   # esp_timer: rtp.c's NACK lane (PIPECAT_NACK) timestamps the 20ms rtx splice
   # window with esp_timer_get_time(). Harmless when the flag is off.

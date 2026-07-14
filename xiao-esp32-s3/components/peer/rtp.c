@@ -6,6 +6,7 @@
 #include "nack_client.h"
 #include "peer_connection.h"
 #include "red_unwrap.h"
+#include "red_wrap.h"
 #include "rtp.h"
 #include "utils.h"
 
@@ -30,6 +31,18 @@ typedef struct FuHeader {
 } FuHeader;
 
 #define RTP_PAYLOAD_SIZE (CONFIG_MTU - sizeof(RtpHeader))
+#define PT_RED 63
+#ifndef PIPECAT_UPLINK_RED
+#define PIPECAT_UPLINK_RED 0
+#endif
+#ifndef PIPECAT_UPLINK_RED_DISTANCE
+#define PIPECAT_UPLINK_RED_DISTANCE 4
+#endif
+
+#if PIPECAT_UPLINK_RED
+static RedWrapState s_uplink_red;
+static uint8_t s_uplink_red_payload[RTP_PAYLOAD_SIZE];
+#endif
 #define FU_PAYLOAD_SIZE (CONFIG_MTU - sizeof(RtpHeader) - sizeof(FuHeader) - sizeof(NaluHeader))
 
 int rtp_packet_validate(uint8_t* packet, size_t size) {
@@ -170,14 +183,30 @@ static int rtp_encoder_encode_generic(RtpEncoder* rtp_encoder, uint8_t* buf, siz
   rtp_header->extension = 0;
   rtp_header->csrccount = 0;
   rtp_header->markerbit = 0;
-  rtp_header->type = rtp_encoder->type;
+  uint8_t payload_type = rtp_encoder->type;
+  uint8_t* payload = buf;
+  size_t payload_size = size;
+#if PIPECAT_UPLINK_RED
+  if (rtp_encoder->type == PT_OPUS) {
+    int wrapped = red_wrap_packet(&s_uplink_red, buf, size,
+                                  rtp_encoder->timestamp,
+                                  s_uplink_red_payload,
+                                  sizeof(s_uplink_red_payload));
+    if (wrapped >= 0) {
+      payload_type = PT_RED;
+      payload = s_uplink_red_payload;
+      payload_size = (size_t)wrapped;
+    }
+  }
+#endif
+  rtp_header->type = payload_type;
   rtp_header->seq_number = htons(rtp_encoder->seq_number++);
   rtp_header->timestamp = htonl(rtp_encoder->timestamp);
   rtp_encoder->timestamp += rtp_encoder->timestamp_increment;
   rtp_header->ssrc = htonl(rtp_encoder->ssrc);
-  memcpy(rtp_encoder->buf + sizeof(RtpHeader), buf, size);
+  memcpy(rtp_encoder->buf + sizeof(RtpHeader), payload, payload_size);
 
-  rtp_encoder->on_packet(rtp_encoder->buf, size + sizeof(RtpHeader), rtp_encoder->user_data);
+  rtp_encoder->on_packet(rtp_encoder->buf, payload_size + sizeof(RtpHeader), rtp_encoder->user_data);
 
   return 0;
 }
@@ -212,6 +241,9 @@ void rtp_encoder_init(RtpEncoder* rtp_encoder, MediaCodec codec, RtpOnPacket on_
       rtp_encoder->ssrc = SSRC_OPUS;
       rtp_encoder->timestamp_increment = CONFIG_AUDIO_DURATION * 48000 / 1000;
       rtp_encoder->encode_func = rtp_encoder_encode_generic;
+#if PIPECAT_UPLINK_RED
+      red_wrap_init(&s_uplink_red, PT_OPUS, PIPECAT_UPLINK_RED_DISTANCE);
+#endif
       break;
     default:
       break;

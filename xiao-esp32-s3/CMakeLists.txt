@@ -22,6 +22,16 @@ if("$ENV{PIPECAT_DUAL_STREAM}" STREQUAL "1")
   add_compile_definitions(PIPECAT_DUAL_STREAM=1)
 endif()
 
+# Uplink RFC 2198 RED is wire-incompatible with an unpatched aiortc receiver,
+# so it is an explicit build gate. Deploy/enable the server receive patch first.
+if("$ENV{PIPECAT_UPLINK_RED}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_UPLINK_RED=1)
+endif()
+if(NOT "$ENV{PIPECAT_UPLINK_RED_DISTANCE}" STREQUAL "")
+  add_compile_definitions(
+    PIPECAT_UPLINK_RED_DISTANCE=$ENV{PIPECAT_UPLINK_RED_DISTANCE})
+endif()
+
 # Phase 6 adaptive prebuffer (NetEQ-lite): grow the playback prebuffer
 # 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
 # in a rolling window; decay back one step after a quiet period. DARK by

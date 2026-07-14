@@ -28,6 +28,7 @@
 
 #define OPUS_ENCODER_BITRATE 30000
 #define OPUS_ENCODER_COMPLEXITY 0
+#define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 #define I2S_WRITE_TIMEOUT_MS 200
 #define XVF_CONTROL_TIMEOUT_MS 100
 #define XVF_CONTROL_RETRIES 8
@@ -1330,6 +1331,10 @@ void pipecat_init_audio_encoder() {
 #endif
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
+  opus_encoder_ctl(
+      opus_encoder,
+      OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
 
 #if PIPECAT_DUAL_STREAM
   read_buffer =

@@ -30,6 +30,7 @@
 
 #define OPUS_ENCODER_BITRATE 30000
 #define OPUS_ENCODER_COMPLEXITY 0
+#define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 
 i2c_master_bus_handle_t i2c_bus;
 esp_codec_dev_handle_t audio_dev;
@@ -287,6 +288,10 @@ void pipecat_init_audio_encoder() {
   opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
+  opus_encoder_ctl(
+      opus_encoder,
+      OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
 
   read_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_DEFAULT);
   encoder_output_buffer = (uint8_t *)malloc(OPUS_BUFFER_SIZE);
