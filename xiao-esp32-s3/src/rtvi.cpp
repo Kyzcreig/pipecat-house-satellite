@@ -144,22 +144,21 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
         // audio/phase handling is untouched.
         cJSON *j_nonce = cJSON_GetObjectItem(j_data, "nonce");
         if (!cJSON_IsNumber(j_nonce)) break;
-        cJSON *pong = cJSON_CreateObject();
+        rtvi_msg_t *pong = create_rtvi_message("client-message");
         if (pong == NULL) break;
-        cJSON *pong_data = cJSON_AddObjectToObject(pong, "data");
-        if (cJSON_AddStringToObject(pong, "type", "client-message") == NULL ||
-            pong_data == NULL ||
+        cJSON *pong_data = cJSON_AddObjectToObject(pong->msg, "data");
+        if (pong_data == NULL ||
             cJSON_AddStringToObject(pong_data, "t", "pong") == NULL ||
             cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) == NULL) {
-          cJSON_Delete(pong);
+          destroy_rtvi_message(pong);
           break;
         }
-        char *pong_str = cJSON_PrintUnformatted(pong);
+        char *pong_str = rtvi_message_to_string(pong);
         if (pong_str != NULL) {
           peer_connection_datachannel_send(peer_connection, pong_str, strlen(pong_str));
           cJSON_free(pong_str);
         }
-        cJSON_Delete(pong);
+        destroy_rtvi_message(pong);
       }
 #ifdef PIPECAT_NACK
       // NACK retransmit reply (audio-resilience ladder Phase 5, server

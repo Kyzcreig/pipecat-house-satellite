@@ -8,8 +8,8 @@ SOURCE = ROOT / "xiao-esp32-s3" / "src" / "rtvi.cpp"
 text = SOURCE.read_text()
 
 assert 'hash(j_t->valuestring) == hash("ping")' in text
-assert 'cJSON_AddStringToObject(pong, "type", "client-message")' in text
-assert 'cJSON_AddObjectToObject(pong, "data")' in text
+assert 'create_rtvi_message("client-message")' in text
+assert 'cJSON_AddObjectToObject(pong->msg, "data")' in text
 assert 'cJSON_AddStringToObject(pong_data, "t", "pong")' in text
 assert 'cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble)' in text
 assert "peer_connection_datachannel_send(peer_connection, pong_str, strlen(pong_str))" in text
