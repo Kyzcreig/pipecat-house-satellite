@@ -33,6 +33,7 @@ static rtvi_callbacks_t *rtvi_callbacks = NULL;
 
 typedef struct {
   cJSON *msg;
+  uint16_t sid;
 } rtvi_msg_t;
 
 // Simple hashing function so we can fake pattern matching and switch on strings
@@ -69,6 +70,7 @@ static rtvi_msg_t *create_rtvi_message(const char *type) {
 
   rtvi_msg_t *msg = (rtvi_msg_t *)malloc(sizeof(rtvi_msg_t));
   msg->msg = j_msg;
+  msg->sid = 0;
 
   return msg;
 }
@@ -155,7 +157,7 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
         }
         char *pong_str = rtvi_message_to_string(pong);
         if (pong_str != NULL) {
-          peer_connection_datachannel_send(peer_connection, pong_str, strlen(pong_str));
+          peer_connection_datachannel_send_sid(peer_connection, pong_str, strlen(pong_str), msg->sid);
           cJSON_free(pong_str);
         }
         destroy_rtvi_message(pong);
@@ -231,7 +233,7 @@ void pipecat_rtvi_send_client_ready() {
   destroy_rtvi_message(msg);
 }
 
-void pipecat_rtvi_handle_message(const char *msg) {
+void pipecat_rtvi_handle_message(const char *msg, uint16_t sid) {
   cJSON *j_msg = cJSON_Parse(msg);
   if (j_msg == NULL) {
     g_rtvi_rx_parse_fail++;
@@ -239,7 +241,7 @@ void pipecat_rtvi_handle_message(const char *msg) {
     return;
   }
 
-  rtvi_msg_t rtvi_msg = {.msg = j_msg};
+  rtvi_msg_t rtvi_msg = {.msg = j_msg, .sid = sid};
 
   xQueueSend(rtvi_queue, &rtvi_msg, portMAX_DELAY);
 }
