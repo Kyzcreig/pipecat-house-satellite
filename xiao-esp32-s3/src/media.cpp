@@ -129,16 +129,19 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
-#if PIPECAT_DUAL_STREAM
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_UPSAMPLE = 14;
-#endif
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_L = 15;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_R = 19;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_SYS_DELAY = 26;
 
+static constexpr uint8_t XVF_AUDIO_CATEGORY_RAW = 1;
+static constexpr uint8_t XVF_AUDIO_CATEGORY_MAX = 8;
 static constexpr uint8_t XVF_AUDIO_CATEGORY_PROCESSED = 6;
 static constexpr uint8_t XVF_AUDIO_CATEGORY_ASR = 7;
 static constexpr uint8_t XVF_AUDIO_SOURCE_AUTO_SELECT = 3;
+static_assert(PIPECAT_DUAL_STREAM_RAW_MIC >= -1 &&
+                  PIPECAT_DUAL_STREAM_RAW_MIC <= 3,
+              "PIPECAT_DUAL_STREAM_RAW_MIC must be -1 or a mic index 0..3");
 static constexpr float PI_F = 3.14159265358979323846f;
 
 enum XvfControlStatus : uint8_t {
@@ -266,6 +269,49 @@ static esp_err_t xvf_write_u8_pair(uint8_t resid, uint8_t cmd, uint8_t first,
                                    uint8_t second) {
   uint8_t payload[2] = {first, second};
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
+}
+
+static esp_err_t xvf_read_u8_pair(uint8_t resid, uint8_t cmd, uint8_t *first,
+                                  uint8_t *second) {
+  uint8_t payload[2] = {};
+  esp_err_t ret = xvf_read_bytes(resid, cmd, payload, sizeof(payload));
+  if (ret == ESP_OK) {
+    *first = payload[0];
+    *second = payload[1];
+  }
+  return ret;
+}
+
+esp_err_t pipecat_xvf_audio_mux_status(PipecatXvfAudioMuxStatus *status) {
+  if (status == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t ret = xvf_read_u8_pair(
+      XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, &status->op_l_category,
+      &status->op_l_source);
+  if (ret == ESP_OK) {
+    ret = xvf_read_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
+                           &status->op_r_category, &status->op_r_source);
+  }
+  if (ret == ESP_OK) {
+    ret = xvf_read_u8_pair(XVF_RESID_AUDIO_MGR,
+                           XVF_CMD_AUDIO_MGR_OP_UPSAMPLE,
+                           &status->upsample_l, &status->upsample_r);
+  }
+  return ret;
+}
+
+bool pipecat_xvf_set_audio_mux_right(uint8_t category, uint8_t source,
+                                     PipecatXvfAudioMuxStatus *status) {
+  if (status == nullptr || category > XVF_AUDIO_CATEGORY_MAX || source > 3) {
+    return false;
+  }
+  esp_err_t ret = xvf_write_u8_pair(XVF_RESID_AUDIO_MGR,
+                                    XVF_CMD_AUDIO_MGR_OP_R, category, source);
+  if (ret != ESP_OK || pipecat_xvf_audio_mux_status(status) != ESP_OK) {
+    return false;
+  }
+  return status->op_r_category == category && status->op_r_source == source;
 }
 
 static esp_err_t xvf_read_scalar(uint8_t resid, uint8_t cmd, bool is_float,
@@ -730,9 +776,15 @@ static void configure_xvf3800_dsp_profile() {
                            XVF_AUDIO_CATEGORY_ASR,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
 #if PIPECAT_DUAL_STREAM
+#if PIPECAT_DUAL_STREAM_RAW_MIC >= 0
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
+                           XVF_AUDIO_CATEGORY_RAW,
+                           PIPECAT_DUAL_STREAM_RAW_MIC));
+#else
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
                            XVF_AUDIO_CATEGORY_PROCESSED,
                            XVF_AUDIO_SOURCE_AUTO_SELECT));
+#endif
 #else
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R,
                            XVF_AUDIO_CATEGORY_ASR,
@@ -781,6 +833,16 @@ static void configure_xvf3800_dsp_profile() {
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_NOMINAL, 1.0f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_SLOPE, 1.0f));
 
+#if PIPECAT_DUAL_STREAM && PIPECAT_DUAL_STREAM_RAW_MIC >= 0
+  ESP_LOGI(LOG_TAG,
+           "XVF3800 DSP profile: %lu/%lu control writes acked "
+           "(right=raw category 1 mic %d, AEC, AGC on, limiter; "
+           "far_extgain=%.1fdB agc_desired_level=%.5f)",
+           (unsigned long)ok, (unsigned long)total,
+           PIPECAT_DUAL_STREAM_RAW_MIC,
+           (double)PIPECAT_AEC_FAR_EXTGAIN_DB,
+           (double)PIPECAT_AGC_DESIRED_LEVEL);
+#else
   ESP_LOGI(LOG_TAG,
            "XVF3800 DSP profile: %lu/%lu control writes acked "
            "(processed auto-beam, AEC, AGC on, limiter, no Wi-Fi PS; "
@@ -788,6 +850,7 @@ static void configure_xvf3800_dsp_profile() {
            (unsigned long)ok, (unsigned long)total,
            (double)PIPECAT_AEC_FAR_EXTGAIN_DB,
            (double)PIPECAT_AGC_DESIRED_LEVEL);
+#endif
 
 #if PIPECAT_LED_ENABLE && PIPECAT_LED_BOOT_SPLASH
   // Boot rainbow splash: run the flowing-rainbow effect for a few seconds at

@@ -39,6 +39,18 @@ extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);
 extern bool pipecat_xvf_param_default(const char *param, float *value);
 extern void pipecat_replay_xvf_params();
+struct PipecatXvfAudioMuxStatus {
+  uint8_t op_l_category;
+  uint8_t op_l_source;
+  uint8_t op_r_category;
+  uint8_t op_r_source;
+  uint8_t upsample_l;
+  uint8_t upsample_r;
+};
+extern esp_err_t pipecat_xvf_audio_mux_status(
+    PipecatXvfAudioMuxStatus *status);
+extern bool pipecat_xvf_set_audio_mux_right(
+    uint8_t category, uint8_t source, PipecatXvfAudioMuxStatus *status);
 
 // OTA / mDNS
 extern void pipecat_init_mdns();

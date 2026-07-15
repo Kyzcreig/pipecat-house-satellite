@@ -20,13 +20,20 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = Path(args.repo)
     media_path = repo / "xiao-esp32-s3/src/media.cpp"
+    ota_path = repo / "xiao-esp32-s3/src/ota.cpp"
     config_path = repo / "xiao-esp32-s3/src/pipecat_build_config.h.in"
     cmake_path = repo / "xiao-esp32-s3/CMakeLists.txt"
-    if not media_path.is_file() or not config_path.is_file() or not cmake_path.is_file():
+    if (
+        not media_path.is_file()
+        or not ota_path.is_file()
+        or not config_path.is_file()
+        or not cmake_path.is_file()
+    ):
         print("dualstream-lint: required firmware source file is missing", file=sys.stderr)
         return 2
 
     media = media_path.read_text(encoding="utf-8")
+    ota = ota_path.read_text(encoding="utf-8")
     config = config_path.read_text(encoding="utf-8")
     cmake = cmake_path.read_text(encoding="utf-8")
     errors: list[str] = []
@@ -47,17 +54,49 @@ def main(argv: list[str] | None = None) -> int:
         errors,
     )
     require(
+        r"#ifndef\s+PIPECAT_DUAL_STREAM_RAW_MIC\s+"
+        r"#define\s+PIPECAT_DUAL_STREAM_RAW_MIC\s+-1\s+"
+        r"#endif",
+        config,
+        "PIPECAT_DUAL_STREAM_RAW_MIC must default to -1",
+        errors,
+    )
+    require(
+        r'if\(NOT "\$ENV\{PIPECAT_DUAL_STREAM_RAW_MIC\}" STREQUAL ""\).*?'
+        r'if\(NOT "\$ENV\{PIPECAT_DUAL_STREAM_RAW_MIC\}" MATCHES "\^\[0-3\]\$"\).*?'
+        r"add_compile_definitions\(\s*"
+        r"PIPECAT_DUAL_STREAM_RAW_MIC=\$ENV\{PIPECAT_DUAL_STREAM_RAW_MIC\}\)",
+        cmake,
+        "CMake must reject raw mic indexes outside 0..3 and compile the selected index",
+        errors,
+    )
+    require(
         r"#if\s+PIPECAT_DUAL_STREAM\s+"
+        r"#if\s+PIPECAT_DUAL_STREAM_RAW_MIC\s*>=\s*0\s+"
+        r"record\(xvf_write_u8_pair\(XVF_RESID_AUDIO_MGR,\s*"
+        r"XVF_CMD_AUDIO_MGR_OP_R,\s*XVF_AUDIO_CATEGORY_RAW,\s*"
+        r"PIPECAT_DUAL_STREAM_RAW_MIC\)\);\s*"
+        r"#else\s+"
         r"record\(xvf_write_u8_pair\(XVF_RESID_AUDIO_MGR,\s*"
         r"XVF_CMD_AUDIO_MGR_OP_R,\s*XVF_AUDIO_CATEGORY_PROCESSED,\s*"
         r"XVF_AUDIO_SOURCE_AUTO_SELECT\)\);\s*"
+        r"#endif\s+"
         r"#else\s+"
         r"record\(xvf_write_u8_pair\(XVF_RESID_AUDIO_MGR,\s*"
         r"XVF_CMD_AUDIO_MGR_OP_R,\s*XVF_AUDIO_CATEGORY_ASR,\s*"
         r"XVF_AUDIO_SOURCE_AUTO_SELECT\)\);\s*"
         r"#endif",
         media,
-        "OP_R must be [6,3] only when dual-stream is enabled and [7,3] otherwise",
+        "OP_R must be [1,mic] in raw mode, [6,3] in normal dual mode, and [7,3] in mono",
+        errors,
+    )
+    require(
+        r"pipecat_xvf_audio_mux_status\(&status\).*?"
+        r'"/xvf/audio-mux".*?'
+        r"\.handler\s*=\s*xvf_audio_mux_handler.*?"
+        r"httpd_register_uri_handler\(g_ota_server,\s*&audio_mux_uri\)",
+        ota,
+        "live /xvf/audio-mux must return typed register readback and be registered",
         errors,
     )
     require(
@@ -122,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "dualstream-lint: OK — default is mono [7,3]/[7,3]; flag-on preserves "
-        "[7,3]/[6,3] as stereo Opus at 60 kb/s"
+        "[7,3]/[6,3], or explicitly routes [7,3]/[1,mic], as stereo Opus at 60 kb/s"
     )
     return 0
 

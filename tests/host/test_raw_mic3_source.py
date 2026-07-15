@@ -48,7 +48,7 @@ assert "pipecat_xvf_set_audio_mux_right(category, source, &status)" in OTA
 assert "op_r_category" in OTA and "op_r_source" in OTA
 assert "httpd_query_key_value" in OTA
 assert re.search(
-    r"bool\s+pipecat_xvf_set_audio_mux_right\(uint8_t\s+category,\s*"
+    r"bool\s+pipecat_xvf_set_audio_mux_right\(\s*uint8_t\s+category,\s*"
     r"uint8_t\s+source,\s*PipecatXvfAudioMuxStatus\s*\*status\)",
     MAIN_H,
 ), "runtime right-slot mux API must be typed and explicit"

@@ -22,6 +22,18 @@ if("$ENV{PIPECAT_DUAL_STREAM}" STREQUAL "1")
   add_compile_definitions(PIPECAT_DUAL_STREAM=1)
 endif()
 
+# Experimental dual-stream right-slot routing. When set, channel 1 carries the
+# selected raw microphone (XVF AUDIO_MGR category 1, source 0..3) instead of the
+# production processed auto-select beam. It has no effect unless dual-stream is
+# enabled, and remains disabled by default.
+if(NOT "$ENV{PIPECAT_DUAL_STREAM_RAW_MIC}" STREQUAL "")
+  if(NOT "$ENV{PIPECAT_DUAL_STREAM_RAW_MIC}" MATCHES "^[0-3]$")
+    message(FATAL_ERROR "PIPECAT_DUAL_STREAM_RAW_MIC must be 0, 1, 2, or 3")
+  endif()
+  add_compile_definitions(
+    PIPECAT_DUAL_STREAM_RAW_MIC=$ENV{PIPECAT_DUAL_STREAM_RAW_MIC})
+endif()
+
 # Uplink RFC 2198 RED is wire-incompatible with an unpatched aiortc receiver,
 # so it is an explicit build gate. Deploy/enable the server receive patch first.
 if("$ENV{PIPECAT_UPLINK_RED}" STREQUAL "1")

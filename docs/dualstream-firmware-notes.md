@@ -13,6 +13,17 @@ Build the experimental firmware by exporting the flag for CMake:
 PIPECAT_DUAL_STREAM=1 idf.py reconfigure build
 ```
 
+For a bounded raw-microphone experiment, select one physical XVF microphone for
+the right slot in addition to enabling dual stream:
+
+```sh
+PIPECAT_DUAL_STREAM=1 PIPECAT_DUAL_STREAM_RAW_MIC=0 idf.py reconfigure build
+```
+
+The raw-mic selector accepts only `0` through `3`; unset it for the production
+`[6,3]` right lane. The option is disabled by default and has no effect on mono
+builds.
+
 Do not deploy a flag-on firmware build until the receiving server is configured
 to negotiate, decode, and split stereo Opus. A mono receiver can discard or mix
 the lanes and violate the routing contract below.
@@ -26,6 +37,11 @@ XVF3800 lanes:
 | --- | --- | --- | --- |
 | 0 (left) | left | `[7,3]` ASR auto-select beam | STT feed |
 | 1 (right) | right | `[6,3]` post-processed auto-select beam | wake/barge detector feed |
+
+With `PIPECAT_DUAL_STREAM_RAW_MIC=N`, channel 1 instead carries `[1,N]`: raw
+microphone data before amplification and without system delay. This lane is for
+instrumented experiments only; it must not be sent to STT or silently treated as
+the production category-6 detector lane.
 
 `AEC_ASROUTONOFF=1` remains required for channel 0 to carry the clean ASR beam.
 Both XVF slots are explicitly upsampled onto the existing 48 kHz stereo I2S bus.
@@ -65,4 +81,6 @@ python3 scripts/asr_routing_lint.py
 Before any device test, verify the matching server split independently. A live
 flag-on device should read back `op_l=[7,3]`, `op_r=[6,3]`, `upsample=[1,1]`, and
 `asr_on=1`; a rollback build should read back `op_l=[7,3]`, `op_r=[7,3]`, and
-`asr_on=1`.
+`asr_on=1`. A raw-mic build must return `op_l=[7,3]`, `op_r=[1,N]`, and
+`upsample=[1,1]`. Query `GET /xvf/audio-mux` for the typed mux readback; do not
+infer routing from the build flags or signal level.

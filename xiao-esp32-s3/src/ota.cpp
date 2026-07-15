@@ -578,6 +578,78 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
   return httpd_resp_sendstr(req, body);
 }
 
+// GET /xvf/audio-mux[?op_r_category=N&op_r_source=N] — typed live readback and
+// experiment-only right-slot selection. Build flags are intent; register values
+// prove what the live XVF actually accepted. The media-layer API bounds category
+// 0..8 and source 0..3 and verifies the write with a register readback.
+static esp_err_t xvf_audio_mux_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/json");
+  PipecatXvfAudioMuxStatus status = {};
+  char query[96] = {0};
+  char category_text[8] = {0};
+  char source_text[8] = {0};
+  bool runtime_write = false;
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+    esp_err_t category_ret = httpd_query_key_value(
+        query, "op_r_category", category_text, sizeof(category_text));
+    esp_err_t source_ret = httpd_query_key_value(
+        query, "op_r_source", source_text, sizeof(source_text));
+    if ((category_ret == ESP_OK) != (source_ret == ESP_OK)) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      return httpd_resp_sendstr(
+          req, "{\"ok\":false,\"error\":\"op_r_category and op_r_source are both required\"}");
+    }
+    if (category_ret == ESP_OK) {
+      char *category_end = nullptr;
+      char *source_end = nullptr;
+      long category_value = strtol(category_text, &category_end, 10);
+      long source_value = strtol(source_text, &source_end, 10);
+      if (*category_text == '\0' || *category_end != '\0' ||
+          *source_text == '\0' || *source_end != '\0' || category_value < 0 ||
+          category_value > UINT8_MAX || source_value < 0 ||
+          source_value > UINT8_MAX) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(
+            req, "{\"ok\":false,\"error\":\"mux values must be unsigned bytes\"}");
+      }
+      uint8_t category = static_cast<uint8_t>(category_value);
+      uint8_t source = static_cast<uint8_t>(source_value);
+      runtime_write = true;
+      if (!pipecat_xvf_set_audio_mux_right(category, source, &status)) {
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        char error_body[160];
+        snprintf(error_body, sizeof(error_body),
+                 "{\"ok\":false,\"error\":\"mux write/readback rejected\","
+                 "\"requested_op_r\":[%u,%u]}",
+                 category, source);
+        return httpd_resp_sendstr(req, error_body);
+      }
+    }
+  }
+  esp_err_t ret = runtime_write ? ESP_OK : pipecat_xvf_audio_mux_status(&status);
+  char body[256];
+  if (ret != ESP_OK) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    snprintf(body, sizeof(body),
+             "{\"ok\":false,\"error\":\"mux readback failed: %s\"}",
+             esp_err_to_name(ret));
+  } else {
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"op_l\":[%u,%u],\"op_r\":[%u,%u],"
+             "\"upsample\":[%u,%u],\"dual_stream\":%s,\"raw_mic\":%d,"
+             "\"runtime_write\":%s}",
+             status.op_l_category, status.op_l_source,
+             status.op_r_category, status.op_r_source,
+             status.upsample_l, status.upsample_r,
+             PIPECAT_DUAL_STREAM ? "true" : "false",
+             PIPECAT_DUAL_STREAM_RAW_MIC,
+             runtime_write ? "true" : "false");
+  }
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, body);
+  return ESP_OK;
+}
+
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
 // Crackle triage: underruns>0 during crackle = delivery timing (raise
 // prebuffer_ms); clean counters during crackle = look below the ring
@@ -686,7 +758,7 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 7;
+  config.max_uri_handlers = 8;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -723,6 +795,12 @@ void pipecat_init_ota_server() {
       .handler = xvf_params_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t audio_mux_uri = {
+      .uri = "/xvf/audio-mux",
+      .method = HTTP_GET,
+      .handler = xvf_audio_mux_handler,
+      .user_ctx = NULL,
+  };
   httpd_uri_t stats_uri = {
       .uri = "/playback/stats",
       .method = HTTP_GET,
@@ -740,6 +818,7 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &rollback_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &audio_mux_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
