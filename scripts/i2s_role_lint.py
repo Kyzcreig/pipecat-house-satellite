@@ -4,7 +4,9 @@
 WHY THIS EXISTS (bug, 2026-07-05)
 ---------------------------------
 The pipecat-esp32 firmware configured the ESP32-S3 I2S peripheral as
-``I2S_ROLE_MASTER``. But the XVF3800 (DFU v6.34.4) on the theater/kitchen boards
+``I2S_ROLE_MASTER``. But the XVF3800 (formatBCE/Seeed I2S-master firmware
+v1.0.7; an earlier mis-framed I2C read misreported it as "DFU v6.34.4") on the
+theater/kitchen boards
 is itself the I2S **master** — it drives BCLK/WS off its own audio pipeline, which
 is exactly what the working ``respeaker_xvf3800`` ESPHome component assumes
 (``i2s_mode: secondary``, i.e. the ESP32 is the I2S secondary/slave).

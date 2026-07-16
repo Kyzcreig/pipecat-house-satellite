@@ -286,11 +286,12 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
-           ",\"firmware_version\":\"%s\",\"satellite_id\":\"%s\","
+           ",\"firmware_version\":\"%s\",\"xvf_version\":\"%s\","
+           "\"satellite_id\":\"%s\","
            "\"mdns_hostname\":\"%s.local\"}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
-           sha_hex, uptime_s, app->version, PIPECAT_SATELLITE_ID,
-           PIPECAT_MDNS_HOSTNAME);
+           sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
+           PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
@@ -526,13 +527,18 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     }
     ESP_LOGW(LOG_TAG, "nvs_dsp: namespace cleared by /xvf/params?reset=1");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(
-        req, "{\"ok\":true,\"reset\":true,\"params\":{},\"count\":0}");
+    char reset_body[128];
+    snprintf(reset_body, sizeof(reset_body),
+             "{\"ok\":true,\"reset\":true,\"xvf_version\":\"%s\","
+             "\"params\":{},\"count\":0}",
+             pipecat_xvf3800_version());
+    return httpd_resp_sendstr(req, reset_body);
   }
 
   char body[512] = {0};
   size_t used = static_cast<size_t>(
-      snprintf(body, sizeof(body), "{\"params\":{"));
+      snprintf(body, sizeof(body), "{\"xvf_version\":\"%s\",\"params\":{",
+               pipecat_xvf3800_version()));
   uint32_t count = 0;
   nvs_handle_t nvs;
   esp_err_t open_ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READONLY, &nvs);
