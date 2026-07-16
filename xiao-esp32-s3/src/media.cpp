@@ -287,95 +287,194 @@ static esp_err_t xvf_read_scalar(uint8_t resid, uint8_t cmd, bool is_float,
   return ESP_OK;
 }
 
-// Live AEC/AUDIO_MGR tuning over HTTP (/xvf/tune) so echo-cancellation params can
-// be iterated without a reflash. Maps a small allowlist of named params to their
-// servicer resid/cmd + type. Values written here are VOLATILE (lost on XMOS
-// power-cycle) — once a winning combo is found, bake it into
-// configure_xvf3800_dsp_profile() and the runbook. Returns ESP_ERR_NOT_FOUND for
-// unknown names so the HTTP handler can 404.
+enum class TuneTarget : uint8_t {
+  XVF_FLOAT,
+  XVF_INT32,
+  DAC_ATTEN,
+};
+
+struct TuneEntry {
+  const char *name;
+  uint8_t resid;
+  uint8_t cmd;
+  TuneTarget target;
+  bool persistent;
+  bool has_range;
+  float min_value;
+  float max_value;
+  float default_value;
+  bool dtsensitive_range;
+};
+
+// Persistent entries are the reconciler-owned DSP surface. Legacy entries stay
+// available for explicitly volatile experiments.
+static const TuneEntry kTuneEntries[] = {
+    {"far_extgain", XVF_RESID_AEC, XVF_CMD_AEC_FAR_EXTGAIN,
+     TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f,
+     PIPECAT_AEC_FAR_EXTGAIN_DB, false},
+    // XMOS XVF3800 v3.2.1 documented range: 0..1000 linear gain.
+    {"asr_gain", XVF_RESID_AEC, 36, TuneTarget::XVF_FLOAT, true, true,
+     0.0f, 1000.0f, 1.0f, false},
+    {"ref_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
+     TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, 1.0f, false},
+    {"mic_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
+     TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, PIPECAT_MIC_GAIN,
+     false},
+    {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
+     TuneTarget::XVF_INT32, false, true, -64.0f, 256.0f, 12.0f, false},
+    {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF,
+     TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
+    {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF,
+     TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
+    // XMOS-documented PP ranges/defaults. One table keeps HTTP, persistence,
+    // boot replay, and introspection in lockstep.
+    {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE,
+     TuneTarget::XVF_INT32, true, true, 0.0f, 15.0f, 15.0f, true},
+    {"agc_maxgain", XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN,
+     TuneTarget::XVF_FLOAT, true, true, 1.0f, 1000.0f, 64.0f, false},
+    {"agc_desired", XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL,
+     TuneTarget::XVF_FLOAT, true, true, 1.0e-8f, 1.0f,
+     PIPECAT_AGC_DESIRED_LEVEL, false},
+    {"min_nn", XVF_RESID_PP, XVF_CMD_PP_MIN_NN, TuneTarget::XVF_FLOAT,
+     true, true, 0.0f, 1.0f, 0.51f, false},
+    {"min_ns", XVF_RESID_PP, XVF_CMD_PP_MIN_NS, TuneTarget::XVF_FLOAT,
+     true, true, 0.0f, 1.0f, 0.15f, false},
+    // AIC3104 attenuation is ack-only: 0=0 dB, 128=mute.
+    {"dac_atten", 0, 0, TuneTarget::DAC_ATTEN, true, true, 0.0f, 128.0f,
+     static_cast<float>(PIPECAT_DAC_ATTEN), false},
+};
+
+static const TuneEntry *find_tune_entry(const char *param) {
+  if (param == nullptr) {
+    return nullptr;
+  }
+  for (const auto &entry : kTuneEntries) {
+    if (strcmp(param, entry.name) == 0) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+static float clamp_dtsensitive(float value) {
+  if (value > 5.0f && value < 10.0f) {
+    return value < 7.5f ? 5.0f : 10.0f;
+  }
+  return value;
+}
+
+static bool normalize_tune_value(const TuneEntry &entry, float requested,
+                                 float *applied_value, bool *clamped) {
+  if (!std::isfinite(requested)) {
+    return false;
+  }
+  float value = requested;
+  if (entry.has_range) {
+    value = fminf(entry.max_value, fmaxf(entry.min_value, value));
+  }
+  if (entry.dtsensitive_range) {
+    value = clamp_dtsensitive(value);
+  }
+  if (entry.target != TuneTarget::XVF_FLOAT) {
+    value = static_cast<float>(static_cast<int32_t>(value));
+  }
+  *applied_value = value;
+  *clamped = fabsf(value - requested) > 0.0001f;
+  return true;
+}
+
+bool pipecat_xvf_param_persistent(const char *param) {
+  const TuneEntry *entry = find_tune_entry(param);
+  return entry != nullptr && entry->persistent;
+}
+
+size_t pipecat_xvf_persistent_param_count() {
+  size_t count = 0;
+  for (const auto &entry : kTuneEntries) {
+    if (entry.persistent) count++;
+  }
+  return count;
+}
+
+const char *pipecat_xvf_persistent_param_name(size_t index) {
+  for (const auto &entry : kTuneEntries) {
+    if (entry.persistent && index-- == 0) {
+      return entry.name;
+    }
+  }
+  return nullptr;
+}
+
+bool pipecat_xvf_param_default(const char *param, float *value) {
+  const TuneEntry *entry = find_tune_entry(param);
+  if (entry == nullptr || !entry->persistent || value == nullptr) {
+    return false;
+  }
+  *value = entry->default_value;
+  return true;
+}
+
+// Apply one named tune and verify typed XVF registers by readback. DAC attenuation
+// is the sole ack-only target because the codec path has no independent reader.
 esp_err_t pipecat_xvf_tune(const char *param, float value,
                            PipecatXvfTuneResult *result) {
   if (result == nullptr) {
     return ESP_ERR_INVALID_ARG;
   }
-  *result = {
-      .requested = value,
-      .readback = 0.0f,
-      .readback_valid = false,
-      .applied = false,
-  };
+  *result = {};
+  result->requested = value;
 
-  struct TuneEntry {
-    const char *name;
-    uint8_t resid;
-    uint8_t cmd;
-    bool is_float;  // false -> int32
-  };
-  static const TuneEntry entries[] = {
-      // AEC far-end reference gain (dB) — how hot the AEC thinks the speaker is.
-      {"far_extgain", XVF_RESID_AEC, XVF_CMD_AEC_FAR_EXTGAIN, true},
-      // ASR-path fixed output gain (AEC cmd 36 per XMOS map).
-      {"asr_gain", XVF_RESID_AEC, 36, true},
-      // AUDIO_MGR reference gain — scales the I2S far-end reference feed.
-      {"ref_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN, true},
-      // AUDIO_MGR mic gain.
-      {"mic_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN, true},
-      // System delay (samples) — time-aligns the reference with the mic path;
-      // THE critical AEC lever when the echo path length changes.
-      {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, false},
-      // PP echo suppression on/off + non-linear echo attenuation on/off.
-      {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF, false},
-      {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF, false},
-      // PP AGC/noise-floor profile controls used by package-level tuning trials.
-      {"agc_maxgain", XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN, true},
-      {"agc_desired", XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL, true},
-      {"min_ns", XVF_RESID_PP, XVF_CMD_PP_MIN_NS, true},
-      {"min_nn", XVF_RESID_PP, XVF_CMD_PP_MIN_NN, true},
-      // PP double-talk sensitivity (int; documented valid 0..5 or 10..15;
-      // higher favors double-talk).
-      {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, false},
-  };
-  for (const auto &e : entries) {
-    if (strcmp(param, e.name) == 0) {
-      float expected = e.is_float
-                           ? value
-                           : static_cast<float>(static_cast<int32_t>(value));
-      esp_err_t ret = e.is_float
-                          ? xvf_write_float(e.resid, e.cmd, value)
-                          : xvf_write_int32(e.resid, e.cmd,
-                                            static_cast<int32_t>(value));
-      if (ret == ESP_OK) {
-        ret = xvf_read_scalar(e.resid, e.cmd, e.is_float, &result->readback);
-      }
-      if (ret == ESP_OK) {
-        result->readback_valid = true;
-        result->applied = fabsf(result->readback - expected) <= 0.0001f;
-      }
-      ESP_LOGI(LOG_TAG,
-               "xvf tune: %s requested=%.4f readback=%s%.4f applied=%d "
-               "(resid=%u cmd=%u) -> %s",
-               e.name, (double)value, result->readback_valid ? "" : "n/a:",
-               (double)result->readback, result->applied, e.resid, e.cmd,
-               esp_err_to_name(ret));
-      return ret;
-    }
+  const TuneEntry *entry = find_tune_entry(param);
+  if (entry == nullptr) {
+    return ESP_ERR_NOT_FOUND;
   }
-  // AIC3104 DAC digital attenuation (not an XVF param): value = attenuation
-  // steps of 0.5 dB (0 = 0dB loudest … 127 = -63.5dB, 128 = mute). Live lever
-  // for the overdrive-crackle hunt: ESPHome always ran attenuated via the HA
-  // volume slider; Track-B ran 0dB wide open. Volatile — bake the winner into
-  // PIPECAT_DAC_ATTEN.
-  if (strcmp(param, "dac_atten") == 0) {
-    int atten = (int)value;
-    if (atten < 0 || atten > 128) return ESP_ERR_INVALID_ARG;
+  float applied_value = 0.0f;
+  if (!normalize_tune_value(*entry, value, &applied_value, &result->clamped)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  result->applied_value = applied_value;
+
+  if (entry->target == TuneTarget::DAC_ATTEN) {
+    int atten = static_cast<int>(applied_value);
     bool ok = aic3104_write(AIC3104_PAGE_CTRL, 0x00) &&
-              aic3104_write(AIC3104_LEFT_DAC_VOLUME, (uint8_t)atten) &&
-              aic3104_write(AIC3104_RIGHT_DAC_VOLUME, (uint8_t)atten);
-    ESP_LOGI(LOG_TAG, "dac tune: dac_atten <- %d (-%.1f dB) -> %s", atten,
-             atten * 0.5, ok ? "ESP_OK" : "ESP_FAIL");
+              aic3104_write(AIC3104_LEFT_DAC_VOLUME,
+                            static_cast<uint8_t>(atten)) &&
+              aic3104_write(AIC3104_RIGHT_DAC_VOLUME,
+                            static_cast<uint8_t>(atten));
+    result->ack_only = true;
+    result->applied = ok;
+    ESP_LOGI(LOG_TAG,
+             "dac tune: dac_atten requested=%.4f applied=%d (-%.1f dB) "
+             "clamped=%d -> %s",
+             (double)value, atten, atten * 0.5, result->clamped,
+             ok ? "ESP_OK" : "ESP_FAIL");
     return ok ? ESP_OK : ESP_FAIL;
   }
-  return ESP_ERR_NOT_FOUND;
+
+  bool is_float = entry->target == TuneTarget::XVF_FLOAT;
+  esp_err_t ret =
+      is_float ? xvf_write_float(entry->resid, entry->cmd, applied_value)
+               : xvf_write_int32(entry->resid, entry->cmd,
+                                 static_cast<int32_t>(applied_value));
+  if (ret == ESP_OK) {
+    ret = xvf_read_scalar(entry->resid, entry->cmd, is_float,
+                          &result->readback);
+  }
+  if (ret == ESP_OK) {
+    result->readback_valid = true;
+    result->applied = fabsf(result->readback - applied_value) <= 0.0001f;
+    if (!result->applied) {
+      ret = ESP_ERR_INVALID_RESPONSE;
+    }
+  }
+  ESP_LOGI(LOG_TAG,
+           "xvf tune: %s requested=%.4f applied_value=%.4f readback=%s%.4f "
+           "applied=%d clamped=%d (resid=%u cmd=%u) -> %s",
+           entry->name, (double)value, (double)applied_value,
+           result->readback_valid ? "" : "n/a:", (double)result->readback,
+           result->applied, result->clamped, entry->resid, entry->cmd,
+           esp_err_to_name(ret));
+  return ret;
 }
 
 static bool xvf_read_float4(uint8_t resid, uint8_t cmd, float values[4]) {
@@ -675,11 +774,9 @@ static void configure_xvf3800_dsp_profile() {
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF, 1));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NS, 0.15f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_MIN_NN, 0.51f));
-  // Legacy deployed value: 30 reduced tone leak in a 2026-07-07 sweep, but it
-  // is outside the XMOS v3.2.1 documented ranges (0..5 or 10..15). A 2026-07-14
-  // valid-range barge sweep found no graduating replacement, so preserve the
-  // pre-test production value pending an explicit profile decision.
-  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, 30));
+  // The official XVF3800 range is 0..5 or 10..15. Keep the baked fallback at
+  // the highest valid double-talk preference; NVS/reconciler state overlays it.
+  record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, 15));
   record(xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ATTNS_MODE, 1));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_NOMINAL, 1.0f));
   record(xvf_write_float(XVF_RESID_PP, XVF_CMD_PP_ATTNS_SLOPE, 1.0f));

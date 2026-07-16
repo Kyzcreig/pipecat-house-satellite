@@ -25,6 +25,9 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   peer_init();
   pipecat_init_audio_capture();
+  // Audio init probes XVF I2C and writes the baked DSP profile. Overlay durable
+  // tuning before signalling creates the first WebRTC offer.
+  pipecat_replay_xvf_params();
   pipecat_init_audio_decoder();
   pipecat_init_wifi();
   pipecat_init_mdns();

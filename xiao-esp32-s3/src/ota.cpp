@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,6 +27,7 @@
 #define OTA_NVS_NAMESPACE "ota"
 #define OTA_NVS_SHA_KEY "last_sha"
 #define OTA_NVS_LABEL_KEY "last_label"
+#define DSP_NVS_NAMESPACE "xvf_dsp"
 
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -133,6 +135,119 @@ static bool load_uploaded_sha_for_running(char *sha_hex, size_t sha_hex_len) {
   }
   strlcpy(sha_hex, saved_sha, sha_hex_len);
   return true;
+}
+
+static esp_err_t save_dsp_param(const char *param, float value) {
+  if (!pipecat_xvf_param_persistent(param) || !isfinite(value)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t nvs;
+  esp_err_t ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (ret != ESP_OK) return ret;
+  ret = nvs_set_blob(nvs, param, &value, sizeof(value));
+  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  nvs_close(nvs);
+  return ret;
+}
+
+static esp_err_t load_dsp_param(nvs_handle_t nvs, const char *param,
+                                float *value) {
+  size_t value_size = sizeof(*value);
+  esp_err_t ret = nvs_get_blob(nvs, param, value, &value_size);
+  if (ret == ESP_OK && value_size != sizeof(*value)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return ret;
+}
+
+static esp_err_t clear_dsp_params() {
+  nvs_handle_t nvs;
+  esp_err_t ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (ret != ESP_OK) return ret;
+  ret = nvs_erase_all(nvs);
+  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  nvs_close(nvs);
+  return ret;
+}
+
+static void restore_dsp_default(const char *param) {
+  float default_value = 0.0f;
+  if (!pipecat_xvf_param_default(param, &default_value)) {
+    ESP_LOGE(LOG_TAG, "nvs_dsp: %s has no baked fallback", param);
+    return;
+  }
+  PipecatXvfTuneResult fallback = {};
+  esp_err_t ret = pipecat_xvf_tune(param, default_value, &fallback);
+  if (ret != ESP_OK || !fallback.applied) {
+    ESP_LOGE(LOG_TAG,
+             "nvs_dsp: %s baked fallback %.6g FAILED: %s applied=%d",
+             param, (double)default_value, esp_err_to_name(ret),
+             fallback.applied);
+  } else {
+    ESP_LOGW(LOG_TAG, "nvs_dsp: %s restored baked fallback %.6g", param,
+             (double)fallback.applied_value);
+  }
+}
+
+void pipecat_replay_xvf_params() {
+  uint32_t applied = 0;
+  nvs_handle_t nvs;
+  esp_err_t open_ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (open_ret == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(LOG_TAG, "nvs_dsp: %lu params applied", (unsigned long)applied);
+    return;
+  }
+  if (open_ret != ESP_OK) {
+    ESP_LOGE(LOG_TAG, "nvs_dsp: namespace open failed: %s",
+             esp_err_to_name(open_ret));
+    ESP_LOGI(LOG_TAG, "nvs_dsp: %lu params applied", (unsigned long)applied);
+    return;
+  }
+
+  for (size_t i = 0; i < pipecat_xvf_persistent_param_count(); i++) {
+    const char *param = pipecat_xvf_persistent_param_name(i);
+    float stored_value = 0.0f;
+    esp_err_t load_ret = load_dsp_param(nvs, param, &stored_value);
+    if (load_ret == ESP_ERR_NVS_NOT_FOUND) {
+      continue;
+    }
+    if (load_ret != ESP_OK || !isfinite(stored_value)) {
+      ESP_LOGE(LOG_TAG,
+               "nvs_dsp: %s stored value invalid (%s); restoring baked default",
+               param, esp_err_to_name(load_ret));
+      restore_dsp_default(param);
+      continue;
+    }
+
+    PipecatXvfTuneResult result = {};
+    esp_err_t tune_ret = pipecat_xvf_tune(param, stored_value, &result);
+    if (tune_ret != ESP_OK || !result.applied) {
+      ESP_LOGE(LOG_TAG,
+               "nvs_dsp: %s replay %.6g FAILED: %s applied=%d; restoring "
+               "baked default",
+               param, (double)stored_value, esp_err_to_name(tune_ret),
+               result.applied);
+      restore_dsp_default(param);
+      continue;
+    }
+
+    applied++;
+    ESP_LOGI(LOG_TAG,
+             "nvs_dsp: %s stored=%.6g applied=%.6g readback=%s%.6g "
+             "clamped=%d",
+             param, (double)stored_value, (double)result.applied_value,
+             result.readback_valid ? "" : "ack-only:",
+             (double)result.readback, result.clamped);
+    if (result.clamped) {
+      esp_err_t save_ret = save_dsp_param(param, result.applied_value);
+      if (save_ret != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "nvs_dsp: %s normalized-value persist failed: %s",
+                 param, esp_err_to_name(save_ret));
+      }
+    }
+  }
+  nvs_close(nvs);
+  ESP_LOGI(LOG_TAG, "nvs_dsp: %lu params applied", (unsigned long)applied);
 }
 
 static void running_partition_sha(char *sha_hex, size_t sha_hex_len) {
@@ -317,13 +432,14 @@ void pipecat_init_mdns() {
            PIPECAT_MDNS_HOSTNAME, PIPECAT_MDNS_INSTANCE);
 }
 
-// POST /xvf/tune?param=<name>&value=<float> — live AEC/AUDIO_MGR tuning without a
-// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). XVF writes are
-// read back from the register before success is reported. All writes are volatile.
+// POST /xvf/tune?param=<name>&value=<float>[&persist=0]. Persistent allowlisted
+// params are committed to NVS only after typed write/readback succeeds. dac_atten
+// is ack-only. persist=0 keeps one-off experiments volatile.
 static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   char query[128] = {0};
   char param[32] = {0};
   char value_s[32] = {0};
+  char persist_s[8] = {0};
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
       httpd_query_key_value(query, "param", param, sizeof(param)) != ESP_OK ||
       httpd_query_key_value(query, "value", value_s, sizeof(value_s)) != ESP_OK) {
@@ -331,22 +447,47 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, "{\"error\":\"need ?param=<name>&value=<float>\"}");
     return ESP_OK;
   }
-  float value = strtof(value_s, NULL);
+  bool persist =
+      httpd_query_key_value(query, "persist", persist_s, sizeof(persist_s)) !=
+          ESP_OK ||
+      strcmp(persist_s, "0") != 0;
+  char *value_end = nullptr;
+  float value = strtof(value_s, &value_end);
+  if (value_end == value_s || *value_end != '\0' || !isfinite(value)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, "{\"error\":\"value must be a finite number\"}");
+    return ESP_OK;
+  }
+
   PipecatXvfTuneResult result = {};
   esp_err_t ret = pipecat_xvf_tune(param, value, &result);
-  char body[192];
+  bool persisted = false;
+  if (ret == ESP_OK && result.applied && persist &&
+      pipecat_xvf_param_persistent(param)) {
+    ret = save_dsp_param(param, result.applied_value);
+    if (ret == ESP_OK) {
+      persisted = true;
+    }
+  }
+
+  char body[320];
   if (ret == ESP_OK) {
     if (result.readback_valid) {
       snprintf(body, sizeof(body),
-               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
-               "\"readback\":%.4f,\"applied\":%s}",
-               param, (double)value, (double)result.readback,
-               result.applied ? "true" : "false");
+               "{\"ok\":true,\"param\":\"%s\",\"requested\":%.6g,"
+               "\"value\":%.6g,\"readback\":%.6g,\"applied\":true,"
+               "\"clamped\":%s,\"persisted\":%s}",
+               param, (double)value, (double)result.applied_value,
+               (double)result.readback, result.clamped ? "true" : "false",
+               persisted ? "true" : "false");
     } else {
       snprintf(body, sizeof(body),
-               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
-               "\"readback\":null,\"applied\":null}",
-               param, (double)value);
+               "{\"ok\":true,\"param\":\"%s\",\"requested\":%.6g,"
+               "\"value\":%.6g,\"readback\":null,\"applied\":null,"
+               "\"clamped\":%s,\"persisted\":%s}",
+               param, (double)value, (double)result.applied_value,
+               result.clamped ? "true" : "false",
+               persisted ? "true" : "false");
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, body);
@@ -354,13 +495,87 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "404 Not Found");
     snprintf(body, sizeof(body), "{\"error\":\"unknown param '%s'\"}", param);
     httpd_resp_sendstr(req, body);
+  } else if (ret == ESP_ERR_INVALID_ARG) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    snprintf(body, sizeof(body), "{\"error\":\"invalid value for '%s'\"}",
+             param);
+    httpd_resp_sendstr(req, body);
   } else {
     httpd_resp_set_status(req, "500 Internal Server Error");
-    snprintf(body, sizeof(body), "{\"error\":\"tune/readback failed: %s\"}",
+    snprintf(body, sizeof(body), "{\"error\":\"tune/persist failed: %s\"}",
              esp_err_to_name(ret));
     httpd_resp_sendstr(req, body);
   }
   return ESP_OK;
+}
+
+// GET /xvf/params[?reset=1] — report the durable device-owned source of truth.
+static esp_err_t xvf_params_handler(httpd_req_t *req) {
+  char query[64] = {0};
+  char reset[8] = {0};
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "reset", reset, sizeof(reset)) == ESP_OK &&
+      strcmp(reset, "1") == 0) {
+    esp_err_t ret = clear_dsp_params();
+    if (ret != ESP_OK) {
+      httpd_resp_set_status(req, "500 Internal Server Error");
+      char error_body[96];
+      snprintf(error_body, sizeof(error_body),
+               "{\"error\":\"NVS reset failed: %s\"}", esp_err_to_name(ret));
+      return httpd_resp_sendstr(req, error_body);
+    }
+    ESP_LOGW(LOG_TAG, "nvs_dsp: namespace cleared by /xvf/params?reset=1");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(
+        req, "{\"ok\":true,\"reset\":true,\"params\":{},\"count\":0}");
+  }
+
+  char body[512] = {0};
+  size_t used = static_cast<size_t>(
+      snprintf(body, sizeof(body), "{\"params\":{"));
+  uint32_t count = 0;
+  nvs_handle_t nvs;
+  esp_err_t open_ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (open_ret == ESP_OK) {
+    for (size_t i = 0; i < pipecat_xvf_persistent_param_count(); i++) {
+      const char *param = pipecat_xvf_persistent_param_name(i);
+      float value = 0.0f;
+      esp_err_t load_ret = load_dsp_param(nvs, param, &value);
+      if (load_ret == ESP_ERR_NVS_NOT_FOUND) continue;
+      if (load_ret != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "nvs_dsp: introspection read %s failed: %s", param,
+                 esp_err_to_name(load_ret));
+        continue;
+      }
+      int written = isfinite(value)
+                        ? snprintf(body + used, sizeof(body) - used,
+                                   "%s\"%s\":%.9g", count ? "," : "", param,
+                                   (double)value)
+                        : snprintf(body + used, sizeof(body) - used,
+                                   "%s\"%s\":null", count ? "," : "", param);
+      if (written < 0 || static_cast<size_t>(written) >= sizeof(body) - used) {
+        nvs_close(nvs);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req,
+                                  "{\"error\":\"params response overflow\"}");
+      }
+      used += static_cast<size_t>(written);
+      count++;
+    }
+    nvs_close(nvs);
+  } else if (open_ret != ESP_ERR_NVS_NOT_FOUND) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    char error_body[96];
+    snprintf(error_body, sizeof(error_body),
+             "{\"error\":\"NVS open failed: %s\"}",
+             esp_err_to_name(open_ret));
+    return httpd_resp_sendstr(req, error_body);
+  }
+
+  snprintf(body + used, sizeof(body) - used, "},\"count\":%lu}",
+           (unsigned long)count);
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, body);
 }
 
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
@@ -471,7 +686,7 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 6;
+  config.max_uri_handlers = 7;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -495,13 +710,17 @@ void pipecat_init_ota_server() {
       .handler = ota_rollback_handler,
       .user_ctx = NULL,
   };
-  // Live XVF AEC/AUDIO_MGR tuning: POST /xvf/tune?param=<name>&value=<float>.
-  // Writes are volatile (lost on XMOS power-cycle); bake winners into
-  // configure_xvf3800_dsp_profile(). Allowlist lives in pipecat_xvf_tune().
+  // Persistent XVF/AIC tuning and its device-owned NVS introspection surface.
   httpd_uri_t tune_uri = {
       .uri = "/xvf/tune",
       .method = HTTP_POST,
       .handler = xvf_tune_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t params_uri = {
+      .uri = "/xvf/params",
+      .method = HTTP_GET,
+      .handler = xvf_params_handler,
       .user_ctx = NULL,
   };
   httpd_uri_t stats_uri = {
@@ -520,6 +739,7 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &rollback_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);

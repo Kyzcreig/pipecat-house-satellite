@@ -1,5 +1,7 @@
 #include <peer.h>
 
+#include <stddef.h>
+
 #include "esp_err.h"
 #include "pipecat_build_config.h"
 
@@ -23,12 +25,20 @@ extern void pipecat_reset_audio_decoder();
 extern bool pipecat_xvf3800_present();
 struct PipecatXvfTuneResult {
   float requested;
+  float applied_value;
   float readback;
   bool readback_valid;
   bool applied;
+  bool clamped;
+  bool ack_only;
 };
 extern esp_err_t pipecat_xvf_tune(const char *param, float value,
                                   PipecatXvfTuneResult *result);
+extern bool pipecat_xvf_param_persistent(const char *param);
+extern size_t pipecat_xvf_persistent_param_count();
+extern const char *pipecat_xvf_persistent_param_name(size_t index);
+extern bool pipecat_xvf_param_default(const char *param, float *value);
+extern void pipecat_replay_xvf_params();
 
 // OTA / mDNS
 extern void pipecat_init_mdns();
