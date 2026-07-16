@@ -23,8 +23,11 @@ def test_rtvi_heartbeat_source_contract() -> None:
     assert "peer_connection, pending_pong, pending_pong_len, pending_pong_sid" in text
     assert "void pipecat_rtvi_send_pending_heartbeat()" in text
     assert "pending_pong_ready = true" in text
-    heartbeat_call = "if (pipecat_rtvi_handle_heartbeat(msg, sid)) return;"
-    regular_call = "pipecat_rtvi_handle_message(msg);"
+    callback_payload = "rtvi_message" if "char rtvi_message[" in webrtc_text else "msg"
+    heartbeat_call = (
+        f"if (pipecat_rtvi_handle_heartbeat({callback_payload}, sid)) return;"
+    )
+    regular_call = f"pipecat_rtvi_handle_message({callback_payload});"
     assert heartbeat_call in webrtc_text
     assert regular_call in webrtc_text
     assert webrtc_text.index(heartbeat_call) < webrtc_text.index(regular_call)
