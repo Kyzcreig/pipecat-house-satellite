@@ -580,8 +580,9 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
 
 // GET /xvf/audio-mux[?op_r_category=N&op_r_source=N] — typed live readback and
 // experiment-only right-slot selection. Build flags are intent; register values
-// prove what the live XVF actually accepted. The media-layer API bounds category
-// 0..8 and source 0..3 and verifies the write with a register readback.
+// prove what the live XVF actually accepted. The media-layer API bounds the
+// complete vendor surface (category 0..12, source 0..5) and verifies the write
+// with a register readback; the experiment records undefined pairs separately.
 static esp_err_t xvf_audio_mux_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/json");
   PipecatXvfAudioMuxStatus status = {};
@@ -647,6 +648,125 @@ static esp_err_t xvf_audio_mux_handler(httpd_req_t *req) {
   }
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);
+  return ESP_OK;
+}
+
+// GET/POST /xvf/packed[?enable=0|1&op_all=c,s,c,s,c,s,c,s,c,s,c,s] —
+// packed six-channel TDM mode (t_2ccb0829 experiment C). GET with no query =
+// readback. With enable, writes OP_ALL first (when given), then OP_PACKED,
+// and verifies both by register readback. Packed mode breaks the normal
+// uplink decimators — bench-capture (/xvf/raw-capture) only; always restore
+// enable=0 + production mux afterwards.
+static esp_err_t xvf_packed_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/json");
+  PipecatXvfPackedStatus status = {};
+  char query[128] = {0};
+  char enable_text[4] = {0};
+  char op_all_text[64] = {0};
+  bool runtime_write = false;
+  bool have_op_all = false;
+  uint8_t op_all[12] = {0};
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+    if (httpd_query_key_value(query, "op_all", op_all_text,
+                              sizeof(op_all_text)) == ESP_OK) {
+      int count = 0;
+      char *cursor = op_all_text;
+      while (count < 12) {
+        char *end = nullptr;
+        long value = strtol(cursor, &end, 10);
+        if (end == cursor || value < 0 || value > UINT8_MAX) {
+          break;
+        }
+        op_all[count++] = static_cast<uint8_t>(value);
+        if (*end == '\0') break;
+        if (*end != ',') break;
+        cursor = end + 1;
+      }
+      if (count != 12) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"error\":\"op_all needs 12 comma-separated bytes\"}");
+      }
+      have_op_all = true;
+    }
+    if (httpd_query_key_value(query, "enable", enable_text,
+                              sizeof(enable_text)) == ESP_OK) {
+      if (strcmp(enable_text, "0") != 0 && strcmp(enable_text, "1") != 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(
+            req, "{\"ok\":false,\"error\":\"enable must be 0 or 1\"}");
+      }
+      runtime_write = true;
+      if (!pipecat_xvf_set_packed_mode(enable_text[0] == '1',
+                                       have_op_all ? op_all : nullptr,
+                                       &status)) {
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        return httpd_resp_sendstr(
+            req,
+            "{\"ok\":false,\"error\":\"packed write/readback rejected\"}");
+      }
+    } else if (have_op_all) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      return httpd_resp_sendstr(
+          req, "{\"ok\":false,\"error\":\"op_all requires enable\"}");
+    }
+  }
+  if (!runtime_write && pipecat_xvf_packed_status(&status) != ESP_OK) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(
+        req, "{\"ok\":false,\"error\":\"packed readback failed\"}");
+  }
+  char body[224];
+  snprintf(body, sizeof(body),
+           "{\"ok\":true,\"packed\":[%u,%u],"
+           "\"op_all\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u],"
+           "\"runtime_write\":%s}",
+           status.packed_l, status.packed_r, status.op_all[0],
+           status.op_all[1], status.op_all[2], status.op_all[3],
+           status.op_all[4], status.op_all[5], status.op_all[6],
+           status.op_all[7], status.op_all[8], status.op_all[9],
+           status.op_all[10], status.op_all[11],
+           runtime_write ? "true" : "false");
+  return httpd_resp_sendstr(req, body);
+}
+
+// GET /xvf/raw-capture?ms=N — stream N ms (<=15000) of RAW 48 kHz/32-bit
+// stereo I2S frames as application/octet-stream (interleaved int32 LE,
+// L0,R0,L1,R1,...). LSB packing markers are preserved, so this is the
+// packed-mode capture path AND the full-precision cat-3/11 alignment path.
+// The uplink publisher is paused (silence frames keep RTP alive) while
+// this runs. Chunked; a dropped client aborts the capture cleanly.
+static bool raw_capture_sink(const uint8_t *chunk, size_t len, void *ctx) {
+  httpd_req_t *req = static_cast<httpd_req_t *>(ctx);
+  return httpd_resp_send_chunk(req, reinterpret_cast<const char *>(chunk),
+                               static_cast<ssize_t>(len)) == ESP_OK;
+}
+
+static esp_err_t xvf_raw_capture_handler(httpd_req_t *req) {
+  char query[32] = {0};
+  char ms_text[8] = {0};
+  long ms = 0;
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "ms", ms_text, sizeof(ms_text)) == ESP_OK) {
+    char *end = nullptr;
+    ms = strtol(ms_text, &end, 10);
+    if (end == ms_text || *end != '\0') ms = 0;
+  }
+  if (ms <= 0 || ms > 15000) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "400 Bad Request");
+    return httpd_resp_sendstr(
+        req, "{\"ok\":false,\"error\":\"ms must be 1..15000\"}");
+  }
+  httpd_resp_set_type(req, "application/octet-stream");
+  esp_err_t ret = pipecat_raw_i2s_capture(static_cast<uint32_t>(ms),
+                                          raw_capture_sink, req);
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "raw capture aborted: %s", esp_err_to_name(ret));
+  }
+  // End chunked response (harmless if the client already vanished).
+  httpd_resp_send_chunk(req, nullptr, 0);
   return ESP_OK;
 }
 
@@ -758,7 +878,7 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 8;
+  config.max_uri_handlers = 10;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -801,6 +921,19 @@ void pipecat_init_ota_server() {
       .handler = xvf_audio_mux_handler,
       .user_ctx = NULL,
   };
+  // Packed six-channel TDM mode + raw I2S bench capture (t_2ccb0829).
+  httpd_uri_t packed_uri = {
+      .uri = "/xvf/packed",
+      .method = HTTP_GET,
+      .handler = xvf_packed_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t raw_capture_uri = {
+      .uri = "/xvf/raw-capture",
+      .method = HTTP_GET,
+      .handler = xvf_raw_capture_handler,
+      .user_ctx = NULL,
+  };
   httpd_uri_t stats_uri = {
       .uri = "/playback/stats",
       .method = HTTP_GET,
@@ -819,6 +952,8 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &audio_mux_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &packed_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &raw_capture_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);

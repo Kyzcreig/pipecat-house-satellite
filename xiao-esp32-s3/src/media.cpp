@@ -129,13 +129,19 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
+// Packed six-channel mode (XMOS v3.2.1 §3.6.1 / programming guide §4.1.2):
+// OP_PACKED enables TDM of three 16 kHz lanes per 48 kHz slot; OP_ALL writes
+// all six [category,source] pairs atomically (order: L_PK0..2 then R_PK0..2).
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_PACKED = 13;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_UPSAMPLE = 14;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_L = 15;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_R = 19;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_ALL = 23;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_SYS_DELAY = 26;
 
 static constexpr uint8_t XVF_AUDIO_CATEGORY_RAW = 1;
-static constexpr uint8_t XVF_AUDIO_CATEGORY_MAX = 8;
+static constexpr uint8_t XVF_AUDIO_CATEGORY_MAX = 12;
+static constexpr uint8_t XVF_AUDIO_SOURCE_MAX = 5;
 static constexpr uint8_t XVF_AUDIO_CATEGORY_PROCESSED = 6;
 static constexpr uint8_t XVF_AUDIO_CATEGORY_ASR = 7;
 static constexpr uint8_t XVF_AUDIO_SOURCE_AUTO_SELECT = 3;
@@ -303,7 +309,8 @@ esp_err_t pipecat_xvf_audio_mux_status(PipecatXvfAudioMuxStatus *status) {
 
 bool pipecat_xvf_set_audio_mux_right(uint8_t category, uint8_t source,
                                      PipecatXvfAudioMuxStatus *status) {
-  if (status == nullptr || category > XVF_AUDIO_CATEGORY_MAX || source > 3) {
+  if (status == nullptr || category > XVF_AUDIO_CATEGORY_MAX ||
+      source > XVF_AUDIO_SOURCE_MAX) {
     return false;
   }
   esp_err_t ret = xvf_write_u8_pair(XVF_RESID_AUDIO_MGR,
@@ -312,6 +319,113 @@ bool pipecat_xvf_set_audio_mux_right(uint8_t category, uint8_t source,
     return false;
   }
   return status->op_r_category == category && status->op_r_source == source;
+}
+
+// ===== Packed six-channel mode (t_2ccb0829 experiment C) =====
+// AUDIO_MGR_OP_ALL (cmd 23, 12 uint8s = six [category,source] pairs, order
+// L_PK0,L_PK1,L_PK2,R_PK0,R_PK1,R_PK2) + AUDIO_MGR_OP_PACKED (cmd 13, <L>,<R>).
+// With packing ON each 48 kHz slot TDM-carries three 16 kHz lanes with LSB
+// packing markers. WARNING: while packed, the normal uplink decimators in
+// pipecat_send_audio produce GARBAGE (they average across TDM boundaries) —
+// packed mode is bench-capture only; callers must restore OP_PACKED 0 0 and
+// the production mux afterwards. Nothing here runs at boot.
+
+esp_err_t pipecat_xvf_packed_status(PipecatXvfPackedStatus *status) {
+  if (status == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t ret = xvf_read_u8_pair(XVF_RESID_AUDIO_MGR,
+                                   XVF_CMD_AUDIO_MGR_OP_PACKED,
+                                   &status->packed_l, &status->packed_r);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  uint8_t payload[12] = {};
+  ret = xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_ALL, payload,
+                       sizeof(payload));
+  if (ret == ESP_OK) {
+    memcpy(status->op_all, payload, sizeof(payload));
+  }
+  return ret;
+}
+
+bool pipecat_xvf_set_packed_mode(bool enable, const uint8_t op_all[12],
+                                 PipecatXvfPackedStatus *status) {
+  if (status == nullptr) {
+    return false;
+  }
+  if (op_all != nullptr) {
+    for (int i = 0; i < 6; i++) {
+      if (op_all[i * 2] > XVF_AUDIO_CATEGORY_MAX ||
+          op_all[i * 2 + 1] > XVF_AUDIO_SOURCE_MAX) {
+        return false;
+      }
+    }
+    if (xvf_write_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_ALL, op_all,
+                        12) != ESP_OK) {
+      return false;
+    }
+  }
+  uint8_t flag = enable ? 1 : 0;
+  if (xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_PACKED, flag,
+                        flag) != ESP_OK) {
+    return false;
+  }
+  if (pipecat_xvf_packed_status(status) != ESP_OK) {
+    return false;
+  }
+  bool ok = status->packed_l == flag && status->packed_r == flag;
+  if (ok && op_all != nullptr) {
+    ok = memcmp(status->op_all, op_all, 12) == 0;
+  }
+  return ok;
+}
+
+// ===== Raw I2S bench capture tap (t_2ccb0829 experiments A/B/C) =====
+// Streams UNPROCESSED 48 kHz/32-bit stereo I2S frames (LSB markers intact —
+// required for packed-mode unpacking and for full-precision cat-3/11
+// cross-correlation). The uplink publisher shares rx_handle, so it is paused
+// (uplink sends silence) for the duration; g_raw_capture_pause is checked
+// once per 20 ms frame, so wait one frame after setting it before reading.
+volatile bool g_raw_capture_pause = false;
+
+esp_err_t pipecat_raw_i2s_capture(uint32_t duration_ms,
+                                  bool (*sink)(const uint8_t *chunk,
+                                               size_t len, void *ctx),
+                                  void *ctx) {
+  if (sink == nullptr || duration_ms == 0 || duration_ms > 15000) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (rx_handle == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  int32_t *chunk = (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES,
+                                               MALLOC_CAP_DMA);
+  if (chunk == nullptr) {
+    return ESP_ERR_NO_MEM;
+  }
+  g_raw_capture_pause = true;
+  // Let the publisher's in-flight i2s_channel_read (<=200ms timeout) drain.
+  vTaskDelay(pdMS_TO_TICKS(250));
+  esp_err_t result = ESP_OK;
+  // BOARD_FRAME_BYTES = 20ms of 48k/32-bit stereo.
+  uint32_t frames = (duration_ms + 19) / 20;
+  for (uint32_t i = 0; i < frames; i++) {
+    size_t bytes_read = 0;
+    esp_err_t ret = i2s_channel_read(rx_handle, chunk, BOARD_FRAME_BYTES,
+                                     &bytes_read, pdMS_TO_TICKS(200));
+    if (ret != ESP_OK || bytes_read == 0) {
+      result = ret == ESP_OK ? ESP_ERR_INVALID_SIZE : ret;
+      break;
+    }
+    if (!sink((const uint8_t *)chunk, bytes_read, ctx)) {
+      result = ESP_FAIL;  // client went away
+      break;
+    }
+  }
+  g_raw_capture_pause = false;
+  heap_caps_free(chunk);
+  return result;
 }
 
 static esp_err_t xvf_read_scalar(uint8_t resid, uint8_t cmd, bool is_float,
@@ -1577,6 +1691,26 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
   fill_bench_tone(read_buffer, PCM_SAMPLES_PER_FRAME);
 #endif
 #else
+  // Raw bench-capture tap owns rx_handle for its duration; publish silence so
+  // the RTP cadence (and server-side liveness) is preserved. No extra sleep:
+  // pipecat_send_audio_task paces with vTaskDelayUntil at absolute 20 ms
+  // deadlines, so returning fast keeps exactly 50 fps.
+  if (g_raw_capture_pause) {
+#if PIPECAT_DUAL_STREAM
+    memset(read_buffer, 0, PCM_BUFFER_SIZE * 2);
+#else
+    memset(read_buffer, 0, PCM_BUFFER_SIZE);
+#endif
+    auto paused_size =
+        opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
+                    PCM_SAMPLES_PER_FRAME, encoder_output_buffer,
+                    OPUS_BUFFER_SIZE);
+    if (paused_size > 0) {
+      peer_connection_send_audio(peer_connection, encoder_output_buffer,
+                                 paused_size);
+    }
+    return;
+  }
   size_t bytes_read = 0;
   esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
                                    BOARD_FRAME_BYTES, &bytes_read,

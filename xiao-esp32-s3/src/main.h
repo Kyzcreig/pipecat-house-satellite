@@ -51,6 +51,22 @@ extern esp_err_t pipecat_xvf_audio_mux_status(
     PipecatXvfAudioMuxStatus *status);
 extern bool pipecat_xvf_set_audio_mux_right(
     uint8_t category, uint8_t source, PipecatXvfAudioMuxStatus *status);
+// Packed six-channel mode (t_2ccb0829): op_all is L_PK0..2,R_PK0..2 as six
+// [category,source] pairs; OP_ALL is written first, then OP_PACKED <f>,<f>.
+struct PipecatXvfPackedStatus {
+  uint8_t packed_l;
+  uint8_t packed_r;
+  uint8_t op_all[12];
+};
+extern esp_err_t pipecat_xvf_packed_status(PipecatXvfPackedStatus *status);
+extern bool pipecat_xvf_set_packed_mode(bool enable, const uint8_t op_all[12],
+                                        PipecatXvfPackedStatus *status);
+// Raw 48 kHz/32-bit stereo I2S bench capture (LSB packing markers intact).
+// Pauses the uplink publisher (silence frames) while active; <=15 s.
+extern volatile bool g_raw_capture_pause;
+extern esp_err_t pipecat_raw_i2s_capture(
+    uint32_t duration_ms,
+    bool (*sink)(const uint8_t *chunk, size_t len, void *ctx), void *ctx);
 
 // OTA / mDNS
 extern void pipecat_init_mdns();

@@ -26,7 +26,8 @@ assert re.search(
     re.DOTALL,
 ), "CMake must reject non-mic sources and compile the selected raw mic"
 assert "static constexpr uint8_t XVF_AUDIO_CATEGORY_RAW = 1;" in MEDIA
-assert "static constexpr uint8_t XVF_AUDIO_CATEGORY_MAX = 8;" in MEDIA
+assert "static constexpr uint8_t XVF_AUDIO_CATEGORY_MAX = 12;" in MEDIA
+assert "static constexpr uint8_t XVF_AUDIO_SOURCE_MAX = 5;" in MEDIA
 assert re.search(
     r"XVF_CMD_AUDIO_MGR_OP_L,\s*XVF_AUDIO_CATEGORY_ASR,\s*"
     r"XVF_AUDIO_SOURCE_AUTO_SELECT",
@@ -54,17 +55,45 @@ assert re.search(
 ), "runtime right-slot mux API must be typed and explicit"
 assert re.search(
     r"bool\s+pipecat_xvf_set_audio_mux_right\(.*?"
-    r"category\s*>\s*XVF_AUDIO_CATEGORY_MAX.*?source\s*>\s*3.*?"
+    r"category\s*>\s*XVF_AUDIO_CATEGORY_MAX.*?"
+    r"source\s*>\s*XVF_AUDIO_SOURCE_MAX.*?"
     r"XVF_CMD_AUDIO_MGR_OP_R.*?category.*?source",
     MEDIA,
     re.DOTALL,
-), "runtime mux must fail closed outside categories 0..8 and sources 0..3"
+), "runtime mux must fail closed outside XMOS categories 0..12 and sources 0..5"
 assert '.uri = "/xvf/audio-mux"' in OTA
 assert "httpd_register_uri_handler(g_ota_server, &audio_mux_uri)" in OTA
 server_start = OTA.index("void pipecat_init_ota_server()")
 server = OTA[server_start:]
 registered_handlers = server.count("httpd_register_uri_handler(")
-assert registered_handlers == 8
+assert registered_handlers == 10
 assert f"config.max_uri_handlers = {registered_handlers}" in server
+
+# Packed six-channel mode + raw capture (t_2ccb0829): control constants,
+# typed API, endpoint registration, and the uplink pause seam.
+assert "static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_PACKED = 13;" in MEDIA
+assert "static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_ALL = 23;" in MEDIA
+assert re.search(
+    r"bool\s+pipecat_xvf_set_packed_mode\(bool\s+enable,\s*"
+    r"const\s+uint8_t\s+op_all\[12\],\s*PipecatXvfPackedStatus\s*\*status\)",
+    MAIN_H,
+), "packed-mode API must be typed and explicit"
+assert re.search(
+    r"bool\s+pipecat_xvf_set_packed_mode\(.*?"
+    r"op_all\[i \* 2\]\s*>\s*XVF_AUDIO_CATEGORY_MAX.*?"
+    r"op_all\[i \* 2 \+ 1\]\s*>\s*XVF_AUDIO_SOURCE_MAX.*?"
+    r"XVF_CMD_AUDIO_MGR_OP_ALL.*?XVF_CMD_AUDIO_MGR_OP_PACKED",
+    MEDIA,
+    re.DOTALL,
+), "packed-mode must validate all six pairs and write OP_ALL before OP_PACKED"
+assert "g_raw_capture_pause" in MEDIA
+assert re.search(
+    r"if\s*\(g_raw_capture_pause\)\s*\{.*?memset\(read_buffer",
+    MEDIA,
+    re.DOTALL,
+), "uplink publisher must send silence while the raw capture tap owns rx"
+assert '.uri = "/xvf/packed"' in OTA
+assert '.uri = "/xvf/raw-capture"' in OTA
+assert "pipecat_raw_i2s_capture(" in OTA
 
 print("raw mic3 source contract: PASS")
