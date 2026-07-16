@@ -25,6 +25,17 @@ Input formats:
 Output: <out_prefix>_ch0..5.pcm (s16le 16 kHz mono) and a JSON summary on
 stdout. Channels 0..2 = L slot PK0..PK2, channels 3..5 = R slot PK0..PK2.
 
+CHANNEL-ORDER FOOTGUN vs vendor tools: XMOS's own unpack script numbers
+channels INTERLEAVED (ch1=L_PK0, ch2=R_PK0, ch3=L_PK1, ch4=R_PK1, ch5=L_PK2,
+ch6=R_PK2) — pinned by the v3.2.1 programming-guide example, where
+`AUDIO_MGR_OP_ALL 12 0 3 0 3 2 6 3 3 1 3 3` yields documented channels
+[far-end ref, autoselect beam, MIC0, MIC1, MIC2, MIC3]; only OP_ALL byte
+order L_PK0,L_PK1,L_PK2,R_PK0,R_PK1,R_PK2 + interleaved unpack numbering
+reproduces that list (unique among the four order combinations). This tool
+is slot-major instead. Do NOT assume our ch indexes line up with a vendor
+unpacked_rec.wav. The same example confirms the OP_ALL byte order our
+firmware endpoint and run_cat5_ref_experiment.py assume.
+
 Self-test: python3 xvf_packed_unpack.py --self-test
 """
 from __future__ import annotations

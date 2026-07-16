@@ -51,6 +51,21 @@ SILENT-ONLY (Ace asleep). Every claim below is labeled prep or measured.
   assumes LSB set on each PK0 sample and FAILS CLOSED (refuses to unpack) when
   no dominant marker phase exists. First bench capture must validate this
   assumption; if it fails, grab packing.py from the XMOS release bundle.
+- VOLUME CORRUPTION (vendor, PG 4.1.2 note): "it is critical to ensure that
+  any volume controls are disabled (volume = 100%) to prevent the packed audio
+  frame being corrupted" — ANY gain stage between the XVF I2S output and the
+  capture buffer flips LSBs and destroys markers + lane data. Our
+  /xvf/raw-capture reads the I2S RX DMA directly with no gain, so we're clean
+  by construction; keep it that way (never route packed samples through the
+  opus/volume path).
+- CHANNEL-ORDER vs vendor tools (measured from the v3.2.1 PG example, see
+  unpacker docstring): vendor unpack numbers channels INTERLEAVED
+  (ch1=L_PK0, ch2=R_PK0, ch3=L_PK1, ...); our unpacker is slot-major
+  (ch0..2=L_PK0..2, ch3..5=R_PK0..2). The same vendor example
+  (`OP_ALL 12 0 3 0 3 2 6 3 3 1 3 3` -> [ref, beam, MIC0..3]) uniquely pins
+  the OP_ALL byte order as L_PK0,L_PK1,L_PK2,R_PK0,R_PK1,R_PK2 — exactly what
+  our firmware endpoint and run_cat5_ref_experiment.PACKED_OP_ALL assume.
+  That byte-order assumption is now vendor-doc-confirmed, no longer a guess.
 
 ### (B) Cat-3 vs cat-11 alignment — READY, two capture options
 - Sequential option (no reflash): runtime mux probe `/xvf/audio-mux?...`
