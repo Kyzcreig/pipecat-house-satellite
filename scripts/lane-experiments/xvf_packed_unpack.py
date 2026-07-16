@@ -84,6 +84,42 @@ def detect_phase(samples: list[int], *, dominance: float = 3.0) -> tuple[int, li
     return best, density
 
 
+def scan_phase_continuity(samples: list[int], phase: int, *, window: int = 2304) -> int:
+    """Verify the marker phase holds across the WHOLE capture, windowed.
+
+    A single dropped or duplicated 48 kHz sample anywhere (DMA underrun,
+    buffer realign, transport loss) rotates the packing phase and silently
+    corrupts every lane after that point — the global density check alone
+    would still pass if most of the capture is clean. Scan fixed windows
+    (default 2304 samples = 48 ms = ~768 markers) and fail closed on the
+    first window whose dominant marker position disagrees with `phase` or
+    whose marker density collapses. Returns the number of windows checked.
+    """
+    checked = 0
+    for start in range(0, len(samples), window):
+        chunk = samples[start : start + window]
+        if len(chunk) < 300:  # tail too short for a reliable density estimate
+            break
+        counts = [0, 0, 0]
+        totals = [0, 0, 0]
+        for i, s in enumerate(chunk):
+            pos = (start + i) % 3
+            totals[pos] += 1
+            counts[pos] += s & 1
+        density = [c / t if t else 0.0 for c, t in zip(counts, totals)]
+        best = max(range(3), key=lambda p: density[p])
+        second = sorted(density, reverse=True)[1]
+        if best != phase or density[best] < 0.5 or density[best] < 2.0 * max(second, 1e-9):
+            raise SystemExit(
+                f"marker phase discontinuity near sample {start} "
+                f"(window density={['%.4f' % d for d in density]}, expected phase {phase}): "
+                "a dropped/duplicated sample rotated the packing phase — "
+                "ALL lanes after this point are corrupt; recapture"
+            )
+        checked += 1
+    return checked
+
+
 def unpack_slot(samples: list[int], phase: int) -> list[list[int]]:
     """Deinterleave one 48 kHz slot into three 16 kHz channels (PK0..PK2).
 
@@ -139,8 +175,14 @@ def main() -> None:
     summary: dict = {"input": args.capture, "frames_48k": len(left), "slots": {}}
     for slot_name, samples, base in (("L", left, 0), ("R", right, 3)):
         phase, density = detect_phase(samples)
+        windows_ok = scan_phase_continuity(samples, phase)
         channels = unpack_slot(samples, phase)
-        slot_info = {"marker_phase": phase, "lsb_density": [round(d, 4) for d in density], "channels": {}}
+        slot_info = {
+            "marker_phase": phase,
+            "lsb_density": [round(d, 4) for d in density],
+            "continuity_windows_ok": windows_ok,
+            "channels": {},
+        }
         for k, ch in enumerate(channels):
             out_path = Path(f"{args.out_prefix}_ch{base + k}.pcm")
             out_path.write_bytes(to_s16(ch))
@@ -199,9 +241,29 @@ def self_test() -> None:
     except SystemExit:
         pass
 
+    # continuity: a clean packed stream passes the windowed scan...
+    clean: list[int] = []
+    for i in range(n16):
+        for k in range(3):
+            clean.append((chans[k][i] & ~1) | (1 if k == 0 else 0))
+    phase, _ = detect_phase(clean)
+    if scan_phase_continuity(clean, phase) < 2:
+        failures += 1
+        print("FAIL: continuity scan checked <2 windows on a clean stream")
+
+    # ...and a single dropped 48k sample mid-stream (phase rotation) is caught
+    broken = clean[:2400] + clean[2401:]
+    try:
+        scan_phase_continuity(broken, phase)
+        failures += 1
+        print("FAIL: continuity scan missed a dropped-sample phase rotation")
+    except SystemExit:
+        pass
+
     if failures:
         raise SystemExit(f"self-test FAILED ({failures} failures)")
-    print("xvf_packed_unpack self-test: PASS (6ch round-trip x 3 phases + negative control)")
+    print("xvf_packed_unpack self-test: PASS (6ch round-trip x 3 phases + "
+          "negative control + phase-continuity clean/broken)")
 
 
 if __name__ == "__main__":
