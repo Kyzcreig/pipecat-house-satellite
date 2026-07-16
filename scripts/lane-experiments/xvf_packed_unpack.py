@@ -7,16 +7,16 @@ PK2, repeating. Packing markers live in the LSB of each 32-bit sample and encode
 the packing sequence (programming guide 4.1.2: "Signal packing uses
 least-significant bit markers to encode the channel packing sequence").
 
-MARKER CAVEAT (honest limitation): the exact vendor marker encoding is
-implemented in XMOS's xvf_tools packing.py, which we do not have (the release
-bundle is behind an xmos.com account; not vendored in docs/vendor/xvf3800/).
-The vendor error message "Over 50 markers incorrectly spaced so giving up"
-implies markers recur at a fixed spacing. This tool assumes the natural scheme:
-LSB set on the first sample of each 3-sample group (PK0 position), clear
-elsewhere. detect_phase() measures LSB density per (mod 3) position and fails
-closed when no dominant phase exists, so a real capture with a different
-marker scheme is REPORTED, not silently mis-unpacked. Verify against a real
-kitchen-bench capture before trusting channel identity ordering.
+MARKER SCHEME (MEASURED on silicon 2026-07-16, kitchen fw a4c463a, cat-0
+silence tracer runs/20260716-141644-tracer): LSB is CLEAR on every PK0
+sample and SET on every PK1/PK2 sample — even digital-silence PK1/PK2
+samples read 0x00000001. This is the INVERSE of the pre-silicon assumption.
+Byte order confirmed slot-major on the wire: OP_ALL pair k maps to
+L_PK0..L_PK2 for k=0..2 and R_PK0..R_PK2 for k=3..5 (four independent
+cat-0 position receipts). detect_phase() finds the ~0-density position and
+fails closed when the (low, high, high) pattern is absent, so a capture
+with a different scheme or a mid-stream phase rotation is REPORTED, not
+silently mis-unpacked.
 
 Input formats:
   .pcm/.raw : interleaved stereo int32 LE frames (L0,R0,L1,R1,...), 48 kHz
@@ -76,23 +76,32 @@ def lsb_density(samples: list[int]) -> list[float]:
     return [c / t if t else 0.0 for c, t in zip(counts, totals)]
 
 
-def detect_phase(samples: list[int], *, dominance: float = 3.0) -> tuple[int, list[float]]:
+def detect_phase(samples: list[int]) -> tuple[int, list[float]]:
     """Find the (mod 3) offset of PK0 by LSB marker density.
 
-    Fails closed (SystemExit) when no position dominates by `dominance`x —
-    that means the capture is not packed, or the vendor marker scheme differs
-    from our assumption and the capture must be inspected by hand first.
+    MEASURED marker scheme (kitchen XVF3800 fw a4c463a, 2026-07-16 cat-0
+    silence tracer, runs/20260716-141644-tracer): the LSB is CLEAR on every
+    PK0 sample and SET on every PK1/PK2 sample — even for digital-silence
+    lanes (a silent PK1 sample reads 0x00000001). So PK0 is the position
+    whose set-LSB density is ~0 while the other two are ~1. This is the
+    INVERSE of the pre-silicon assumption (set on PK0); the tracer pinned it
+    with four independent cat-0-silence position receipts.
+
+    Fails closed (SystemExit) when the density pattern is not (low, high,
+    high) in some rotation — that means the capture is not packed, has a
+    mid-stream phase rotation, or the scheme differs; inspect manually.
     """
     density = lsb_density(samples)
-    ranked = sorted(range(3), key=lambda p: density[p], reverse=True)
-    best, second = ranked[0], ranked[1]
-    if density[best] < 0.5 or density[best] < dominance * max(density[second], 1e-9):
+    ranked = sorted(range(3), key=lambda p: density[p])
+    low, mid = ranked[0], ranked[1]
+    if density[low] > 0.2 or density[mid] < 0.8:
         raise SystemExit(
-            "no dominant LSB marker phase found "
-            f"(densities={['%.4f' % d for d in density]}); capture is either "
-            "not packed or uses a different marker scheme — inspect manually"
+            "no clean PK0 marker phase found "
+            f"(densities={['%.4f' % d for d in density]}; expected one ~0 and "
+            "two ~1); capture is either not packed, phase-rotated mid-stream, "
+            "or uses a different marker scheme — inspect manually"
         )
-    return best, density
+    return low, density
 
 
 def scan_phase_continuity(samples: list[int], phase: int, *, window: int = 2304) -> int:
@@ -118,12 +127,12 @@ def scan_phase_continuity(samples: list[int], phase: int, *, window: int = 2304)
             totals[pos] += 1
             counts[pos] += s & 1
         density = [c / t if t else 0.0 for c, t in zip(counts, totals)]
-        best = max(range(3), key=lambda p: density[p])
-        second = sorted(density, reverse=True)[1]
-        if best != phase or density[best] < 0.5 or density[best] < 2.0 * max(second, 1e-9):
+        low = min(range(3), key=lambda p: density[p])
+        others = sorted((density[p] for p in range(3) if p != low))
+        if low != phase or density[low] > 0.2 or others[0] < 0.8:
             raise SystemExit(
                 f"marker phase discontinuity near sample {start} "
-                f"(window density={['%.4f' % d for d in density]}, expected phase {phase}): "
+                f"(window density={['%.4f' % d for d in density]}, expected PK0 phase {phase}): "
                 "a dropped/duplicated sample rotated the packing phase — "
                 "ALL lanes after this point are corrupt; recapture"
             )
@@ -208,8 +217,9 @@ def main() -> None:
 
 
 def self_test() -> None:
-    """Synthesize a packed stereo stream per our marker assumption and verify
-    exact round-trip recovery of all six channels, at all three phases."""
+    """Synthesize a packed stereo stream per the MEASURED marker scheme (LSB
+    clear on PK0, set on PK1/PK2) and verify exact round-trip recovery of all
+    six channels, at all three phases."""
     import math
 
     def make_channel(freq: float, n: int, amp: int) -> list[int]:
@@ -224,7 +234,7 @@ def self_test() -> None:
         right_packed: list[int] = []
         for i in range(n16):
             for k in range(3):
-                marker = 1 if k == 0 else 0
+                marker = 0 if k == 0 else 1
                 left_packed.append((chans[k][i] & ~1) | marker)
                 right_packed.append((chans[3 + k][i] & ~1) | marker)
         left_packed = left_packed[lead:]
@@ -256,7 +266,7 @@ def self_test() -> None:
     clean: list[int] = []
     for i in range(n16):
         for k in range(3):
-            clean.append((chans[k][i] & ~1) | (1 if k == 0 else 0))
+            clean.append((chans[k][i] & ~1) | (0 if k == 0 else 1))
     phase, _ = detect_phase(clean)
     if scan_phase_continuity(clean, phase) < 2:
         failures += 1
