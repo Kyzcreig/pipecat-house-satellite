@@ -5,6 +5,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_HOME="${USER_HOME:-/Users/alexgierczyk}"
 IDF_PATH="${IDF_PATH:-$USER_HOME/.platformio/packages/framework-espidf}"
 PORT="${PORT:-/dev/cu.usbmodem4101}"
+REQUIRED_FIRMWARE_BASE_COMMIT="${REQUIRED_FIRMWARE_BASE_COMMIT:-fc3edc0}"
+
+# Refuse to build from a branch that omits the currently deployed production
+# lineage. This is the code-provenance equivalent of the MAC identity gate below.
+if ! git -C "$REPO_ROOT" merge-base --is-ancestor \
+  "$REQUIRED_FIRMWARE_BASE_COMMIT" HEAD; then
+  echo "flash-bench: ABORT — HEAD does not descend from required production base $REQUIRED_FIRMWARE_BASE_COMMIT." >&2
+  exit 4
+fi
+echo "flash-bench: provenance preflight PASS — HEAD descends from $REQUIRED_FIRMWARE_BASE_COMMIT." >&2
 
 export HOME="${HOME_OVERRIDE:-$USER_HOME}"
 export PATH="$USER_HOME/.platformio/tools/tool-cmake/bin:$USER_HOME/.platformio/packages/tool-cmake/bin:$USER_HOME/.platformio/tools/tool-ninja:$USER_HOME/.platformio/packages/tool-ninja:$PATH"
