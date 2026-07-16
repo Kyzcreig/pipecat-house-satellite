@@ -23,6 +23,9 @@ extern void pipecat_led_task(void *arg);
 extern void pipecat_audio_decode(uint8_t *data, size_t size);
 extern void pipecat_reset_audio_decoder();
 extern bool pipecat_xvf3800_present();
+// XVF application firmware version (DFU controller resid 240 cmd 88, e.g.
+// "1.0.7"), or "unknown" if the boot-time read failed. Stable; safe to cache.
+extern const char *pipecat_xvf3800_version();
 struct PipecatXvfTuneResult {
   float requested;
   float applied_value;

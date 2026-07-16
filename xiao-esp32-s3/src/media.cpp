@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "driver/i2c_master.h"
@@ -65,10 +66,18 @@ static constexpr uint8_t AIC3104_RIGHT_DAC_VOLUME = 0x2C;
 // alive on I2C and that it's clocking BCLK/WS as I2S master (otherwise our
 // secondary-mode i2s_channel_read / i2s_channel_write will time out forever).
 static constexpr uint8_t XVF3800_ADDR = 0x2C;
-// Vendor control protocol: write 1B resource ID then read N bytes.
-// Resource 0xB3 returns 3-byte semantic version of the XMOS DFU firmware,
-// matching what formatBCE's respeaker_xvf3800 ESPHome component reads.
-static constexpr uint8_t XVF3800_RESID_VERSION = 0xB3;
+// Vendor control protocol: write {resid, cmd|READ_BIT, read_len+1}, then read
+// read_len+1 bytes (leading status byte + payload) — see xvf_read_bytes().
+// Firmware version: DFU controller servicer (resid 240) cmd 88 = GETVERSION,
+// 3x uint8 MAJOR MINOR PATCH — the exact transaction the respeaker_xvf3800
+// ESPHome component's read_dfu_version() uses, live-proven to return 1.0.7
+// (formatBCE/Seeed I2S-master build) on this firmware over I2C.
+// (xvf_host.py also documents an app-servicer VERSION at resid 48 cmd 0.)
+// NOTE: an earlier mis-framed read here (bare 1-byte 0xB3 write, no cmd/len,
+// no status byte) decoded garbage as "v6.34.4"; that number was an artifact,
+// not a firmware version.
+static constexpr uint8_t XVF_RESID_DFU_CONTROLLER = 240;
+static constexpr uint8_t XVF_CMD_DFU_GETVERSION = 88;
 static constexpr uint8_t XVF_READ_BIT = 0x80;
 
 static constexpr uint8_t XVF_RESID_PP = 17;
@@ -154,6 +163,9 @@ static i2s_chan_handle_t tx_handle = nullptr;
 static i2s_chan_handle_t rx_handle = nullptr;
 static bool xvf3800_present = false;
 static bool xvf_beam_telemetry_supported = true;
+// XVF application firmware version as read at boot (DFU controller resid 240
+// cmd 88). "unknown" until the properly-framed version read succeeds.
+static char s_xvf_version[16] = "unknown";
 
 static std::atomic<bool> is_playing = false;
 static unsigned int silence_count = 0;
@@ -903,14 +915,19 @@ static void init_i2c_and_codec() {
   }
   xvf3800_present = true;
 
-  // Read XMOS firmware version (resource 0xB3 -> 3 bytes major.minor.patch).
-  uint8_t resid = XVF3800_RESID_VERSION;
+  // Read the XVF firmware version: DFU controller servicer resid 240 cmd 88
+  // (GETVERSION), 3x uint8 MAJOR MINOR PATCH — the same properly-framed
+  // transaction (write {resid, cmd|0x80, len+1}, read status byte + payload)
+  // that the respeaker_xvf3800 ESPHome component uses, live-proven to report
+  // 1.0.7 (formatBCE/Seeed I2S-master build) on the theater/kitchen boards.
   uint8_t ver[3] = {0, 0, 0};
-  esp_err_t ver_ret = i2c_master_transmit_receive(
-      xvf3800, &resid, 1, ver, sizeof(ver), pdMS_TO_TICKS(100));
+  esp_err_t ver_ret = xvf_read_bytes(XVF_RESID_DFU_CONTROLLER,
+                                     XVF_CMD_DFU_GETVERSION, ver, sizeof(ver));
   if (ver_ret == ESP_OK) {
-    ESP_LOGI(LOG_TAG, "XVF3800 alive at 0x%02x, DFU firmware v%u.%u.%u",
-             XVF3800_ADDR, ver[0], ver[1], ver[2]);
+    snprintf(s_xvf_version, sizeof(s_xvf_version), "%u.%u.%u", ver[0], ver[1],
+             ver[2]);
+    ESP_LOGI(LOG_TAG, "XVF3800 alive at 0x%02x, app firmware v%s",
+             XVF3800_ADDR, s_xvf_version);
   } else {
     ESP_LOGW(LOG_TAG,
              "XVF3800 ack'd at 0x%02x but version read failed: %s. "
@@ -922,7 +939,8 @@ static void init_i2c_and_codec() {
 }
 
 static void init_i2s() {
-  // XVF3800 DFU v6.34.4 on the theater/kitchen boards is the XMOS build that
+  // The XVF3800 firmware (formatBCE/Seeed I2S-master v1.0.7) on the
+  // theater/kitchen boards is the XMOS build that
   // acts as the I2S **MASTER** (it drives BCLK/WS off its own audio pipeline) —
   // exactly what the working respeaker_xvf3800 ESPHome component assumes
   // (`i2s_mode: secondary`, i.e. the ESP32 is the I2S secondary/slave). If the
@@ -996,6 +1014,8 @@ void pipecat_init_audio_capture() {
 }
 
 bool pipecat_xvf3800_present() { return xvf3800_present; }
+
+const char *pipecat_xvf3800_version() { return s_xvf_version; }
 
 static void update_is_playing(int16_t *in_buf, size_t in_samples) {
   bool any_set = false;
