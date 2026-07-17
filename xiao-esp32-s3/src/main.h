@@ -4,6 +4,7 @@
 
 #include "esp_err.h"
 #include "pipecat_build_config.h"
+#include "xvf_beam_json.h"
 
 #define LOG_TAG "pipecat"
 #define MAX_HTTP_OUTPUT_BUFFER 4096
@@ -37,6 +38,7 @@ struct PipecatXvfTuneResult {
 };
 extern esp_err_t pipecat_xvf_tune(const char *param, float value,
                                   PipecatXvfTuneResult *result);
+extern esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry);
 extern bool pipecat_xvf_param_persistent(const char *param);
 extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);

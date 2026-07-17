@@ -584,6 +584,29 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
   return httpd_resp_sendstr(req, body);
 }
 
+// GET /xvf/beam — phase-independent, point-in-time XVF beam telemetry.
+static esp_err_t xvf_beam_handler(httpd_req_t *req) {
+  PipecatXvfBeamTelemetry telemetry = {};
+  esp_err_t ret = pipecat_xvf_read_beam(&telemetry);
+  httpd_resp_set_type(req, "application/json");
+  if (ret != ESP_OK) {
+    char error_body[96];
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    snprintf(error_body, sizeof(error_body),
+             "{\"ok\":false,\"error\":\"XVF beam read failed: %s\"}",
+             esp_err_to_name(ret));
+    return httpd_resp_sendstr(req, error_body);
+  }
+
+  char body[384];
+  if (!pipecat_xvf_beam_json(&telemetry, body, sizeof(body))) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req,
+                              "{\"ok\":false,\"error\":\"beam response overflow\"}");
+  }
+  return httpd_resp_sendstr(req, body);
+}
+
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
 // Crackle triage: underruns>0 during crackle = delivery timing (raise
 // prebuffer_ms); clean counters during crackle = look below the ring
@@ -715,7 +738,7 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 7;
+  config.max_uri_handlers = 8;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -752,6 +775,12 @@ void pipecat_init_ota_server() {
       .handler = xvf_params_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t beam_uri = {
+      .uri = "/xvf/beam",
+      .method = HTTP_GET,
+      .handler = xvf_beam_handler,
+      .user_ctx = NULL,
+  };
   httpd_uri_t stats_uri = {
       .uri = "/playback/stats",
       .method = HTTP_GET,
@@ -769,6 +798,7 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &rollback_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &tune_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &beam_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);

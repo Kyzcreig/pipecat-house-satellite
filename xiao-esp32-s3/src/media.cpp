@@ -138,6 +138,7 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS = 11;
 #if PIPECAT_DUAL_STREAM
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_UPSAMPLE = 14;
 #endif
@@ -220,6 +221,8 @@ static esp_err_t xvf_read_bytes(uint8_t resid, uint8_t cmd, uint8_t *out,
   uint8_t req[3] = {resid, static_cast<uint8_t>(cmd | XVF_READ_BIT),
                     static_cast<uint8_t>(out_len + 1)};
   uint8_t resp[32] = {};
+  // ESP-IDF 5.5 serializes master operations with the I2C bus semaphore, so
+  // this transaction is safe from both the HTTP and LED tasks.
   for (int attempt = 0; attempt < XVF_CONTROL_RETRIES; attempt++) {
     esp_err_t ret = i2c_master_transmit_receive(
         xvf3800, req, sizeof(req), resp, out_len + 1,
@@ -489,17 +492,47 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
   return ret;
 }
 
-static bool xvf_read_float4(uint8_t resid, uint8_t cmd, float values[4]) {
-  uint8_t payload[sizeof(float) * 4] = {};
-  esp_err_t ret = xvf_read_bytes(resid, cmd, payload, sizeof(payload));
-  if (ret != ESP_OK) {
-    return false;
+static esp_err_t xvf_read_floats(uint8_t resid, uint8_t cmd, float *values,
+                                 size_t count) {
+  uint8_t payload[sizeof(float) * 7] = {};
+  if (values == nullptr || count == 0 ||
+      count > sizeof(payload) / sizeof(float)) {
+    return ESP_ERR_INVALID_ARG;
   }
-  for (size_t i = 0; i < 4; i++) {
+  esp_err_t ret = xvf_read_bytes(resid, cmd, payload, count * sizeof(float));
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  for (size_t i = 0; i < count; i++) {
     uint32_t bits = load_le32(&payload[i * sizeof(float)]);
     memcpy(&values[i], &bits, sizeof(bits));
   }
-  return true;
+  return ESP_OK;
+}
+
+esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry) {
+  if (telemetry == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!xvf3800_present || !xvf_beam_telemetry_supported) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  *telemetry = {};
+  // Do not short-circuit: every endpoint poll attempts all three registers.
+  esp_err_t azimuth_ret = xvf_read_floats(
+      XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4);
+  esp_err_t selected_ret = xvf_read_floats(
+      XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS,
+      telemetry->selected_azimuth, 2);
+  esp_err_t spenergy_ret = xvf_read_floats(
+      XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4);
+  if (azimuth_ret != ESP_OK) {
+    return azimuth_ret;
+  }
+  if (selected_ret != ESP_OK) {
+    return selected_ret;
+  }
+  return spenergy_ret;
 }
 
 static int azimuth_to_led(float radians) {
@@ -1679,7 +1712,8 @@ static void pipecat_led_step() {
         if (xvf3800_present && xvf_beam_telemetry_supported &&
             (++beam_poll_tick % 5 == 0)) {
           float az[4] = {};
-          if (xvf_read_float4(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az)) {
+          if (xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES,
+                              az, 4) == ESP_OK) {
             led_beam = azimuth_to_led(az[3]);
           }
         }

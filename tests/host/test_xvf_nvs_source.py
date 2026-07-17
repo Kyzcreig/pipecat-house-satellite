@@ -100,7 +100,7 @@ assert '.uri = "/xvf/params"' in server_body
 assert ".method = HTTP_GET" in server_body
 assert "httpd_register_uri_handler(g_ota_server, &params_uri)" in server_body
 registered_handlers = server_body.count("httpd_register_uri_handler(")
-assert registered_handlers == 7
+assert registered_handlers == 8
 assert f"config.max_uri_handlers = {registered_handlers}" in server_body
 
 print("xvf nvs source contract: PASS")
