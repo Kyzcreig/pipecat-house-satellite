@@ -68,6 +68,66 @@ static void test_plan_bad_args(void) {
   assert(nack_client_plan_gap(0, 0, out, NACK_MAX_SEQS) == 0);
 }
 
+/* ── NACK-v2 binary frame parser: bounds + fuzz surface ──────────────────── */
+
+static void test_parse_binary_rtx_frame(void) {
+  const uint8_t frame[] = {0x12, 0x34, 0x00, 0x03, 0xaa, 0xbb, 0xcc};
+  uint16_t seq = 0;
+  const uint8_t *payload = NULL;
+  size_t payload_len = 0;
+  assert(nack_parse_rtx_frame(frame, sizeof(frame), &seq, &payload,
+                              &payload_len) == 1);
+  assert(seq == 0x1234);
+  assert(payload_len == 3);
+  assert(payload == frame + RTX_FRAME_HEADER_SIZE);
+  assert(payload[0] == 0xaa && payload[2] == 0xcc);
+}
+
+static void test_parse_binary_rtx_rejects_malformed_bounds(void) {
+  uint16_t seq = 0;
+  const uint8_t *payload = NULL;
+  size_t payload_len = 0;
+  const uint8_t short_header[] = {0, 1, 0};
+  const uint8_t zero_len[] = {0, 1, 0, 0};
+  const uint8_t truncated[] = {0, 1, 0, 2, 0xaa};
+  uint8_t oversized[RTX_FRAME_HEADER_SIZE + RTX_FRAME_CAP + 1] = {0};
+  oversized[2] = (uint8_t)((RTX_FRAME_CAP + 1) >> 8);
+  oversized[3] = (uint8_t)((RTX_FRAME_CAP + 1) & 0xff);
+
+  assert(nack_parse_rtx_frame(NULL, 0, &seq, &payload, &payload_len) == 0);
+  assert(nack_parse_rtx_frame(short_header, sizeof(short_header), &seq,
+                              &payload, &payload_len) == 0);
+  assert(nack_parse_rtx_frame(zero_len, sizeof(zero_len), &seq, &payload,
+                              &payload_len) == 0);
+  assert(nack_parse_rtx_frame(truncated, sizeof(truncated), &seq, &payload,
+                              &payload_len) == 0);
+  assert(nack_parse_rtx_frame(oversized, sizeof(oversized), &seq, &payload,
+                              &payload_len) == 0);
+}
+
+static void test_parse_binary_rtx_fuzzed_lengths_drop_safely(void) {
+  uint8_t frame[RTX_FRAME_HEADER_SIZE + 32] = {0};
+  uint16_t seq = 0;
+  const uint8_t *payload = NULL;
+  size_t payload_len = 0;
+  for (size_t actual = 0; actual <= sizeof(frame); actual++) {
+    for (uint16_t declared = 0; declared <= 40; declared++) {
+      frame[2] = (uint8_t)(declared >> 8);
+      frame[3] = (uint8_t)(declared & 0xff);
+      int ok = nack_parse_rtx_frame(frame, actual, &seq, &payload,
+                                    &payload_len);
+      int expected = actual >= RTX_FRAME_HEADER_SIZE && declared > 0 &&
+                     declared <= RTX_FRAME_CAP &&
+                     declared == actual - RTX_FRAME_HEADER_SIZE;
+      assert(ok == expected);
+      if (ok) {
+        assert(payload == frame + RTX_FRAME_HEADER_SIZE);
+        assert(payload_len == declared);
+      }
+    }
+  }
+}
+
 /* ── pending table: arm / take within window / late / unknown ─────────────── */
 
 static void test_arm_and_recover_in_window(void) {
@@ -125,7 +185,7 @@ static void test_sweep_never_arrived(void) {
   assert(nack_client_take(&c, 1, 1300) == NACK_TAKE_UNKNOWN); /* now freed */
 }
 
-static void test_arm_full_table_evicts_oldest(void) {
+static void test_arm_full_table_rejects_without_evicting_pending_audio(void) {
   NackClient c;
   nack_client_init(&c);
   /* Fill every slot with staggered deadlines (seq i armed at t=i). */
@@ -133,11 +193,11 @@ static void test_arm_full_table_evicts_oldest(void) {
     nack_client_arm(&c, (uint16_t)(200 + i), (uint32_t)(1000 + i));
   }
   assert(c.nack_sent == NACK_PENDING_SLOTS);
-  /* One more arm evicts the oldest-deadline slot (seq 200, deadline 1020). */
-  nack_client_arm(&c, 999, 2000);
-  /* seq 200 was evicted -> UNKNOWN; the new seq 999 is live. */
-  assert(nack_client_take(&c, 200, 2001) == NACK_TAKE_UNKNOWN);
-  assert(nack_client_take(&c, 999, 2005) == NACK_TAKE_INWINDOW);
+  /* One more arm fails closed: evicting seq 200 would suppress its deferred PLC. */
+  assert(nack_client_arm(&c, 999, 1010) == 0);
+  assert(c.nack_sent == NACK_PENDING_SLOTS);
+  assert(nack_client_take(&c, 200, 1010) == NACK_TAKE_INWINDOW);
+  assert(nack_client_take(&c, 999, 1010) == NACK_TAKE_UNKNOWN);
 }
 
 static void test_ms_clock_wrap_boundary(void) {
@@ -182,6 +242,65 @@ static void test_swept_seq_rejects_rtx(void) {
   assert(c.nack_recovered == 1 && c.nack_late == 1 && c.nack_sent == 2);
 }
 
+/* ── rolling effectiveness circuit breaker ──────────────────────────────── */
+
+static void test_nack_wait_starts_at_spec_v2_value(void) {
+  assert(NACK_WAIT_MS == 60);
+}
+
+static void test_circuit_breaker_darks_below_twenty_percent(void) {
+  NackClient c;
+  nack_client_init(&c);
+  for (uint16_t seq = 0; seq < 10; seq++) {
+    nack_client_arm(&c, seq, seq);
+  }
+  assert(nack_client_should_dark(&c, 10) == 0); /* wait for outcomes */
+  assert(nack_client_sweep(&c, 1000) == 10);
+  assert(nack_client_should_dark(&c, 1000) == 1);
+  assert(c.auto_dark == 1);
+}
+
+static void test_circuit_breaker_keeps_exact_twenty_percent(void) {
+  NackClient c;
+  nack_client_init(&c);
+  for (uint16_t seq = 0; seq < 10; seq++) {
+    nack_client_arm(&c, seq, 100);
+  }
+  assert(nack_client_take(&c, 0, 110) == NACK_TAKE_INWINDOW);
+  assert(nack_client_take(&c, 1, 110) == NACK_TAKE_INWINDOW);
+  assert(nack_client_sweep(&c, 1000) == 8);
+  assert(nack_client_should_dark(&c, 1000) == 0);
+  assert(c.auto_dark == 0);
+}
+
+static void test_circuit_breaker_resets_on_reconnect_init(void) {
+  NackClient c;
+  nack_client_init(&c);
+  for (uint16_t seq = 0; seq < 10; seq++) {
+    nack_client_arm(&c, seq, 0);
+  }
+  nack_client_sweep(&c, 1000);
+  assert(nack_client_should_dark(&c, 1000) == 1);
+  nack_client_init(&c);
+  assert(c.auto_dark == 0);
+  assert(nack_client_should_dark(&c, 1001) == 0);
+}
+
+static void test_circuit_breaker_expires_old_healthy_window(void) {
+  NackClient c;
+  nack_client_init(&c);
+  for (uint16_t seq = 0; seq < 10; seq++) {
+    nack_client_arm(&c, seq, seq);
+    assert(nack_client_take(&c, seq, seq + 1) == NACK_TAKE_INWINDOW);
+  }
+  uint32_t now = NACK_EFFECT_BUCKET_MS * NACK_EFFECT_BUCKETS;
+  for (uint16_t seq = 100; seq < 110; seq++) {
+    nack_client_arm(&c, seq, now);
+  }
+  assert(nack_client_sweep(&c, now + NACK_WAIT_MS + 1) == 10);
+  assert(nack_client_should_dark(&c, now + NACK_WAIT_MS + 1) == 1);
+}
+
 int main(void) {
   RUN(test_plan_below_min_gap_is_red);
   RUN(test_plan_triple_gap);
@@ -189,15 +308,23 @@ int main(void) {
   RUN(test_plan_respects_out_capacity);
   RUN(test_plan_seq_wraparound);
   RUN(test_plan_bad_args);
+  RUN(test_parse_binary_rtx_frame);
+  RUN(test_parse_binary_rtx_rejects_malformed_bounds);
+  RUN(test_parse_binary_rtx_fuzzed_lengths_drop_safely);
   RUN(test_arm_and_recover_in_window);
   RUN(test_recover_at_exact_deadline);
   RUN(test_late_rtx_dropped);
   RUN(test_unknown_seq_ignored);
   RUN(test_sweep_never_arrived);
-  RUN(test_arm_full_table_evicts_oldest);
+  RUN(test_arm_full_table_rejects_without_evicting_pending_audio);
   RUN(test_ms_clock_wrap_boundary);
   RUN(test_recovered_seq_not_swept);
   RUN(test_swept_seq_rejects_rtx);
+  RUN(test_nack_wait_starts_at_spec_v2_value);
+  RUN(test_circuit_breaker_darks_below_twenty_percent);
+  RUN(test_circuit_breaker_keeps_exact_twenty_percent);
+  RUN(test_circuit_breaker_resets_on_reconnect_init);
+  RUN(test_circuit_breaker_expires_old_healthy_window);
   printf("PASS: %d nack_client host tests\n", tests_run);
   return 0;
 }

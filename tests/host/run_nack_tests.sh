@@ -8,7 +8,8 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 CC="${CC:-cc}"
-"$CC" -std=c99 -Wall -Wextra -Werror -I "$PEER" \
+"$CC" -std=c99 -Wall -Wextra -Werror \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -I "$PEER" \
   "$ROOT/tests/host/test_nack_client.c" "$PEER/nack_client.c" \
   -o "$OUT/test_nack_client"
 "$OUT/test_nack_client"

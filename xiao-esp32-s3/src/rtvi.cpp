@@ -6,12 +6,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#ifdef PIPECAT_NACK
-#include <esp_timer.h>
-#include <mbedtls/base64.h>
-
-#include "nack_client.h"
-#endif
 
 #include "main.h"
 
@@ -194,38 +188,6 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
             break;
         }
       }
-#ifdef PIPECAT_NACK
-      // NACK retransmit reply (audio-resilience ladder Phase 5, server
-      // nack_retransmit.py): {"data":{"t":"rtx","seq":<u16>,
-      // "payload_b64":"<base64 opus>"}} — one message per re-sent seq.
-      // Decode the opus bytes (stack buffer; frames are <400B) and offer them
-      // to the vendored rtp.c, which validates the 20ms window and stages
-      // in-window frames for the decode task (never touches opus from this
-      // task — see the threading note in rtp.c). Late/unknown seqs are
-      // counted and dropped there.
-      else if (hash(j_t->valuestring) == hash("rtx")) {
-        g_rtvi_rx_rtx++;
-        cJSON *j_seq = cJSON_GetObjectItem(j_data, "seq");
-        cJSON *j_b64 = cJSON_GetObjectItem(j_data, "payload_b64");
-        if (!cJSON_IsNumber(j_seq) || j_b64 == NULL ||
-            j_b64->valuestring == NULL) {
-          break;
-        }
-        // RED-wrapped rtx = primary + up to 2 redundant blocks + headers
-        // (~3x a bare opus frame). 512 truncated 7/11 real rtx (measured
-        // 2026-07-12: rtvi_rx_rtx=11 vs nack_rtx_arrived=4).
-        unsigned char opus[1024];
-        size_t opus_len = 0;
-        if (mbedtls_base64_decode(opus, sizeof(opus), &opus_len,
-                                  (const unsigned char *)j_b64->valuestring,
-                                  strlen(j_b64->valuestring)) != 0 ||
-            opus_len == 0) {
-          break;  // oversized/corrupt payload — drop it
-        }
-        rtp_nack_feed_rtx((uint16_t)j_seq->valueint, opus, opus_len,
-                          (uint32_t)(esp_timer_get_time() / 1000));
-      }
-#endif
       break;
     }
     default:

@@ -41,8 +41,8 @@ if("$ENV{PIPECAT_ADAPTIVE_PREBUFFER}" STREQUAL "1")
 endif()
 
 # Phase 5 NACK retransmit lane: on a >=3-packet seq gap (beyond RED's N-2
-# reach) re-request the missing seqs over the RTVI data channel; an rtx that
-# lands within 20ms is spliced as REAL audio (bit-exact — beats concealment).
+# reach) request missing seqs over reliable RTVI; binary rtx replies arrive on
+# pipecat-rtx (DCEP 0x81, unordered, zero-retransmit) and splice within 60ms.
 # Requires the server side (pipecat-house-voice nack_retransmit.py). DARK by
 # default — set PIPECAT_NACK=1 at configure time to enable.
 if("$ENV{PIPECAT_NACK}" STREQUAL "1")

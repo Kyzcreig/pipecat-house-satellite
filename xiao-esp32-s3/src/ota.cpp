@@ -621,7 +621,11 @@ extern volatile uint32_t g_nack_recovered;
 extern volatile uint32_t g_nack_late;
 extern volatile uint32_t g_nack_last_rtt_ms;
 extern volatile uint32_t g_nack_max_rtt_ms;
+extern volatile uint32_t g_nack_rtt_sample_total;
 extern volatile uint32_t g_nack_rtx_arrived;
+extern volatile uint32_t g_nack_auto_dark;
+extern volatile uint32_t g_rtx_malformed;
+extern size_t rtp_nack_format_rtt_samples(char *out, size_t capacity);
 extern volatile uint32_t g_rtvi_rx_total;
 extern volatile uint32_t g_rtvi_rx_server_msg;
 extern volatile uint32_t g_rtvi_rx_rtx;
@@ -649,13 +653,25 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[640];
-  snprintf(body, sizeof(body),
+  constexpr size_t kRttSamplesCapacity = 800;
+  constexpr size_t kBodyCapacity = 1600;
+  char *scratch =
+      (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
+  if (scratch == nullptr) {
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Unable to allocate playback stats response");
+  }
+  char *rtt_samples = scratch;
+  char *body = scratch + kRttSamplesCapacity;
+  rtp_nack_format_rtt_samples(rtt_samples, kRttSamplesCapacity);
+  snprintf(body, kBodyCapacity,
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
            "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
            "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
            "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
            "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%lu,"
+           "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
+           "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
            "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
@@ -675,6 +691,10 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_nack_last_rtt_ms,
            (unsigned long)g_nack_max_rtt_ms,
            (unsigned long)g_nack_rtx_arrived,
+           (unsigned long)g_nack_auto_dark,
+           (unsigned long)g_rtx_malformed,
+           (unsigned long)g_nack_rtt_sample_total,
+           rtt_samples,
            (unsigned long)g_rtvi_rx_total,
            (unsigned long)g_rtvi_rx_server_msg,
            (unsigned long)g_rtvi_rx_rtx,
@@ -684,8 +704,9 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_play_prebuffer_effective_ms,
            (unsigned long)g_play_prebuffer_steps);
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, body);
-  return ESP_OK;
+  esp_err_t ret = httpd_resp_sendstr(req, body);
+  free(scratch);
+  return ret;
 }
 
 void pipecat_init_ota_server() {
