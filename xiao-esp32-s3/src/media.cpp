@@ -432,6 +432,27 @@ bool pipecat_xvf_param_default(const char *param, float *value) {
   return true;
 }
 
+esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
+                                 bool *readback_valid) {
+  if (readback == nullptr || readback_valid == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *readback = 0.0f;
+  *readback_valid = false;
+  const TuneEntry *entry = find_tune_entry(param);
+  if (entry == nullptr) {
+    return ESP_ERR_NOT_FOUND;
+  }
+  if (entry->target == TuneTarget::DAC_ATTEN) {
+    return ESP_OK;
+  }
+  bool is_float = entry->target == TuneTarget::XVF_FLOAT;
+  esp_err_t ret =
+      xvf_read_scalar(entry->resid, entry->cmd, is_float, readback);
+  *readback_valid = ret == ESP_OK;
+  return ret;
+}
+
 // Apply one named tune and verify typed XVF registers by readback. DAC attenuation
 // is the sole ack-only target because the codec path has no independent reader.
 esp_err_t pipecat_xvf_tune(const char *param, float value,

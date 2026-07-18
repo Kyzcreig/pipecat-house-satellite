@@ -6,6 +6,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = (ROOT / "xiao-esp32-s3" / "src" / "main.cpp").read_text()
+MAIN_H = (ROOT / "xiao-esp32-s3" / "src" / "main.h").read_text()
 MEDIA = (ROOT / "xiao-esp32-s3" / "src" / "media.cpp").read_text()
 OTA = (ROOT / "xiao-esp32-s3" / "src" / "ota.cpp").read_text()
 
@@ -54,6 +55,10 @@ assert "pipecat_xvf_persistent_param_count" in MEDIA
 assert "pipecat_xvf_persistent_param_name" in MEDIA
 assert "pipecat_xvf_param_default" in MEDIA
 assert "xvf_read_scalar" in MEDIA
+assert "pipecat_xvf_read_param" in MAIN_H
+read_body = function_body(MEDIA, "esp_err_t pipecat_xvf_read_param(")
+assert "find_tune_entry(param)" in read_body
+assert "xvf_read_scalar(entry->resid, entry->cmd" in read_body
 assert "clamp_dtsensitive" in MEDIA
 assert "XVF_CMD_PP_GAMMA_E = 24" in MEDIA
 assert re.search(
@@ -102,12 +107,19 @@ assert "clear_dsp_params()" in params_body
 assert "load_dsp_param(nvs, param, &value)" in params_body
 clear_body = function_body(OTA, "static esp_err_t clear_dsp_params(")
 assert clear_body.index("nvs_erase_all") < clear_body.index("nvs_commit")
+read_handler = function_body(OTA, "static esp_err_t xvf_read_handler(")
+assert 'httpd_query_key_value(query, "param"' in read_handler
+assert "pipecat_xvf_read_param(param, &readback, &readback_valid)" in read_handler
+assert r'\"readback\":%.9g' in read_handler
+assert r'\"readback\":null' in read_handler
 server_body = function_body(OTA, "void pipecat_init_ota_server()")
 assert '.uri = "/xvf/params"' in server_body
+assert '.uri = "/xvf/read"' in server_body
 assert ".method = HTTP_GET" in server_body
 assert "httpd_register_uri_handler(g_ota_server, &params_uri)" in server_body
+assert "httpd_register_uri_handler(g_ota_server, &read_uri)" in server_body
 registered_handlers = server_body.count("httpd_register_uri_handler(")
-assert registered_handlers == 8
+assert registered_handlers == 9
 assert f"config.max_uri_handlers = {registered_handlers}" in server_body
 
 print("xvf nvs source contract: PASS")
