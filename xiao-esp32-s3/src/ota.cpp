@@ -654,6 +654,15 @@ extern volatile uint32_t g_rtvi_rx_server_msg;
 extern volatile uint32_t g_rtvi_rx_rtx;
 extern volatile uint32_t g_rtvi_rx_parse_fail;
 extern volatile uint32_t g_rtvi_rx_dropped;
+extern volatile uint32_t g_sctp_dcep_open_rx_sid0;
+extern volatile uint32_t g_sctp_dcep_open_rx_sid2;
+extern volatile uint32_t g_sctp_dcep_ack_tx_sid0;
+extern volatile uint32_t g_sctp_dcep_ack_tx_sid2;
+extern volatile uint32_t g_sctp_dcep_ack_rx_sid0;
+extern volatile uint32_t g_sctp_dcep_ack_rx_sid2;
+extern volatile uint32_t g_sctp_reconfig_rx;
+extern volatile uint32_t g_sctp_reconfig_tx;
+extern volatile uint32_t g_sctp_abort_tx;
 }
 void pipecat_play_selftest_clip();
 
@@ -678,7 +687,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
     }
   }
   constexpr size_t kRttSamplesCapacity = 800;
-  constexpr size_t kBodyCapacity = 1600;
+  constexpr size_t kBodyCapacity = 2200;
   char *scratch =
       (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
   if (scratch == nullptr) {
@@ -697,6 +706,10 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
            "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
            "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,\"rtvi_rx_dropped\":%lu,"
+           "\"dcep_open_rx_sid0\":%lu,\"dcep_open_rx_sid2\":%lu,"
+           "\"dcep_ack_tx_sid0\":%lu,\"dcep_ack_tx_sid2\":%lu,"
+           "\"dcep_ack_rx_sid0\":%lu,\"dcep_ack_rx_sid2\":%lu,"
+           "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
@@ -724,6 +737,15 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_rtvi_rx_rtx,
            (unsigned long)g_rtvi_rx_parse_fail,
            (unsigned long)g_rtvi_rx_dropped,
+           (unsigned long)g_sctp_dcep_open_rx_sid0,
+           (unsigned long)g_sctp_dcep_open_rx_sid2,
+           (unsigned long)g_sctp_dcep_ack_tx_sid0,
+           (unsigned long)g_sctp_dcep_ack_tx_sid2,
+           (unsigned long)g_sctp_dcep_ack_rx_sid0,
+           (unsigned long)g_sctp_dcep_ack_rx_sid2,
+           (unsigned long)g_sctp_reconfig_rx,
+           (unsigned long)g_sctp_reconfig_tx,
+           (unsigned long)g_sctp_abort_tx,
            (unsigned long)g_play_stat_gap_resumes,
            (unsigned long)(g_play_prebuffer_samples / 16),
            (unsigned long)g_play_prebuffer_effective_ms,

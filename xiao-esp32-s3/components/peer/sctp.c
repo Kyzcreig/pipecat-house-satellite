@@ -4,6 +4,9 @@
 #include "dtls_srtp.h"
 #include "sctp.h"
 #include "utils.h"
+#ifdef PIPECAT_NACK
+#include "esp_timer.h"
+#endif
 #if CONFIG_USE_USRSCTP
 #include <usrsctp.h>
 #endif
@@ -74,6 +77,52 @@ static const uint32_t crc32c_table[256] = {
     0x79B737BAL, 0x8BDCB4B9L, 0x988C474DL, 0x6AE7C44EL,
     0xBE2DA0A5L, 0x4C4623A6L, 0x5F16D052L, 0xAD7D5351L};
 
+#ifdef PIPECAT_NACK
+volatile uint32_t g_sctp_dcep_open_rx_sid0 = 0;
+volatile uint32_t g_sctp_dcep_open_rx_sid2 = 0;
+volatile uint32_t g_sctp_dcep_ack_tx_sid0 = 0;
+volatile uint32_t g_sctp_dcep_ack_tx_sid2 = 0;
+volatile uint32_t g_sctp_dcep_ack_rx_sid0 = 0;
+volatile uint32_t g_sctp_dcep_ack_rx_sid2 = 0;
+volatile uint32_t g_sctp_reconfig_rx = 0;
+volatile uint32_t g_sctp_reconfig_tx = 0;
+volatile uint32_t g_sctp_abort_tx = 0;
+
+static void sctp_count_sid(uint16_t sid, volatile uint32_t* sid0,
+                           volatile uint32_t* sid2) {
+  if (sid == 0) {
+    (*sid0)++;
+  } else if (sid == 2) {
+    (*sid2)++;
+  }
+}
+
+static void sctp_trace_outgoing_packet(Sctp* sctp, const void* buf, size_t len) {
+  (void)sctp;
+  const uint8_t* bytes = (const uint8_t*)buf;
+  if (len < sizeof(SctpHeader) + sizeof(SctpChunkCommon)) return;
+  size_t pos = sizeof(SctpHeader);
+  while (pos + sizeof(SctpChunkCommon) <= len) {
+    const SctpChunkCommon* common = (const SctpChunkCommon*)(bytes + pos);
+    uint16_t chunk_length = ntohs(common->length);
+    if (chunk_length < sizeof(SctpChunkCommon) || pos + chunk_length > len) return;
+    if (common->type == SCTP_RE_CONFIG) g_sctp_reconfig_tx++;
+    if (common->type == SCTP_ABORT) g_sctp_abort_tx++;
+    if (common->type == SCTP_DATA &&
+        chunk_length >= sizeof(SctpDataChunk) + 1) {
+      const SctpDataChunk* data = (const SctpDataChunk*)(bytes + pos);
+      uint16_t sid = ntohs(data->sid);
+      uint32_t ppid = ntohl(data->ppid);
+      if (ppid == DATA_CHANNEL_PPID_CONTROL && data->data[0] == DATA_CHANNEL_ACK) {
+        sctp_count_sid(sid, &g_sctp_dcep_ack_tx_sid0,
+                       &g_sctp_dcep_ack_tx_sid2);
+      }
+    }
+    pos += 4 * ((chunk_length + 3) / 4);
+  }
+}
+#endif
+
 uint32_t crc32c(uint32_t crc, const uint8_t* data, unsigned int length) {
   while (length--) {
     crc = crc32c_table[(crc ^ *data++) & 0xFFL] ^ (crc >> 8);
@@ -89,6 +138,9 @@ static uint32_t sctp_get_checksum(Sctp* sctp, const uint8_t* buf, size_t len) {
 static int sctp_outgoing_data_cb(void* userdata, void* buf, size_t len, uint8_t tos, uint8_t set_df) {
   Sctp* sctp = (Sctp*)userdata;
 
+#ifdef PIPECAT_NACK
+  sctp_trace_outgoing_packet(sctp, buf, len);
+#endif
   dtls_srtp_write(sctp->dtls_srtp, buf, len);
   return 0;
 }
@@ -377,6 +429,31 @@ void sctp_incoming_data(Sctp* sctp, char* buf, size_t len) {
       return;
     }
 
+#ifdef PIPECAT_NACK
+    if (chunk_common->type == SCTP_RE_CONFIG) {
+      g_sctp_reconfig_rx++;
+    }
+    if (chunk_common->type == SCTP_DATA &&
+        chunk_length >= sizeof(SctpDataChunk) + 1) {
+      SctpDataChunk* trace_data = (SctpDataChunk*)(buf + pos);
+      uint16_t trace_sid = ntohs(trace_data->sid);
+      uint32_t trace_ppid = ntohl(trace_data->ppid);
+      if (trace_sid == 2 && esp_timer_get_time() <= sctp->sid2_trace_until_us) {
+        LOGW("SCTP_RX sid=2 chunk_type=%u ppid=%lu",
+             (unsigned)chunk_common->type, (unsigned long)trace_ppid);
+      }
+      if (trace_ppid == DATA_CHANNEL_PPID_CONTROL) {
+        if (trace_data->data[0] == DATA_CHANNEL_OPEN) {
+          sctp_count_sid(trace_sid, &g_sctp_dcep_open_rx_sid0,
+                         &g_sctp_dcep_open_rx_sid2);
+        } else if (trace_data->data[0] == DATA_CHANNEL_ACK) {
+          sctp_count_sid(trace_sid, &g_sctp_dcep_ack_rx_sid0,
+                         &g_sctp_dcep_ack_rx_sid2);
+        }
+      }
+    }
+#endif
+
     switch (chunk_common->type) {
       case SCTP_DATA: {
         SctpDataChunk* data_chunk = (SctpDataChunk*)(buf + pos);
@@ -555,10 +632,17 @@ void sctp_incoming_data(Sctp* sctp, char* buf, size_t len) {
         break;
       }
       case SCTP_ABORT:
+        LOGW("SCTP_RX association chunk_type=%u (ABORT)",
+             (unsigned)chunk_common->type);
         sctp->connected = 0;
         if (sctp->onclose) {
           sctp->onclose(sctp->userdata);
         }
+        break;
+      case SCTP_RE_CONFIG:
+        LOGW("SCTP_RX association chunk_type=%u (RE_CONFIG)",
+             (unsigned)chunk_common->type);
+        length = 0;
         break;
       default:
         LOGI("Unknown chunk type %d", chunk_common->type);
@@ -575,6 +659,9 @@ void sctp_incoming_data(Sctp* sctp, char* buf, size_t len) {
       // padding 4
       length = (4 * ((length + 3) / 4));
       out_packet->header.checksum = sctp_get_checksum(sctp, sctp->buf, length);
+#ifdef PIPECAT_NACK
+      sctp_trace_outgoing_packet(sctp, sctp->buf, length);
+#endif
       dtls_srtp_write(sctp->dtls_srtp, sctp->buf, length);
       // sctp_outgoing_data_cb(sctp, sctp->buf, SCTP_MTU, 0, 0);
     }
@@ -777,6 +864,9 @@ int sctp_create_association(Sctp* sctp, DtlsSrtp* dtls_srtp) {
   // send SCTP_INIT
   sctp->inbound_tsn_valid = 0;
   sctp->inbound_gap_bitmap = 0;
+#ifdef PIPECAT_NACK
+  sctp->sid2_trace_until_us = esp_timer_get_time() + 60 * 1000000ULL;
+#endif
   memset(sctp->buf, 0, sizeof(sctp->buf));
   int length = 0;
   SctpInitChunk* init_chunk;
@@ -800,6 +890,9 @@ int sctp_create_association(Sctp* sctp, DtlsSrtp* dtls_srtp) {
   length = ntohs(init_chunk->common.length) + sizeof(SctpHeader);
   length = (4 * ((length + 3) / 4));
   header->checksum = sctp_get_checksum(sctp, sctp->buf, length);
+#ifdef PIPECAT_NACK
+  sctp_trace_outgoing_packet(sctp, sctp->buf, length);
+#endif
   dtls_srtp_write(sctp->dtls_srtp, sctp->buf, length);
 #endif
 

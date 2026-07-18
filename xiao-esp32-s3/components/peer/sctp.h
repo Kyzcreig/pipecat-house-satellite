@@ -58,7 +58,7 @@ typedef enum SctpHeaderType {
   SCTP_SHUTDOWN_COMPLETE = 14,
   SCTP_AUTH = 15,
   SCTP_ASCONF_ACK = 128,
-  SCTP_ASCONF = 130,
+  SCTP_RE_CONFIG = 130,
   SCTP_FORWARD_TSN = 192
 
 } SctpHeaderType;
@@ -165,6 +165,7 @@ typedef struct Sctp {
   uint32_t inbound_cumulative_tsn;
   uint64_t inbound_gap_bitmap;
   uint8_t inbound_tsn_valid;
+  uint64_t sid2_trace_until_us;
 #endif
   DtlsSrtp* dtls_srtp;
   int stream_count;

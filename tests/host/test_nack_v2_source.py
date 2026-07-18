@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WEBRTC = (ROOT / "xiao-esp32-s3/src/webrtc.cpp").read_text()
 RTVI = (ROOT / "xiao-esp32-s3/src/rtvi.cpp").read_text()
 SCTP = (ROOT / "xiao-esp32-s3/components/peer/sctp.c").read_text()
+SCTP_HEADER = (ROOT / "xiao-esp32-s3/components/peer/sctp.h").read_text()
 PEER_HEADER = (ROOT / "xiao-esp32-s3/components/peer/peer_connection.h").read_text()
 NACK_HEADER = (ROOT / "xiao-esp32-s3/components/peer/nack_client.h").read_text()
 
@@ -95,3 +96,34 @@ def test_dark_build_keeps_stock_sctp_abi() -> None:
     assert "#ifdef PIPECAT_NACK\n  uint32_t inbound_cumulative_tsn" in header
     assert "#ifdef PIPECAT_NACK\nint peer_connection_lookup_datachannel" in peer_header
     assert "#ifdef PIPECAT_NACK\nint peer_connection_lookup_datachannel" in peer
+
+
+def test_phase1_who_closed_sctp_counters_are_exported_per_sid() -> None:
+    ota = (ROOT / "xiao-esp32-s3/src/ota.cpp").read_text()
+    counters = (
+        "g_sctp_dcep_open_rx_sid0",
+        "g_sctp_dcep_open_rx_sid2",
+        "g_sctp_dcep_ack_tx_sid0",
+        "g_sctp_dcep_ack_tx_sid2",
+        "g_sctp_dcep_ack_rx_sid0",
+        "g_sctp_dcep_ack_rx_sid2",
+        "g_sctp_reconfig_rx",
+        "g_sctp_reconfig_tx",
+        "g_sctp_abort_tx",
+    )
+    for counter in counters:
+        assert f"volatile uint32_t {counter}" in SCTP
+        assert f"extern volatile uint32_t {counter}" in ota
+        assert f'\\\"{counter.removeprefix("g_sctp_")}\\\"' in ota
+
+
+def test_phase1_who_closed_traces_sid2_and_both_tx_control_chunks() -> None:
+    assert "SCTP_RE_CONFIG = 130" in SCTP_HEADER
+    assert "case SCTP_RE_CONFIG:" in SCTP
+    assert "sid2_trace_until_us" in SCTP_HEADER
+    assert "SCTP_RX sid=2 chunk_type=%u" in SCTP
+    assert "sctp_trace_outgoing_packet" in SCTP
+    # Every custom-stack DTLS write is preceded by the outbound chunk tracer.
+    assert SCTP.count("sctp_trace_outgoing_packet(sctp,") == SCTP.count(
+        "dtls_srtp_write(sctp->dtls_srtp,"
+    )
