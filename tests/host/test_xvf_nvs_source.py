@@ -26,6 +26,7 @@ def function_body(source: str, signature: str) -> str:
 
 PERSISTENT_PARAMS = {
     "asr_gain",
+    "gamma_e",
     "dtsensitive",
     "agc_maxgain",
     "agc_desired",
@@ -54,6 +55,12 @@ assert "pipecat_xvf_persistent_param_name" in MEDIA
 assert "pipecat_xvf_param_default" in MEDIA
 assert "xvf_read_scalar" in MEDIA
 assert "clamp_dtsensitive" in MEDIA
+assert "XVF_CMD_PP_GAMMA_E = 24" in MEDIA
+assert re.search(
+    r'\{"gamma_e",\s*XVF_RESID_PP,\s*XVF_CMD_PP_GAMMA_E,\s*'
+    r'TuneTarget::XVF_FLOAT,\s*true,\s*true,\s*0\.0f,\s*2\.0f,\s*1\.0f,\s*false\}',
+    table,
+)
 assert "1.0e-8f" in MEDIA  # PP_AGCDESIREDLEVEL documented floor
 assert "1000.0f" in MEDIA  # ASROUTGAIN / PP_AGCMAXGAIN documented ceiling
 tune_body = function_body(MEDIA, "esp_err_t pipecat_xvf_tune(")

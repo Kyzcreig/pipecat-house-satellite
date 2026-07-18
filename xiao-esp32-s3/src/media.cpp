@@ -91,6 +91,7 @@ static constexpr uint8_t XVF_CMD_PP_LIMITONOFF = 19;
 static constexpr uint8_t XVF_CMD_PP_MIN_NS = 21;
 static constexpr uint8_t XVF_CMD_PP_MIN_NN = 22;
 static constexpr uint8_t XVF_CMD_PP_ECHOONOFF = 23;
+static constexpr uint8_t XVF_CMD_PP_GAMMA_E = 24;
 static constexpr uint8_t XVF_CMD_PP_NLATTENONOFF = 27;
 static constexpr uint8_t XVF_CMD_PP_DTSENSITIVE = 31;
 static constexpr uint8_t XVF_CMD_PP_ATTNS_MODE = 32;
@@ -343,6 +344,8 @@ static const TuneEntry kTuneEntries[] = {
      TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
     // XMOS-documented PP ranges/defaults. One table keeps HTTP, persistence,
     // boot replay, and introspection in lockstep.
+    {"gamma_e", XVF_RESID_PP, XVF_CMD_PP_GAMMA_E, TuneTarget::XVF_FLOAT,
+     true, true, 0.0f, 2.0f, 1.0f, false},
     {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE,
      TuneTarget::XVF_INT32, true, true, 0.0f, 15.0f, 15.0f, true},
     {"agc_maxgain", XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN,
