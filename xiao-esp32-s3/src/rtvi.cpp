@@ -21,6 +21,7 @@ volatile uint32_t g_rtvi_rx_total = 0;       // every parsed data-channel msg
 volatile uint32_t g_rtvi_rx_server_msg = 0;  // type == server-message
 volatile uint32_t g_rtvi_rx_rtx = 0;         // ... with data.t == rtx
 volatile uint32_t g_rtvi_rx_parse_fail = 0;  // cJSON_Parse failures
+volatile uint32_t g_rtvi_rx_dropped = 0;     // full-queue sheds (see below)
 static QueueHandle_t rtvi_queue;
 static PeerConnection *peer_connection = NULL;
 static rtvi_callbacks_t *rtvi_callbacks = NULL;
@@ -237,5 +238,16 @@ void pipecat_rtvi_handle_message(const char *msg) {
 
   rtvi_msg_t rtvi_msg = {.msg = j_msg};
 
-  xQueueSend(rtvi_queue, &rtvi_msg, portMAX_DELAY);
+  // This runs on the prio-8 transport loop (peer_connection_loop's onmessage
+  // callback). A blocking send here (portMAX_DELAY) would stall the loop when
+  // the 10-deep queue backs up behind the slower prio-2 rtvi_task; the stalled
+  // loop stops servicing ICE keepalive, libpeer hits CONFIG_KEEPALIVE_TIMEOUT
+  // (30s) -> PEER_CONNECTION_CLOSED -> esp_restart(). That is exactly the
+  // kitchen NACK-v2 arm reset (t_5c931cb9): a 512B RTVI flood filling this
+  // queue rebooted the device ~30s in. Liveness beats chat: shed the message
+  // (zero timeout), count the drop, and NEVER block transport.
+  if (xQueueSend(rtvi_queue, &rtvi_msg, 0) != pdTRUE) {
+    g_rtvi_rx_dropped++;
+    cJSON_Delete(j_msg);
+  }
 }

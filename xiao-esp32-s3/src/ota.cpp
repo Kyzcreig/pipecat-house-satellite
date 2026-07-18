@@ -630,6 +630,7 @@ extern volatile uint32_t g_rtvi_rx_total;
 extern volatile uint32_t g_rtvi_rx_server_msg;
 extern volatile uint32_t g_rtvi_rx_rtx;
 extern volatile uint32_t g_rtvi_rx_parse_fail;
+extern volatile uint32_t g_rtvi_rx_dropped;
 }
 void pipecat_play_selftest_clip();
 
@@ -672,7 +673,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%lu,"
            "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
            "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
-           "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,"
+           "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,\"rtvi_rx_dropped\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
@@ -699,6 +700,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_rtvi_rx_server_msg,
            (unsigned long)g_rtvi_rx_rtx,
            (unsigned long)g_rtvi_rx_parse_fail,
+           (unsigned long)g_rtvi_rx_dropped,
            (unsigned long)g_play_stat_gap_resumes,
            (unsigned long)(g_play_prebuffer_samples / 16),
            (unsigned long)g_play_prebuffer_effective_ms,
