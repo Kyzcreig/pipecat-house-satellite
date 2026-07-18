@@ -12,7 +12,7 @@
  * therefore only calls the planner when delta >= NACK_MIN_GAP (3); <= 2 stays
  * on the RED/FEC/PLC path untouched.
  *
- * PROTOCOL (request reliable; reply binary unordered + zero-retransmit):
+ * PROTOCOL (request reliable; reply binary unordered + maxRetransmits=2):
  *   device -> server:  {"t":"nack","seqs":[<u16>,...]}   (<= NACK_MAX_SEQS)
  *   server -> device:  [seq:u16][payload_len:u16][opus bytes]
  * The device splices the rtx opus payload into the decode path if it arrives
@@ -54,8 +54,14 @@ extern "C" {
 /* Pending-rtx table size: how many in-flight NACKed seqs we track at once. One
  * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps. */
 #define NACK_PENDING_SLOTS 16
+#define NACK_RTX_MAX_RETRANSMITS 2u
 #define NACK_EFFECT_BUCKET_MS 10000u
 #define NACK_EFFECT_BUCKETS 60
+#define NACK_BREAKER_MIN_SENT 10u
+#define NACK_BREAKER_MIN_RECOVERY_PERCENT 20u
+#define NACK_BREAKER_REPROBE_MS 60000u
+#define NACK_OUTAGE_GAP_MS 500u
+#define NACK_OUTAGE_MAX_PACKET_DELTA 1u
 
 /* Result of offering an arriving rtx to the pending table. */
 typedef enum NackTakeResult {
@@ -83,7 +89,11 @@ typedef struct NackEffectBucket {
   uint32_t epoch;
   uint16_t sent;
   uint16_t recovered;
+  uint32_t packets_first;
+  uint32_t packets_last;
   uint8_t valid;
+  uint8_t packets_sampled;
+  uint8_t outage;
 } NackEffectBucket;
 
 typedef struct NackClient {
@@ -97,7 +107,11 @@ typedef struct NackClient {
    * measurement instead of guesswork. */
   uint32_t last_rtt_ms;
   uint32_t max_rtt_ms;
+  uint32_t dark_until_ms;
+  uint32_t last_packet_sample_ms;
+  uint32_t last_packets_received;
   uint8_t auto_dark;
+  uint8_t packet_progress_valid;
   NackEffectBucket effect[NACK_EFFECT_BUCKETS];
 } NackClient;
 
@@ -114,6 +128,9 @@ void nack_client_init(NackClient* c);
  */
 int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
                          int max_out);
+
+/* The server advertises mr=2; older mr=0/1 peers remain wire-compatible. */
+int nack_client_accepts_reliability(uint32_t reliability_parameter);
 
 /* Parse one exact [seq:u16][payload_len:u16][opus bytes] network-order frame.
  * The returned payload aliases frame. Malformed/empty/oversized frames fail. */
@@ -136,8 +153,13 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms);
  * Returns the number newly expired. */
 int nack_client_sweep(NackClient* c, uint32_t now_ms);
 
-/* Trip at <20% recovered across >=10 resolved requests in the rolling
- * 10-minute window. Sticky until nack_client_init() on reconnect. */
+/* Record the cumulative audio-RTP receive counter. A <=1-packet delta across
+ * >=500ms marks the current effect bucket as outage evidence, not NACK failure. */
+void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
+                                      uint32_t packets_received);
+
+/* Trip at <20% recovered across >=10 resolved, non-outage requests in the
+ * rolling 10-minute window. Dark state expires into a clean re-probe at 60s. */
 int nack_client_should_dark(NackClient* c, uint32_t now_ms);
 
 /* ── rtp.c wiring surface (implemented in the vendored rtp.c; declared here so

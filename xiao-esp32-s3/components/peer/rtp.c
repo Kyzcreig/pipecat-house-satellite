@@ -361,7 +361,6 @@ volatile uint32_t g_nack_rtt_sample_total = 0;
 // recovered=0). The UNKNOWN take path is otherwise invisible.
 volatile uint32_t g_nack_rtx_arrived = 0;
 volatile uint32_t g_nack_auto_dark = 0;
-static int s_nack_dark_logged = 0;
 
 // Data-channel sender, registered by the C++ side (webrtc.cpp). NULL until a
 // peer is up; a NULL sender means we simply don't NACK (degrade to RED/PLC).
@@ -411,18 +410,27 @@ static inline uint32_t nack_now_ms(void) {
 }
 
 static void nack_apply_circuit_breaker(uint32_t now_ms) {
-  int tripped = 0;
+  int was_dark = 0;
+  int is_dark = 0;
   portENTER_CRITICAL(&s_nack_mux);
-  tripped = nack_client_should_dark(&g_nack, now_ms);
-  if (tripped) {
-    g_nack_auto_dark = 1;
-  }
+  was_dark = (int)g_nack_auto_dark;
+  is_dark = nack_client_should_dark(&g_nack, now_ms);
+  g_nack_auto_dark = (uint32_t)is_dark;
   portEXIT_CRITICAL(&s_nack_mux);
-  if (tripped) {
-    if (!s_nack_dark_logged) {
-      s_nack_dark_logged = 1;
-      LOGW("NACK-v2 auto-dark: recovery below 20%% over >=10 requests; RED/PLC active until reconnect");
-    }
+  if (is_dark == was_dark) {
+    return;
+  }
+  const char* message =
+      is_dark ? "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":\"dark\"}"
+              : "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":\"restore\"}";
+  if (s_nack_send != NULL) {
+    s_nack_send(message, strlen(message));
+  }
+  if (is_dark) {
+    LOGW("NACK_V2_BREAKER state=dark reason=low-recovery reprobe_ms=%u",
+         (unsigned)NACK_BREAKER_REPROBE_MS);
+  } else {
+    LOGI("NACK_V2_BREAKER state=restore reason=reprobe");
   }
 }
 
@@ -483,6 +491,7 @@ static void nack_sweep_and_drain(uint32_t now_ms) {
     }
   }
   portENTER_CRITICAL(&s_nack_mux);
+  nack_client_note_packet_progress(&g_nack, now_ms, g_rtp_packets_received);
   int expired = nack_client_sweep(&g_nack, now_ms);
   g_nack_late = g_nack.nack_late;
   portEXIT_CRITICAL(&s_nack_mux);
@@ -549,7 +558,6 @@ void rtp_nack_register_sender(NackSendFn fn) {
   g_nack_rtt_sample_total = 0;
   g_nack_rtx_arrived = 0;
   g_nack_auto_dark = 0;
-  s_nack_dark_logged = 0;
   s_rtx_head = 0;
   s_rtx_tail = 0;
   s_nack_rtt_sample_count = 0;

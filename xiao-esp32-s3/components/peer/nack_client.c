@@ -20,6 +20,36 @@ static NackEffectBucket* effect_bucket(NackClient* c, uint32_t epoch) {
   return bucket;
 }
 
+void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
+                                      uint32_t packets_received) {
+  if (c == NULL) {
+    return;
+  }
+  NackEffectBucket* bucket = effect_bucket(c, effect_epoch(now_ms));
+  if (!bucket->packets_sampled) {
+    bucket->packets_first = packets_received;
+    bucket->packets_sampled = 1;
+  }
+  bucket->packets_last = packets_received;
+  if (c->packet_progress_valid) {
+    uint32_t elapsed_ms = now_ms - c->last_packet_sample_ms;
+    uint32_t packet_delta = packets_received - c->last_packets_received;
+    if (elapsed_ms >= NACK_OUTAGE_GAP_MS &&
+        packet_delta <= NACK_OUTAGE_MAX_PACKET_DELTA) {
+      bucket->outage = 1;
+      uint32_t previous_epoch = effect_epoch(c->last_packet_sample_ms);
+      NackEffectBucket* previous =
+          &c->effect[previous_epoch % NACK_EFFECT_BUCKETS];
+      if (previous->valid && previous->epoch == previous_epoch) {
+        previous->outage = 1;
+      }
+    }
+  }
+  c->last_packet_sample_ms = now_ms;
+  c->last_packets_received = packets_received;
+  c->packet_progress_valid = 1;
+}
+
 void nack_client_init(NackClient* c) {
   if (c == NULL) {
     return;
@@ -48,6 +78,10 @@ int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
     out_seqs[i] = (uint16_t)(first_missing + i);
   }
   return count;
+}
+
+int nack_client_accepts_reliability(uint32_t reliability_parameter) {
+  return reliability_parameter <= NACK_RTX_MAX_RETRANSMITS;
 }
 
 int nack_parse_rtx_frame(const uint8_t* frame, size_t frame_len, uint16_t* seq,
@@ -174,7 +208,13 @@ int nack_client_should_dark(NackClient* c, uint32_t now_ms) {
     return 0;
   }
   if (c->auto_dark) {
-    return 1;
+    if ((int32_t)(now_ms - c->dark_until_ms) < 0) {
+      return 1;
+    }
+    c->auto_dark = 0;
+    c->dark_until_ms = 0;
+    memset(c->effect, 0, sizeof(c->effect));
+    return 0;
   }
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
     if (c->pending[i].active == NACK_SLOT_ARMED) {
@@ -187,14 +227,22 @@ int nack_client_should_dark(NackClient* c, uint32_t now_ms) {
   uint32_t recovered = 0;
   for (int i = 0; i < NACK_EFFECT_BUCKETS; i++) {
     NackEffectBucket* bucket = &c->effect[i];
-    if (bucket->valid &&
-        (uint32_t)(now_epoch - bucket->epoch) < NACK_EFFECT_BUCKETS) {
-      sent += bucket->sent;
-      recovered += bucket->recovered;
+    if (!bucket->valid ||
+        (uint32_t)(now_epoch - bucket->epoch) >= NACK_EFFECT_BUCKETS) {
+      continue;
     }
+    uint32_t packet_delta = bucket->packets_last - bucket->packets_first;
+    if (!bucket->packets_sampled || bucket->outage ||
+        packet_delta <= NACK_OUTAGE_MAX_PACKET_DELTA) {
+      continue;
+    }
+    sent += bucket->sent;
+    recovered += bucket->recovered;
   }
-  if (sent >= 10 && recovered * 100u < sent * 20u) {
+  if (sent >= NACK_BREAKER_MIN_SENT &&
+      recovered * 100u < sent * NACK_BREAKER_MIN_RECOVERY_PERCENT) {
     c->auto_dark = 1;
+    c->dark_until_ms = now_ms + NACK_BREAKER_REPROBE_MS;
   }
   return c->auto_dark;
 }

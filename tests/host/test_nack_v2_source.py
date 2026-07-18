@@ -7,14 +7,26 @@ WEBRTC = (ROOT / "xiao-esp32-s3/src/webrtc.cpp").read_text()
 RTVI = (ROOT / "xiao-esp32-s3/src/rtvi.cpp").read_text()
 SCTP = (ROOT / "xiao-esp32-s3/components/peer/sctp.c").read_text()
 PEER_HEADER = (ROOT / "xiao-esp32-s3/components/peer/peer_connection.h").read_text()
+NACK_HEADER = (ROOT / "xiao-esp32-s3/components/peer/nack_client.h").read_text()
 
 
-def test_dcep_unordered_zero_retransmit_type_is_exactly_0x81() -> None:
+def test_dcep_unordered_two_retransmit_contract_is_exactly_0x81() -> None:
     assert "DATA_CHANNEL_PARTIAL_RELIABLE_REXMIT_UNORDERED = 0x81" in PEER_HEADER
     assert "channel_type" in SCTP
     assert "reliability_parameter" in SCTP
     peer = (ROOT / "xiao-esp32-s3/components/peer/peer_connection.c").read_text()
     assert "msg[1] = channel_type" in peer
+    assert "NACK_RTX_MAX_RETRANSMITS 2u" in NACK_HEADER
+    assert "!nack_client_accepts_reliability(reliability_parameter)" in WEBRTC
+
+
+def test_breaker_transitions_are_sent_to_hub_and_logged_locally() -> None:
+    rtp = (ROOT / "xiao-esp32-s3/components/peer/rtp.c").read_text()
+    assert "nack_client_note_packet_progress" in rtp
+    assert r'\"state\":\"dark\"' in rtp
+    assert r'\"state\":\"restore\"' in rtp
+    assert "NACK_V2_BREAKER state=dark" in rtp
+    assert "NACK_V2_BREAKER state=restore" in rtp
 
 
 def test_nack_arms_only_after_validated_rtx_channel_mapping() -> None:

@@ -248,57 +248,139 @@ static void test_nack_wait_starts_at_spec_v2_value(void) {
   assert(NACK_WAIT_MS == 60);
 }
 
+static void test_rtx_reliability_accepts_zero_through_two(void) {
+  assert(nack_client_accepts_reliability(0));
+  assert(nack_client_accepts_reliability(1));
+  assert(nack_client_accepts_reliability(2));
+  assert(!nack_client_accepts_reliability(3));
+  assert(!nack_client_accepts_reliability(UINT32_MAX));
+}
+
+static void note_healthy_packets(NackClient *c, uint32_t start_ms,
+                                 uint32_t start_packets) {
+  for (uint32_t i = 0; i < 5; i++) {
+    nack_client_note_packet_progress(c, start_ms + i * 20u,
+                                     start_packets + i);
+  }
+}
+
+static void arm_ten(NackClient *c, uint16_t first_seq, uint32_t now_ms) {
+  for (uint16_t i = 0; i < 10; i++) {
+    assert(nack_client_arm(c, (uint16_t)(first_seq + i), now_ms));
+  }
+}
+
 static void test_circuit_breaker_darks_below_twenty_percent(void) {
   NackClient c;
   nack_client_init(&c);
-  for (uint16_t seq = 0; seq < 10; seq++) {
-    nack_client_arm(&c, seq, seq);
-  }
-  assert(nack_client_should_dark(&c, 10) == 0); /* wait for outcomes */
-  assert(nack_client_sweep(&c, 1000) == 10);
-  assert(nack_client_should_dark(&c, 1000) == 1);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  assert(nack_client_should_dark(&c, 210) == 0); /* wait for outcomes */
+  assert(nack_client_sweep(&c, 300) == 10);
+  assert(nack_client_should_dark(&c, 300) == 1);
   assert(c.auto_dark == 1);
 }
 
 static void test_circuit_breaker_keeps_exact_twenty_percent(void) {
   NackClient c;
   nack_client_init(&c);
-  for (uint16_t seq = 0; seq < 10; seq++) {
-    nack_client_arm(&c, seq, 100);
-  }
-  assert(nack_client_take(&c, 0, 110) == NACK_TAKE_INWINDOW);
-  assert(nack_client_take(&c, 1, 110) == NACK_TAKE_INWINDOW);
-  assert(nack_client_sweep(&c, 1000) == 8);
-  assert(nack_client_should_dark(&c, 1000) == 0);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  assert(nack_client_take(&c, 0, 210) == NACK_TAKE_INWINDOW);
+  assert(nack_client_take(&c, 1, 210) == NACK_TAKE_INWINDOW);
+  assert(nack_client_sweep(&c, 300) == 8);
+  assert(nack_client_should_dark(&c, 300) == 0);
   assert(c.auto_dark == 0);
+}
+
+static void test_circuit_breaker_darks_at_ten_percent(void) {
+  NackClient c;
+  nack_client_init(&c);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  assert(nack_client_take(&c, 0, 210) == NACK_TAKE_INWINDOW);
+  assert(nack_client_sweep(&c, 300) == 9);
+  assert(nack_client_should_dark(&c, 300) == 1);
+}
+
+static void test_circuit_breaker_excludes_zero_progress_outage_bucket(void) {
+  NackClient c;
+  nack_client_init(&c);
+  nack_client_note_packet_progress(&c, 100, 1000);
+  /* One packet after a one-second zero-progress gap marks this bucket outage. */
+  nack_client_note_packet_progress(&c, 1100, 1001);
+  arm_ten(&c, 0, 1100);
+  assert(nack_client_sweep(&c, 1200) == 10);
+  assert(nack_client_should_dark(&c, 1200) == 0);
+  assert(c.auto_dark == 0);
+}
+
+static void test_circuit_breaker_excludes_outage_crossing_bucket_boundary(void) {
+  NackClient c;
+  nack_client_init(&c);
+  note_healthy_packets(&c, 9800, 1000);
+  arm_ten(&c, 0, 9900);
+  /* The one-second fade crosses the 10s effect-bucket boundary. */
+  nack_client_note_packet_progress(&c, 10900, 1005);
+  assert(nack_client_sweep(&c, 11000) == 10);
+  assert(nack_client_should_dark(&c, 11000) == 0);
+}
+
+static void test_circuit_breaker_reprobes_after_sixty_seconds(void) {
+  NackClient c;
+  nack_client_init(&c);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  assert(nack_client_sweep(&c, 300) == 10);
+  assert(nack_client_should_dark(&c, 300) == 1);
+  assert(nack_client_should_dark(&c, 300 + NACK_BREAKER_REPROBE_MS - 1) == 1);
+  assert(nack_client_should_dark(&c, 300 + NACK_BREAKER_REPROBE_MS) == 0);
+  assert(c.auto_dark == 0);
+  assert(c.nack_sent == 10); /* cumulative telemetry survives evidence reset */
+}
+
+static void test_circuit_breaker_healthy_reprobe_stays_restored(void) {
+  NackClient c;
+  nack_client_init(&c);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  assert(nack_client_sweep(&c, 300) == 10);
+  assert(nack_client_should_dark(&c, 300) == 1);
+  uint32_t probe_ms = 300 + NACK_BREAKER_REPROBE_MS;
+  assert(nack_client_should_dark(&c, probe_ms) == 0);
+  note_healthy_packets(&c, probe_ms + 100, 2000);
+  arm_ten(&c, 100, probe_ms + 200);
+  for (uint16_t seq = 100; seq < 110; seq++) {
+    assert(nack_client_take(&c, seq, probe_ms + 210) == NACK_TAKE_INWINDOW);
+  }
+  assert(nack_client_should_dark(&c, probe_ms + 220) == 0);
 }
 
 static void test_circuit_breaker_resets_on_reconnect_init(void) {
   NackClient c;
   nack_client_init(&c);
-  for (uint16_t seq = 0; seq < 10; seq++) {
-    nack_client_arm(&c, seq, 0);
-  }
-  nack_client_sweep(&c, 1000);
-  assert(nack_client_should_dark(&c, 1000) == 1);
+  note_healthy_packets(&c, 100, 1000);
+  arm_ten(&c, 0, 200);
+  nack_client_sweep(&c, 300);
+  assert(nack_client_should_dark(&c, 300) == 1);
   nack_client_init(&c);
   assert(c.auto_dark == 0);
-  assert(nack_client_should_dark(&c, 1001) == 0);
+  assert(nack_client_should_dark(&c, 301) == 0);
 }
 
 static void test_circuit_breaker_expires_old_healthy_window(void) {
   NackClient c;
   nack_client_init(&c);
+  note_healthy_packets(&c, 0, 1000);
   for (uint16_t seq = 0; seq < 10; seq++) {
-    nack_client_arm(&c, seq, seq);
-    assert(nack_client_take(&c, seq, seq + 1) == NACK_TAKE_INWINDOW);
+    nack_client_arm(&c, seq, 100);
+    assert(nack_client_take(&c, seq, 101) == NACK_TAKE_INWINDOW);
   }
   uint32_t now = NACK_EFFECT_BUCKET_MS * NACK_EFFECT_BUCKETS;
-  for (uint16_t seq = 100; seq < 110; seq++) {
-    nack_client_arm(&c, seq, now);
-  }
-  assert(nack_client_sweep(&c, now + NACK_WAIT_MS + 1) == 10);
-  assert(nack_client_should_dark(&c, now + NACK_WAIT_MS + 1) == 1);
+  note_healthy_packets(&c, now, 2000);
+  arm_ten(&c, 100, now + 100);
+  assert(nack_client_sweep(&c, now + 200) == 10);
+  assert(nack_client_should_dark(&c, now + 200) == 1);
 }
 
 int main(void) {
@@ -321,8 +403,14 @@ int main(void) {
   RUN(test_recovered_seq_not_swept);
   RUN(test_swept_seq_rejects_rtx);
   RUN(test_nack_wait_starts_at_spec_v2_value);
+  RUN(test_rtx_reliability_accepts_zero_through_two);
   RUN(test_circuit_breaker_darks_below_twenty_percent);
   RUN(test_circuit_breaker_keeps_exact_twenty_percent);
+  RUN(test_circuit_breaker_darks_at_ten_percent);
+  RUN(test_circuit_breaker_excludes_zero_progress_outage_bucket);
+  RUN(test_circuit_breaker_excludes_outage_crossing_bucket_boundary);
+  RUN(test_circuit_breaker_reprobes_after_sixty_seconds);
+  RUN(test_circuit_breaker_healthy_reprobe_stays_restored);
   RUN(test_circuit_breaker_resets_on_reconnect_init);
   RUN(test_circuit_breaker_expires_old_healthy_window);
   printf("PASS: %d nack_client host tests\n", tests_run);

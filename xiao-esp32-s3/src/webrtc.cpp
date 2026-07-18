@@ -67,7 +67,7 @@ static void pipecat_nack_try_arm_channel(void) {
     return;
   }
   if (channel_type != DCEP_CHANNEL_TYPE ||
-      reliability_parameter != 0) {
+      !nack_client_accepts_reliability(reliability_parameter)) {
     if (!s_nack_rtx_bad_type_logged) {
       s_nack_rtx_bad_type_logged = true;
       ESP_LOGE(LOG_TAG,
@@ -80,8 +80,8 @@ static void pipecat_nack_try_arm_channel(void) {
   s_nack_rtx_sid = sid;
   s_nack_rtx_armed = true;
   rtp_nack_register_sender(pipecat_nack_datachannel_send);
-  ESP_LOGI(LOG_TAG, "NACK-v2 armed: pipecat-rtx sid=%u type=0x81 rel=0",
-           (unsigned)sid);
+  ESP_LOGI(LOG_TAG, "NACK-v2 armed: pipecat-rtx sid=%u type=0x81 rel=%lu",
+           (unsigned)sid, (unsigned long)reliability_parameter);
 }
 
 static void pipecat_nack_handle_rtx_frame(const char *msg, size_t len) {
