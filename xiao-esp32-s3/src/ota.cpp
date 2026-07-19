@@ -693,6 +693,7 @@ extern volatile uint32_t g_rtvi_rx_server_msg;
 extern volatile uint32_t g_rtvi_rx_rtx;
 extern volatile uint32_t g_rtvi_rx_parse_fail;
 extern volatile uint32_t g_rtvi_rx_dropped;
+#ifdef PIPECAT_NACK
 extern volatile uint32_t g_sctp_dcep_open_rx_sid0;
 extern volatile uint32_t g_sctp_dcep_open_rx_sid2;
 extern volatile uint32_t g_sctp_dcep_ack_tx_sid0;
@@ -702,6 +703,17 @@ extern volatile uint32_t g_sctp_dcep_ack_rx_sid2;
 extern volatile uint32_t g_sctp_reconfig_rx;
 extern volatile uint32_t g_sctp_reconfig_tx;
 extern volatile uint32_t g_sctp_abort_tx;
+#else
+static constexpr uint32_t g_sctp_dcep_open_rx_sid0 = 0;
+static constexpr uint32_t g_sctp_dcep_open_rx_sid2 = 0;
+static constexpr uint32_t g_sctp_dcep_ack_tx_sid0 = 0;
+static constexpr uint32_t g_sctp_dcep_ack_tx_sid2 = 0;
+static constexpr uint32_t g_sctp_dcep_ack_rx_sid0 = 0;
+static constexpr uint32_t g_sctp_dcep_ack_rx_sid2 = 0;
+static constexpr uint32_t g_sctp_reconfig_rx = 0;
+static constexpr uint32_t g_sctp_reconfig_tx = 0;
+static constexpr uint32_t g_sctp_abort_tx = 0;
+#endif
 }
 void pipecat_play_selftest_clip();
 

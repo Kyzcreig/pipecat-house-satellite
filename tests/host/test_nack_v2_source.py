@@ -117,6 +117,27 @@ def test_phase1_who_closed_sctp_counters_are_exported_per_sid() -> None:
         assert f'\\\"{counter.removeprefix("g_sctp_")}\\\"' in ota
 
 
+def test_nack_off_stats_do_not_link_custom_sctp_diagnostics() -> None:
+    ota = (ROOT / "xiao-esp32-s3/src/ota.cpp").read_text()
+    gate_start = ota.index("#ifdef PIPECAT_NACK", ota.index("g_rtvi_rx_dropped"))
+    gate_end = ota.index("#endif", gate_start)
+    gate = ota[gate_start:gate_end]
+    counters = (
+        "g_sctp_dcep_open_rx_sid0",
+        "g_sctp_dcep_open_rx_sid2",
+        "g_sctp_dcep_ack_tx_sid0",
+        "g_sctp_dcep_ack_tx_sid2",
+        "g_sctp_dcep_ack_rx_sid0",
+        "g_sctp_dcep_ack_rx_sid2",
+        "g_sctp_reconfig_rx",
+        "g_sctp_reconfig_tx",
+        "g_sctp_abort_tx",
+    )
+    for counter in counters:
+        assert f"extern volatile uint32_t {counter}" in gate
+        assert f"static constexpr uint32_t {counter} = 0" in gate
+
+
 def test_phase1_who_closed_traces_sid2_and_both_tx_control_chunks() -> None:
     assert "SCTP_RE_CONFIG = 130" in SCTP_HEADER
     assert "case SCTP_RE_CONFIG:" in SCTP
