@@ -1,0 +1,2 @@
+source /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader/gdbinit/symbols
+source /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader/gdbinit/connect

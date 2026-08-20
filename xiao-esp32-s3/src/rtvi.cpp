@@ -6,13 +6,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#ifdef PIPECAT_NACK
-#include <esp_timer.h>
-#include <mbedtls/base64.h>
-
-#include "nack_client.h"
-#endif
-
 #include "main.h"
 
 #define MAX_TYPE_LEN 32
@@ -27,6 +20,7 @@ volatile uint32_t g_rtvi_rx_total = 0;       // every parsed data-channel msg
 volatile uint32_t g_rtvi_rx_server_msg = 0;  // type == server-message
 volatile uint32_t g_rtvi_rx_rtx = 0;         // ... with data.t == rtx
 volatile uint32_t g_rtvi_rx_parse_fail = 0;  // cJSON_Parse failures
+volatile uint32_t g_rtvi_rx_dropped = 0;     // full-queue sheds (see below)
 static QueueHandle_t rtvi_queue;
 static PeerConnection *peer_connection = NULL;
 static rtvi_callbacks_t *rtvi_callbacks = NULL;
@@ -192,38 +186,6 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
             break;
         }
       }
-#ifdef PIPECAT_NACK
-      // NACK retransmit reply (audio-resilience ladder Phase 5, server
-      // nack_retransmit.py): {"data":{"t":"rtx","seq":<u16>,
-      // "payload_b64":"<base64 opus>"}} — one message per re-sent seq.
-      // Decode the opus bytes (stack buffer; frames are <400B) and offer them
-      // to the vendored rtp.c, which validates the 20ms window and stages
-      // in-window frames for the decode task (never touches opus from this
-      // task — see the threading note in rtp.c). Late/unknown seqs are
-      // counted and dropped there.
-      else if (hash(j_t->valuestring) == hash("rtx")) {
-        g_rtvi_rx_rtx++;
-        cJSON *j_seq = cJSON_GetObjectItem(j_data, "seq");
-        cJSON *j_b64 = cJSON_GetObjectItem(j_data, "payload_b64");
-        if (!cJSON_IsNumber(j_seq) || j_b64 == NULL ||
-            j_b64->valuestring == NULL) {
-          break;
-        }
-        // RED-wrapped rtx = primary + up to 2 redundant blocks + headers
-        // (~3x a bare opus frame). 512 truncated 7/11 real rtx (measured
-        // 2026-07-12: rtvi_rx_rtx=11 vs nack_rtx_arrived=4).
-        unsigned char opus[1024];
-        size_t opus_len = 0;
-        if (mbedtls_base64_decode(opus, sizeof(opus), &opus_len,
-                                  (const unsigned char *)j_b64->valuestring,
-                                  strlen(j_b64->valuestring)) != 0 ||
-            opus_len == 0) {
-          break;  // oversized/corrupt payload — drop it
-        }
-        rtp_nack_feed_rtx((uint16_t)j_seq->valueint, opus, opus_len,
-                          (uint32_t)(esp_timer_get_time() / 1000));
-      }
-#endif
       break;
     }
     default:
@@ -273,5 +235,16 @@ void pipecat_rtvi_handle_message(const char *msg) {
 
   rtvi_msg_t rtvi_msg = {.msg = j_msg};
 
-  xQueueSend(rtvi_queue, &rtvi_msg, portMAX_DELAY);
+  // This runs on the prio-8 transport loop (peer_connection_loop's onmessage
+  // callback). A blocking send here (portMAX_DELAY) would stall the loop when
+  // the 10-deep queue backs up behind the slower prio-2 rtvi_task; the stalled
+  // loop stops servicing ICE keepalive, libpeer hits CONFIG_KEEPALIVE_TIMEOUT
+  // (30s) -> PEER_CONNECTION_CLOSED -> esp_restart(). That is exactly the
+  // kitchen NACK-v2 arm reset (t_5c931cb9): a 512B RTVI flood filling this
+  // queue rebooted the device ~30s in. Liveness beats chat: shed the message
+  // (zero timeout), count the drop, and NEVER block transport.
+  if (xQueueSend(rtvi_queue, &rtvi_msg, 0) != pdTRUE) {
+    g_rtvi_rx_dropped++;
+    cJSON_Delete(j_msg);
+  }
 }

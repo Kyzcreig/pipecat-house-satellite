@@ -1,0 +1,30 @@
+Command: ninja all
+[1/13] Building C object esp-idf/peer/CMakeFiles/__idf_peer.dir/rtp.c.obj
+[2/13] Building C object esp-idf/peer/CMakeFiles/__idf_peer.dir/peer_connection.c.obj
+[3/13] Linking C static library esp-idf/peer/libpeer.a
+[4/13] Building CXX object esp-idf/src/CMakeFiles/__idf_src.dir/webrtc.cpp.obj
+[5/13] Linking C static library esp-idf/src/libsrc.a
+[6/13] Performing build step for 'bootloader'
+[1/4] Linking C static library esp-idf/main/libmain.a
+[2/4] Linking C executable bootloader.elf
+[3/4] Generating binary image from built executable
+esptool.py v4.12.dev3
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader/bootloader.bin
+[4/4] cd /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader/esp-idf/esptool_py && /Users/alexgierczyk/.espressif/python_env/idf5.5_py3.14_env/bin/python /Users/alexgierczyk/.platformio/packages/framework-espidf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader/bootloader.bin
+Bootloader binary size 0x51c0 bytes. 0x2e40 bytes (36%) free.
+[7/13] No install step for 'bootloader'
+[8/13] Completed 'bootloader'
+[9/13] Generating esp-idf/esp_system/ld/sections.ld
+[10/13] Building C object CMakeFiles/src.elf.dir/project_elf_src_esp32s3.c.obj
+[11/13] Linking CXX executable src.elf
+[12/13] Generating binary image from built executable
+esptool.py v4.12.dev3
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/src.bin
+[13/13] cd /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/esp-idf/esptool_py && /Users/alexgierczyk/.espressif/python_env/idf5.5_py3.14_env/bin/python /Users/alexgierczyk/.platformio/packages/framework-espidf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/partition_table/partition-table.bin /Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/src.bin
+src.bin binary size 0x16f1b0 bytes. Smallest app partition is 0x300000 bytes. 0x190e50 bytes (52%) free.

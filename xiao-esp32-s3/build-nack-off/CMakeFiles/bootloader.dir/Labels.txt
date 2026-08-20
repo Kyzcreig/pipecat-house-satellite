@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/CMakeFiles/bootloader
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/CMakeFiles/bootloader.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/CMakeFiles/bootloader-complete.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/alexgierczyk/Projects/pipecat-house-satellite/xiao-esp32-s3/build-nack-off/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

@@ -21,7 +21,14 @@ extern void pipecat_led_task(void *arg);
 extern void pipecat_audio_decode(uint8_t *data, size_t size);
 extern void pipecat_reset_audio_decoder();
 extern bool pipecat_xvf3800_present();
-extern esp_err_t pipecat_xvf_tune(const char *param, float value);
+struct PipecatXvfTuneResult {
+  float requested;
+  float readback;
+  bool readback_valid;
+  bool applied;
+};
+extern esp_err_t pipecat_xvf_tune(const char *param, float value,
+                                  PipecatXvfTuneResult *result);
 
 // OTA / mDNS
 extern void pipecat_init_mdns();

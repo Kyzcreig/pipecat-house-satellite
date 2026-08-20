@@ -7,13 +7,93 @@
 #include <esp_log.h>
 #include <string.h>
 
+#include "peer_connection.h"
 #include "main.h"
 
 #ifdef PIPECAT_NACK
+#include <esp_timer.h>
+
 #include "nack_client.h"
 #endif
 
 static PeerConnection *peer_connection = NULL;
+#define RTVI_MESSAGE_CAP 2048u
+
+volatile uint32_t g_rtx_malformed = 0;
+
+#ifdef PIPECAT_NACK
+static uint16_t s_nack_rtx_sid = UINT16_MAX;
+static bool s_nack_rtx_armed = false;
+static bool s_nack_rtx_bad_type_logged = false;
+#define NACK_RTX_OPEN_TIMEOUT_MS 5000u
+static uint32_t s_nack_rtx_open_deadline_ms = 0;
+static bool s_nack_rtx_setup_started = false;
+static bool s_nack_rtx_timeout_logged = false;
+static_assert(DATA_CHANNEL_PARTIAL_RELIABLE_REXMIT_UNORDERED ==
+                  DCEP_CHANNEL_TYPE,
+              "generated NACK DCEP type must remain 0x81");
+
+static void pipecat_nack_datachannel_send(const char *json, size_t len) {
+  // Requests deliberately remain on reliable RTVI SID 0; only server->device
+  // rtx frames use the unordered/unreliable binary channel.
+  peer_connection_datachannel_send_sid(peer_connection, (char *)json, len, 0);
+}
+
+static void pipecat_nack_try_arm_channel(void) {
+  if (s_nack_rtx_armed) {
+    return;
+  }
+  if (!s_nack_rtx_setup_started) {
+    return;
+  }
+  uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  if ((int32_t)(now_ms - s_nack_rtx_open_deadline_ms) > 0) {
+    if (!s_nack_rtx_timeout_logged) {
+      s_nack_rtx_timeout_logged = true;
+      ESP_LOGW(LOG_TAG,
+               "NACK-v2 stays dark: pipecat-rtx not valid within 5000ms");
+    }
+    return;
+  }
+  uint16_t sid = 0;
+  uint8_t channel_type = 0;
+  uint32_t reliability_parameter = UINT32_MAX;
+  if (peer_connection_lookup_datachannel(
+          peer_connection, "pipecat-rtx", &sid, &channel_type,
+          &reliability_parameter) != 0) {
+    return;
+  }
+  if (channel_type != DCEP_CHANNEL_TYPE ||
+      reliability_parameter != 0) {
+    if (!s_nack_rtx_bad_type_logged) {
+      s_nack_rtx_bad_type_logged = true;
+      ESP_LOGE(LOG_TAG,
+               "NACK-v2 stays dark: pipecat-rtx sid=%u type=0x%02x rel=%lu",
+               (unsigned)sid, (unsigned)channel_type,
+               (unsigned long)reliability_parameter);
+    }
+    return;
+  }
+  s_nack_rtx_sid = sid;
+  s_nack_rtx_armed = true;
+  rtp_nack_register_sender(pipecat_nack_datachannel_send);
+  ESP_LOGI(LOG_TAG, "NACK-v2 armed: pipecat-rtx sid=%u type=0x81 rel=0",
+           (unsigned)sid);
+}
+
+static void pipecat_nack_handle_rtx_frame(const char *msg, size_t len) {
+  uint16_t seq = 0;
+  const uint8_t *payload = NULL;
+  size_t payload_len = 0;
+  if (!nack_parse_rtx_frame((const uint8_t *)msg, len, &seq, &payload,
+                            &payload_len)) {
+    g_rtx_malformed++;
+    return;
+  }
+  rtp_nack_feed_rtx(seq, payload, payload_len,
+                    (uint32_t)(esp_timer_get_time() / 1000));
+}
+#endif
 
 // Connection watchdog: set true once the peer reaches CONNECTED. The main loop
 // checks this against a boot deadline; if we never connect (e.g. the SmallWebRTC
@@ -36,35 +116,40 @@ void pipecat_send_audio_task(void *user_data) {
 
 static void pipecat_ondatachannel_onmessage_task(char *msg, size_t len,
                                                  void *userdata, uint16_t sid) {
-#ifdef LOG_DATACHANNEL_MESSAGES
-  ESP_LOGI(LOG_TAG, "DataChannel Message: %s", msg);
-#endif
-  if (pipecat_rtvi_handle_heartbeat(msg, sid)) return;
-  pipecat_rtvi_handle_message(msg);
-}
-
 #ifdef PIPECAT_NACK
-// NACK request sender (audio-resilience ladder Phase 5): the vendored rtp.c
-// calls this (via rtp_nack_register_sender) with a ready-made
-// {"t":"nack","seqs":[...]} JSON when it detects a >=3-packet seq gap. Rides
-// the same reliable RTVI data channel the server already listens on
-// (nack_retransmit.py); replies come back as server-message rtx (rtvi.cpp).
-static void pipecat_nack_datachannel_send(const char *json, size_t len) {
-  peer_connection_datachannel_send(peer_connection, (char *)json, len);
-}
+  char *label = peer_connection_lookup_sid_label(peer_connection, sid);
+  if (label != NULL && strcmp(label, "pipecat-rtx") == 0) {
+    pipecat_nack_try_arm_channel();
+    if (s_nack_rtx_armed && sid == s_nack_rtx_sid) {
+      pipecat_nack_handle_rtx_frame(msg, len);
+    }
+    return;  // binary data never reaches the JSON RTVI parser
+  }
 #endif
+#ifdef LOG_DATACHANNEL_MESSAGES
+  ESP_LOGI(LOG_TAG, "DataChannel Message: %.*s", (int)len, msg);
+#endif
+  if (len > RTVI_MESSAGE_CAP) {
+    ESP_LOGW(LOG_TAG, "Dropping oversized RTVI message: %uB", (unsigned)len);
+    return;
+  }
+  char rtvi_message[RTVI_MESSAGE_CAP + 1];
+  memcpy(rtvi_message, msg, len);
+  rtvi_message[len] = '\0';
+  if (pipecat_rtvi_handle_heartbeat(rtvi_message, sid)) return;
+  pipecat_rtvi_handle_message(rtvi_message);
+}
 
 static void pipecat_ondatachannel_onopen_task(void *userdata) {
+#ifdef PIPECAT_NACK
+  s_nack_rtx_setup_started = true;
+  s_nack_rtx_open_deadline_ms =
+      (uint32_t)(esp_timer_get_time() / 1000) + NACK_RTX_OPEN_TIMEOUT_MS;
+#endif
   if (peer_connection_create_datachannel(peer_connection, DATA_CHANNEL_RELIABLE,
                                          0, 0, (char *)"rtvi-ai",
                                          (char *)"") != -1) {
     ESP_LOGI(LOG_TAG, "DataChannel created");
-#ifdef PIPECAT_NACK
-    // Channel is up — arm the NACK lane (also resets the pending table for
-    // the fresh peer). Before this registration rtp.c has a NULL sender and
-    // simply never NACKs (pure RED/FEC/PLC, yesterday's behavior).
-    rtp_nack_register_sender(pipecat_nack_datachannel_send);
-#endif
   } else {
     ESP_LOGE(LOG_TAG, "Failed to create DataChannel");
   }
@@ -160,4 +245,9 @@ void pipecat_init_webrtc() {
 void pipecat_webrtc_loop() {
   peer_connection_loop(peer_connection);
   pipecat_rtvi_send_pending_heartbeat();
+#ifdef PIPECAT_NACK
+  // The server creates pipecat-rtx during initial setup. Poll the libpeer DCEP
+  // stream table without blocking SCTP; arm only after byte 1 is exactly 0x81.
+  pipecat_nack_try_arm_channel();
+#endif
 }

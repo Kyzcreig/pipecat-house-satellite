@@ -15,7 +15,9 @@ work, but this is what has been developed against.
 This fork also adds an Ace bench target:
 
 * `xiao-esp32-s3` - XIAO ESP32-S3 + ReSpeaker XVF3800 bench board. See
-  `boards/xiao-esp32-s3.config` and `tests/bench-esp32-loopback.md`.
+  `boards/xiao-esp32-s3.config` and `tests/bench-esp32-loopback.md`. The canonical
+  device audit is Obsidian `Engineering/Projects/Pipecat House Voice/XIAO ESP32-S3 — Complete Device Reference.md`;
+  hashed vendor evidence is under `xiao-esp32-s3/docs/vendor/xiao-esp32-s3/`.
 
 ## 📋 Pre-requisites
 

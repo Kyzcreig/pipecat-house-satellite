@@ -318,7 +318,8 @@ void pipecat_init_mdns() {
 }
 
 // POST /xvf/tune?param=<name>&value=<float> — live AEC/AUDIO_MGR tuning without a
-// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). Volatile writes.
+// reflash. Param allowlist is in pipecat_xvf_tune() (media.cpp). XVF writes are
+// read back from the register before success is reported. All writes are volatile.
 static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   char query[128] = {0};
   char param[32] = {0};
@@ -331,11 +332,22 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     return ESP_OK;
   }
   float value = strtof(value_s, NULL);
-  esp_err_t ret = pipecat_xvf_tune(param, value);
-  char body[128];
+  PipecatXvfTuneResult result = {};
+  esp_err_t ret = pipecat_xvf_tune(param, value, &result);
+  char body[192];
   if (ret == ESP_OK) {
-    snprintf(body, sizeof(body), "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f}",
-             param, (double)value);
+    if (result.readback_valid) {
+      snprintf(body, sizeof(body),
+               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
+               "\"readback\":%.4f,\"applied\":%s}",
+               param, (double)value, (double)result.readback,
+               result.applied ? "true" : "false");
+    } else {
+      snprintf(body, sizeof(body),
+               "{\"ok\":true,\"param\":\"%s\",\"value\":%.4f,"
+               "\"readback\":null,\"applied\":null}",
+               param, (double)value);
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, body);
   } else if (ret == ESP_ERR_NOT_FOUND) {
@@ -344,7 +356,7 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
     httpd_resp_sendstr(req, body);
   } else {
     httpd_resp_set_status(req, "500 Internal Server Error");
-    snprintf(body, sizeof(body), "{\"error\":\"write failed: %s\"}",
+    snprintf(body, sizeof(body), "{\"error\":\"tune/readback failed: %s\"}",
              esp_err_to_name(ret));
     httpd_resp_sendstr(req, body);
   }
@@ -388,11 +400,16 @@ extern volatile uint32_t g_nack_recovered;
 extern volatile uint32_t g_nack_late;
 extern volatile uint32_t g_nack_last_rtt_ms;
 extern volatile uint32_t g_nack_max_rtt_ms;
+extern volatile uint32_t g_nack_rtt_sample_total;
 extern volatile uint32_t g_nack_rtx_arrived;
+extern volatile uint32_t g_nack_auto_dark;
+extern volatile uint32_t g_rtx_malformed;
+extern size_t rtp_nack_format_rtt_samples(char *out, size_t capacity);
 extern volatile uint32_t g_rtvi_rx_total;
 extern volatile uint32_t g_rtvi_rx_server_msg;
 extern volatile uint32_t g_rtvi_rx_rtx;
 extern volatile uint32_t g_rtvi_rx_parse_fail;
+extern volatile uint32_t g_rtvi_rx_dropped;
 }
 void pipecat_play_selftest_clip();
 
@@ -416,14 +433,18 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       g_play_prebuffer_samples = (uint32_t)(ms * 16);  // 16 samples/ms @16k
     }
   }
-  char body[640];
+  char rtt_samples[800];
+  rtp_nack_format_rtt_samples(rtt_samples, sizeof(rtt_samples));
+  char body[1600];
   snprintf(body, sizeof(body),
            "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
            "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
            "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
            "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
            "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%lu,"
-           "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,"
+           "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
+           "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
+           "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,\"rtvi_rx_dropped\":%lu,"
            "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
            "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
            (unsigned long)g_play_stat_frames,
@@ -442,10 +463,15 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
            (unsigned long)g_nack_last_rtt_ms,
            (unsigned long)g_nack_max_rtt_ms,
            (unsigned long)g_nack_rtx_arrived,
+           (unsigned long)g_nack_auto_dark,
+           (unsigned long)g_rtx_malformed,
+           (unsigned long)g_nack_rtt_sample_total,
+           rtt_samples,
            (unsigned long)g_rtvi_rx_total,
            (unsigned long)g_rtvi_rx_server_msg,
            (unsigned long)g_rtvi_rx_rtx,
            (unsigned long)g_rtvi_rx_parse_fail,
+           (unsigned long)g_rtvi_rx_dropped,
            (unsigned long)g_play_stat_gap_resumes,
            (unsigned long)(g_play_prebuffer_samples / 16),
            (unsigned long)g_play_prebuffer_effective_ms,

@@ -2,10 +2,9 @@
  *
  * VENDORED (2026-07-12, pipecat-house-satellite): the audio-resilience ladder
  * Phase 5 (pipecat-house-voice docs/SPEC-audio-resilience-ladder.md REV 3). On
- * a LAN the RTT is ~1-3ms, so a lost RTP packet can be re-requested and the
- * server's resend still arrives inside the device's 80ms prebuffer — a bit-
- * exact recovery that beats ALL concealment (FEC/RED/PLC synthesize; NACK gets
- * the ORIGINAL opus bytes back).
+ * NACK-v2 moves only retransmission replies off the measured-dead ordered RTVI
+ * stream. Both channels still share one SCTP association/congestion window;
+ * the load+loss B1 gate, not an idle echo, decides whether this stays armed.
  *
  * DIVISION OF LABOUR (spec review blocker 4 — latency honesty): FEC covers N-1,
  * RED covers <=2-packet bursts losslessly. NACK's job is ONLY gaps of >= 3
@@ -13,17 +12,16 @@
  * therefore only calls the planner when delta >= NACK_MIN_GAP (3); <= 2 stays
  * on the RED/FEC/PLC path untouched.
  *
- * PROTOCOL (over the existing RTVI reliable data channel; no new SDP/PT):
+ * PROTOCOL (request reliable; reply binary unordered + zero-retransmit):
  *   device -> server:  {"t":"nack","seqs":[<u16>,...]}   (<= NACK_MAX_SEQS)
- *   server -> device:  {"type":"server-message","data":{"t":"rtx",
- *                        "seq":<u16>,"payload_b64":"<base64 opus>"}}
+ *   server -> device:  [seq:u16][payload_len:u16][opus bytes]
  * The device splices the rtx opus payload into the decode path if it arrives
- * within NACK_WAIT_MS (20ms, inside the 80ms prebuffer); otherwise it is late
+ * within NACK_WAIT_MS (60ms, inside the 80ms prebuffer); otherwise it is late
  * and dropped (the RED/PLC fallback already ran for that frame).
  *
  * PURE LOGIC — no ESP-IDF / libpeer deps, so it unit-tests on the host
- * (tests/host/test_nack_client.c). The actual data-channel send + opus splice
- * live in the callers (rtp.c registers a send callback; rtvi.cpp feeds rtx in).
+ * (tests/host/test_nack_client.c). The actual request send + binary frame route
+ * live in rtp.c/webrtc.cpp; binary rtx never enters the RTVI JSON parser.
  *
  * ENV GATE: dark unless PIPECAT_NACK=1 (compile-time, add_compile_definitions
  * in the top CMakeLists). With it off, rtp.c never calls the planner and this
@@ -35,6 +33,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "nack_protocol_generated.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,21 +42,20 @@ extern "C" {
 /* Only NACK bursts RED can't reach. RED (N-2) owns gaps of <= 2. */
 #define NACK_MIN_GAP 3
 
-/* Must match the server's NACK_MAX_SEQS (nack_retransmit.py): one request
- * carries at most this many seqs (the resend-amplification cap). */
-#define NACK_MAX_SEQS 8
 
 /* Splice window: an rtx must arrive within this long after the NACK was sent to
  * be usable (inside the 80ms prebuffer). 20ms was too tight for the REAL round
  * trip (measured 2026-07-12: 41/41 rtx arrived but ALL counted late) — the
  * deadline is armed before the JSON even leaves the device, and the reply path
  * crosses the server event loop + SCTP + the RTVI queue task. 60ms fits the
- * measured RTT with margin and still beats the prebuffer. */
-#define NACK_WAIT_MS 250
+ * measured RTT with margin and still beats the prebuffer. NACK_WAIT_MS is in
+ * nack_protocol_generated.h beside the shared wire bounds. */
 
 /* Pending-rtx table size: how many in-flight NACKed seqs we track at once. One
  * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps. */
 #define NACK_PENDING_SLOTS 16
+#define NACK_EFFECT_BUCKET_MS 10000u
+#define NACK_EFFECT_BUCKETS 60
 
 /* Result of offering an arriving rtx to the pending table. */
 typedef enum NackTakeResult {
@@ -76,20 +75,30 @@ typedef enum NackTakeResult {
 typedef struct NackPending {
   uint16_t seq;
   uint32_t deadline_ms; /* now_ms + NACK_WAIT_MS at arm time */
+  uint32_t sent_bucket_epoch;
   uint8_t active;       /* NACK_SLOT_* */
 } NackPending;
 
+typedef struct NackEffectBucket {
+  uint32_t epoch;
+  uint16_t sent;
+  uint16_t recovered;
+  uint8_t valid;
+} NackEffectBucket;
+
 typedef struct NackClient {
   NackPending pending[NACK_PENDING_SLOTS];
-  /* Counters surfaced via /playback/stats (ota.cpp). */
+  /* Decision counters; rtp.c publishes actual decode-task splice counters. */
   uint32_t nack_sent;      /* seqs requested (sum over requests) */
-  uint32_t nack_recovered; /* rtx spliced in-window (real audio) */
-  uint32_t nack_late;      /* rtx arrived after the window (dropped) */
+  uint32_t nack_recovered; /* rtx accepted in-window for bounded staging */
+  uint32_t nack_late;      /* rtx late or never arrived before sweep */
   /* RTT instrumentation: arm->rtx delta of the most recent / worst rtx that
    * REACHED feed_rtx (regardless of in-window/late). Sizes NACK_WAIT_MS from
    * measurement instead of guesswork. */
   uint32_t last_rtt_ms;
   uint32_t max_rtt_ms;
+  uint8_t auto_dark;
+  NackEffectBucket effect[NACK_EFFECT_BUCKETS];
 } NackClient;
 
 /* Zero a client (all slots free, counters 0). */
@@ -100,16 +109,21 @@ void nack_client_init(NackClient* c);
  * out_seqs (ascending, wraps mod 2^16) and returns the count:
  *   - 0 if gap < NACK_MIN_GAP (RED/FEC own it) or bad args,
  *   - min(gap, NACK_MAX_SEQS, max_out) otherwise (the amplification cap).
- * Does NOT arm the pending table — the caller arms after a successful send so a
- * failed send never leaves a phantom pending entry.
+ * Does NOT arm the pending table; rtp.c arms before send so a failed request
+ * still resolves to deferred PLC after NACK_WAIT_MS.
  */
 int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
                          int max_out);
 
+/* Parse one exact [seq:u16][payload_len:u16][opus bytes] network-order frame.
+ * The returned payload aliases frame. Malformed/empty/oversized frames fail. */
+int nack_parse_rtx_frame(const uint8_t* frame, size_t frame_len, uint16_t* seq,
+                         const uint8_t** payload, size_t* payload_len);
+
 /* Arm one requested seq as pending (deadline = now_ms + NACK_WAIT_MS) and bump
- * nack_sent. Overwrites the oldest slot if the table is full (a lost rtx just
- * ages out). */
-void nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms);
+ * nack_sent. Returns 1 on success. A full table returns 0 without evicting an
+ * armed sequence: eviction would suppress that sequence's deferred PLC. */
+int nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms);
 
 /* Offer an arriving rtx for `seq` at `now_ms`. Returns NACK_TAKE_INWINDOW (and
  * bumps nack_recovered + frees the slot) if it was armed and still fresh;
@@ -117,10 +131,14 @@ void nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms);
  * NACK_TAKE_UNKNOWN if we never NACKed it (or already consumed it). */
 NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms);
 
-/* Sweep expired pending entries at `now_ms`, counting each as late and freeing
- * it. Called opportunistically so an rtx that NEVER arrives still tallies late
- * (otherwise the slot just leaks until overwrite). Returns the number expired. */
+/* Sweep expired pending entries at `now_ms`, counting each as late and retaining
+ * its arm time for a straggler RTT sample. Expired slots may be reused by arm().
+ * Returns the number newly expired. */
 int nack_client_sweep(NackClient* c, uint32_t now_ms);
+
+/* Trip at <20% recovered across >=10 resolved requests in the rolling
+ * 10-minute window. Sticky until nack_client_init() on reconnect. */
+int nack_client_should_dark(NackClient* c, uint32_t now_ms);
 
 /* ── rtp.c wiring surface (implemented in the vendored rtp.c; declared here so
  * the C++ callers — webrtc.cpp/rtvi.cpp — get the prototypes through one

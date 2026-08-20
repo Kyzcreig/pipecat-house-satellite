@@ -6,3 +6,4 @@ managed_components
 # clangd/build caches + device backups (local only)
 **/.cache/
 backups/
+dist/

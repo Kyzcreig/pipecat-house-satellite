@@ -259,7 +259,7 @@ int peer_connection_create_datachannel_sid(PeerConnection* pc, DecpChannelType c
   // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
   int msg_size = 12 + strlen(label) + strlen(protocol);
   uint16_t priority_big_endian = htons(priority);
-  uint32_t reliability_big_endian = ntohl(reliability_parameter);
+  uint32_t reliability_big_endian = htonl(reliability_parameter);
   uint16_t label_length = htons(strlen(label));
   uint16_t protocol_length = htons(strlen(protocol));
   char* msg = calloc(1, msg_size);
@@ -268,6 +268,7 @@ int peer_connection_create_datachannel_sid(PeerConnection* pc, DecpChannelType c
   }
 
   msg[0] = DATA_CHANNEL_OPEN;
+  msg[1] = channel_type;
   memcpy(msg + 2, &priority_big_endian, sizeof(uint16_t));
   memcpy(msg + 4, &reliability_big_endian, sizeof(uint32_t));
   memcpy(msg + 8, &label_length, sizeof(uint16_t));
@@ -587,6 +588,27 @@ int peer_connection_lookup_sid(PeerConnection* pc, const char* label, uint16_t* 
   }
   return -1;  // Not found
 }
+
+#ifdef PIPECAT_NACK
+int peer_connection_lookup_datachannel(PeerConnection* pc, const char* label,
+                                       uint16_t* sid, uint8_t* channel_type,
+                                       uint32_t* reliability_parameter) {
+  if (pc == NULL || label == NULL || sid == NULL || channel_type == NULL ||
+      reliability_parameter == NULL) {
+    return -1;
+  }
+  for (int i = 0; i < pc->sctp.stream_count; i++) {
+    SctpStreamEntry* stream = &pc->sctp.stream_table[i];
+    if (strncmp(stream->label, label, sizeof(stream->label)) == 0) {
+      *sid = stream->sid;
+      *channel_type = stream->channel_type;
+      *reliability_parameter = stream->reliability_parameter;
+      return 0;
+    }
+  }
+  return -1;
+}
+#endif
 
 char* peer_connection_lookup_sid_label(PeerConnection* pc, uint16_t sid) {
   for (int i = 0; i < pc->sctp.stream_count; i++) {

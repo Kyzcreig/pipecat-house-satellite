@@ -6,11 +6,20 @@ list(FILTER CODES EXCLUDE REGEX ".*/peer_connection\\.c$")
 # seq numbers entirely, which produced audible clicks on every lost UDP packet
 # (the 2026-07-09 residual-crackle root cause).
 list(FILTER CODES EXCLUDE REGEX ".*/rtp\\.c$")
+set(LOCAL_CODES "peer_connection.c" "rtp.c" "red_unwrap.c")
+# nack_client.c and the vendored sctp.c/h are used only by NACK-v2. Excluding
+# both from a dark build keeps the default theater flash free of the retired
+# client and on the stock SCTP ABI.
+if("$ENV{PIPECAT_NACK}" STREQUAL "1")
+  list(FILTER CODES EXCLUDE REGEX ".*/sctp\\.c$")
+  list(APPEND LOCAL_CODES "nack_client.c")
+  list(APPEND LOCAL_CODES "sctp.c")
+endif()
 
 idf_component_register(
-  SRCS ${CODES} "peer_connection.c" "rtp.c" "red_unwrap.c" "nack_client.c"
-  INCLUDE_DIRS "${PEER_PROJECT_PATH}/src" "."
-  # esp_timer: rtp.c's NACK lane (PIPECAT_NACK) timestamps the 20ms rtx splice
+  SRCS ${CODES} ${LOCAL_CODES}
+  INCLUDE_DIRS "." "${PEER_PROJECT_PATH}/src"
+  # esp_timer: rtp.c's NACK lane (PIPECAT_NACK) timestamps the rtx splice
   # window with esp_timer_get_time(). Harmless when the flag is off.
   REQUIRES mbedtls srtp json esp_netif esp_timer
 )
