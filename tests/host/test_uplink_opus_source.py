@@ -64,4 +64,34 @@ assert "OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE)" in branch
 # applies identically to both build variants.
 loss_offset = xiao.index("OPUS_SET_INBAND_FEC(OPUS_UPLINK_FEC_ENABLE)")
 assert loss_offset > branch_end
+
+# ---------------------------------------------------------------------------
+# CELT-ARM PREMISE GUARD (t_109a4778). Measured 2026-09-18 on 12 real far-field
+# captures with the vendored esp-libopus and libopus 1.6.1: the CELT unlock is
+# a JOINT condition, not the FEC flag alone —
+#     mode = (equiv_rate >= threshold) ? CELT : SILK   [src/opus_encoder.c]
+#     if (useInBandFEC && packetLossPercentage > (128-voice_est)>>4) mode = SILK
+# With OPUS_SIGNAL_VOICE (voice_est=127) the second predicate is `plp > 0`, and
+# the first flips between 30k/lane (SILK 100%) and 40k/lane (CELT 100%).
+#
+# So a future bitrate reduction below ~40k/lane would put the uplink back on
+# SILK with FEC OFF: the worse codec mode AND no in-band FEC — strictly worse
+# than either shipped arm, with NO compile error and NO log change to notice it
+# by. This guard makes that regression impossible to land silently.
+CELT_MIN_BITRATE_PER_LANE = 40000
+m = re.search(r"#define OPUS_ENCODER_BITRATE (\d+)", xiao)
+assert m, "xiao: OPUS_ENCODER_BITRATE not found"
+bitrate = int(m.group(1))
+if "PIPECAT_UPLINK_INBAND_FEC=0" in cmake:  # the CELT arm exists in this tree
+    assert bitrate >= CELT_MIN_BITRATE_PER_LANE, (
+        f"xiao: OPUS_ENCODER_BITRATE={bitrate} is below the measured CELT-mode "
+        f"threshold ({CELT_MIN_BITRATE_PER_LANE}/lane). With FEC off, libopus "
+        f"falls back to SILK — worse mode AND no in-band FEC. Either raise the "
+        f"bitrate or delete the PIPECAT_UPLINK_INBAND_FEC arm."
+    )
+assert "OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE)" in xiao, (
+    "xiao: the plp>0 SILK-lock predicate is (128-voice_est)>>4; SIGNAL_VOICE "
+    "pins voice_est=127 so the predicate is exactly plp>0. Changing the signal "
+    "hint moves the threshold and invalidates the measured arm boundary."
+)
 print("uplink opus encoder source contract: PASS")
