@@ -27,7 +27,35 @@
 #define BOARD_FRAME_SAMPLES (PCM_SAMPLES_PER_FRAME * UPSAMPLE_RATIO * 2)
 #define BOARD_FRAME_BYTES (BOARD_FRAME_SAMPLES * sizeof(int32_t))
 
-#define OPUS_ENCODER_BITRATE 30000
+// Uplink (mic-direction) Opus encoder settings.
+//
+// 2026-09-18 (t_8757e3d4) — bitrate 30000 -> 48000 per lane. MEASURED, not
+// assumed: encoding 8 real far-field command-tap captures through libopus and
+// scoring the 4-8 kHz fricative band (the /s/,/f/ cues far-field STT loses
+// first) against the encoder input showed this is the ONLY knob that moves:
+//
+//   30k/lane (was)  fricative-band segSNR  5.96 dB   <- rate-starved
+//   48k/lane (now)                         9.22 dB   (+3.25 dB, FEC retained)
+//   64k/lane                               8.73 dB   (no better than 48k)
+//
+// The band is coded WIDEBAND (<=8 kHz) at every rate — Opus was not dropping
+// the band, it was under-allocating bits to it. 48k/lane is the knee; 64k buys
+// nothing. Airtime cost is +0.05 percentage points of channel time per
+// satellite (packet RATE is unchanged at 50 pps; only payload grows), against
+// measured AP utilisation of 41-49% — noise.
+//
+// DELIBERATELY UNCHANGED, each against an explicit proposal to change it:
+//   COMPLEXITY stays 0. Raising it to 5 measured WORSE on this audio
+//     (fricative -0.83 dB) for 2.4x the encode CPU. Opus complexity trades CPU
+//     for rate-distortion efficiency at a CONSTRAINED rate; once the rate is
+//     adequate there is nothing left for it to buy. Fix the rate, not the
+//     search effort.
+//   INBAND_FEC stays ON / PACKET_LOSS_PERC stays 10. Live server counters
+//     (:7860/health.uplink_loss) show gap_events=328 with fec=328 — in-band FEC
+//     healed EVERY uplink gap observed in ~48 h. Disabling it would convert
+//     every one of those into PLC concealment to buy +4 dB more fricative SNR;
+//     we take the +3.25 dB that is free of that trade instead.
+#define OPUS_ENCODER_BITRATE 48000
 #define OPUS_ENCODER_COMPLEXITY 0
 #define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 
