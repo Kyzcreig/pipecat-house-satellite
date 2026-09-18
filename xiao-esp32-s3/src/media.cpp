@@ -395,6 +395,13 @@ static const TuneEntry kTuneEntries[] = {
      false},
     {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
      TuneTarget::XVF_INT32, false, true, -64.0f, 256.0f, 12.0f, false},
+    // AEC high-pass filter corner. XMOS XVF3800 v3.2.1 control appendix:
+    // 0=Off, 1=70Hz, 2=125Hz, 3=150Hz, 4=180Hz; device default on125 == our
+    // baked profile value 2 (configure_xvf3800_dsp_profile). Persistent so the
+    // 150-vs-180 A/B can hold a corner across reboots; boot replay runs after
+    // the baked write, so NVS overlays it rather than being overridden.
+    {"hpf_onoff", XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, TuneTarget::XVF_INT32,
+     true, true, 0.0f, 4.0f, 2.0f, false},
     {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF,
      TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
     {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF,
