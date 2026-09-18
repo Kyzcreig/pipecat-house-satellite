@@ -32,6 +32,16 @@ if(NOT "$ENV{PIPECAT_UPLINK_RED_DISTANCE}" STREQUAL "")
     PIPECAT_UPLINK_RED_DISTANCE=$ENV{PIPECAT_UPLINK_RED_DISTANCE})
 endif()
 
+# Uplink Opus in-band FEC (t_109a4778). Opus LBRR lives only in the SILK layer,
+# so INBAND_FEC=1 pins the uplink encoder to SILK-WB; =0 lets it pick CELT
+# (measured +11 dB fricative-band segSNR at 64k/lane). Server-side PLC in
+# uplink_loss_protection.py covers gaps either way. Default (unset) = 1 = live
+# behaviour; set PIPECAT_UPLINK_INBAND_FEC=0 at configure time to build the
+# CELT arm for the paired-corpus WER A/B. Ships only on a WER verdict.
+if("$ENV{PIPECAT_UPLINK_INBAND_FEC}" STREQUAL "0")
+  add_compile_definitions(PIPECAT_UPLINK_INBAND_FEC=0)
+endif()
+
 # Phase 6 adaptive prebuffer (NetEQ-lite): grow the playback prebuffer
 # 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
 # in a rolling window; decay back one step after a quiet period. DARK by
