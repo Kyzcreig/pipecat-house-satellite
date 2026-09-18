@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include "main.h"
 
@@ -125,8 +126,18 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 #define PIPECAT_LED_SELFTEST 0
 #endif
 #ifndef PIPECAT_LED_BRIGHTNESS
-#define PIPECAT_LED_BRIGHTNESS 150  // 0-255 scale applied to each channel
+#define PIPECAT_LED_BRIGHTNESS 150  // 0-255 BAKED DEFAULT only; runtime value below
 #endif
+// Runtime master brightness for the ring (0..255). PIPECAT_LED_BRIGHTNESS is
+// only the baked default: the live value is set over HTTP
+// (POST /xvf/tune?param=led_brightness&value=N), persisted in its OWN NVS
+// namespace ("led", key "brightness") and replayed at boot BEFORE the boot
+// splash so a 2 AM reboot never lights a bedroom. It deliberately does NOT
+// live in the xvf_dsp namespace: that namespace is the reconciler-owned DSP
+// surface whose exact key-set the nightly golden guard asserts, and the LED
+// value legitimately changes on a day/night schedule.
+#define LED_NVS_NAMESPACE "led"
+#define LED_NVS_BRIGHTNESS_KEY "brightness"
 #ifndef PIPECAT_LED_BOOT_SPLASH
 #define PIPECAT_LED_BOOT_SPLASH 1  // flowing-rainbow splash at boot (visible "on")
 #endif
@@ -171,6 +182,51 @@ static char s_xvf_version[16] = "unknown";
 
 static std::atomic<bool> is_playing = false;
 static unsigned int silence_count = 0;
+
+// Live LED master brightness (0..255). Read by the LED task at ~20Hz and by the
+// boot splash; written by pipecat_xvf_tune("led_brightness") and by the NVS
+// replay at boot. Atomic because the writer is the HTTP task and the reader
+// is the LED task on core 1.
+static std::atomic<uint8_t> s_led_brightness{PIPECAT_LED_BRIGHTNESS};
+
+uint8_t pipecat_led_brightness() { return s_led_brightness.load(); }
+
+static esp_err_t led_brightness_save(uint8_t value) {
+  nvs_handle_t nvs;
+  esp_err_t ret = nvs_open(LED_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (ret != ESP_OK) return ret;
+  ret = nvs_set_u8(nvs, LED_NVS_BRIGHTNESS_KEY, value);
+  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  nvs_close(nvs);
+  return ret;
+}
+
+// Called from init_audio_capture() BEFORE the boot splash, so the persisted
+// night level governs the splash too. Absent key = keep the baked default.
+static void led_brightness_load() {
+  nvs_handle_t nvs;
+  esp_err_t ret = nvs_open(LED_NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (ret == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(LOG_TAG, "led_brightness: no NVS value, baked default %u",
+             (unsigned)s_led_brightness.load());
+    return;
+  }
+  if (ret != ESP_OK) {
+    ESP_LOGW(LOG_TAG, "led_brightness: NVS open failed: %s",
+             esp_err_to_name(ret));
+    return;
+  }
+  uint8_t stored = 0;
+  ret = nvs_get_u8(nvs, LED_NVS_BRIGHTNESS_KEY, &stored);
+  nvs_close(nvs);
+  if (ret == ESP_OK) {
+    s_led_brightness.store(stored);
+    ESP_LOGI(LOG_TAG, "led_brightness: restored %u from NVS", (unsigned)stored);
+  } else if (ret != ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGW(LOG_TAG, "led_brightness: NVS read failed: %s",
+             esp_err_to_name(ret));
+  }
+}
 
 static bool aic3104_write(uint8_t reg, uint8_t value) {
   if (aic3104 == nullptr) {
@@ -307,6 +363,7 @@ enum class TuneTarget : uint8_t {
   XVF_FLOAT,
   XVF_INT32,
   DAC_ATTEN,
+  LED_BRIGHTNESS,  // ESP32-side ring scalar, own NVS namespace (not xvf_dsp)
 };
 
 struct TuneEntry {
@@ -360,6 +417,12 @@ static const TuneEntry kTuneEntries[] = {
     // AIC3104 attenuation is ack-only: 0=0 dB, 128=mute.
     {"dac_atten", 0, 0, TuneTarget::DAC_ATTEN, true, true, 0.0f, 128.0f,
      static_cast<float>(PIPECAT_DAC_ATTEN), false},
+    // LED ring master brightness 0..255 (0 = ring dark). NOT persistent in the
+    // xvf_dsp sense (it has its own NVS namespace, see led_brightness_load);
+    // readback is the live atomic, so applied==true means the next LED frame
+    // (<=50ms) renders at the new level.
+    {"led_brightness", 0, 0, TuneTarget::LED_BRIGHTNESS, false, true, 0.0f,
+     255.0f, static_cast<float>(PIPECAT_LED_BRIGHTNESS), false},
 };
 
 static const TuneEntry *find_tune_entry(const char *param) {
@@ -432,6 +495,21 @@ bool pipecat_xvf_param_default(const char *param, float *value) {
   return true;
 }
 
+// Params that persist OUTSIDE the xvf_dsp namespace (currently led_brightness).
+// Returns true if the param owns its own persistence; *ret carries the NVS
+// result. False = not a self-persisting param (caller falls through to the
+// xvf_dsp path or no persistence).
+bool pipecat_xvf_param_self_persist(const char *param, float applied_value,
+                                    esp_err_t *ret) {
+  const TuneEntry *entry = find_tune_entry(param);
+  if (entry == nullptr || entry->target != TuneTarget::LED_BRIGHTNESS ||
+      ret == nullptr) {
+    return false;
+  }
+  *ret = led_brightness_save(static_cast<uint8_t>(applied_value));
+  return true;
+}
+
 esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
                                  bool *readback_valid) {
   if (readback == nullptr || readback_valid == nullptr) {
@@ -444,6 +522,11 @@ esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
     return ESP_ERR_NOT_FOUND;
   }
   if (entry->target == TuneTarget::DAC_ATTEN) {
+    return ESP_OK;
+  }
+  if (entry->target == TuneTarget::LED_BRIGHTNESS) {
+    *readback = static_cast<float>(s_led_brightness.load());
+    *readback_valid = true;
     return ESP_OK;
   }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
@@ -490,6 +573,24 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
     return ok ? ESP_OK : ESP_FAIL;
   }
 
+  if (entry->target == TuneTarget::LED_BRIGHTNESS) {
+    // Range-clamped 0..255 by normalize_tune_value (int-cast). The LED task
+    // picks the new scalar up on its next 50ms frame. Persistence is the HTTP
+    // handler's call (persist=0 keeps a preview volatile) via
+    // pipecat_xvf_param_self_persist(), into the LED NVS namespace -- not the
+    // xvf_dsp save path -- so a reboot (and its boot splash) comes back here.
+    uint8_t level = static_cast<uint8_t>(applied_value);
+    s_led_brightness.store(level);
+    result->readback = static_cast<float>(level);
+    result->readback_valid = true;
+    result->applied = true;
+    ESP_LOGI(LOG_TAG,
+             "led tune: led_brightness requested=%.1f applied=%u (%.0f%%) "
+             "clamped=%d",
+             (double)value, (unsigned)level, level * 100.0 / 255.0,
+             result->clamped);
+    return ESP_OK;
+  }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
   esp_err_t ret =
       is_float ? xvf_write_float(entry->resid, entry->cmd, applied_value)
@@ -608,7 +709,7 @@ static esp_err_t xvf_led_fill(uint32_t rgb) {
 // Drives the ring from the device's own state signals. Wake is SERVER-side in
 // Track-B, so "listening" here is inferred from mic activity + the server's
 // wake-ack sound arriving; "speaking" from is_playing. Colors follow the HA
-// Voice PE convention. All scaled by PIPECAT_LED_BRIGHTNESS.
+// Voice PE convention. All scaled by s_led_brightness (runtime, NVS-persisted).
 enum LedState {
   LED_OFF = 0,       // no WebRTC peer -> ring dark
   LED_IDLE,          // connected, quiet -> dim cyan breathing
@@ -682,7 +783,7 @@ static void led_render(LedState state, int beam_led) {
   if (!xvf3800_present) {
     return;
   }
-  const float bmax = PIPECAT_LED_BRIGHTNESS / 255.0f;  // 0..1 master brightness
+  const float bmax = s_led_brightness.load() / 255.0f;  // 0..1 master brightness (runtime)
   static float rainbow_hue = 0.0f;  // rotating rainbow offset
   static float comet_pos = 0.0f;    // rotating comet head
 
@@ -862,7 +963,7 @@ static void configure_xvf3800_dsp_profile() {
   // Boot rainbow splash: run the flowing-rainbow effect for a few seconds at
   // startup so "turning on" is clearly visible (matches ESPHome boot behavior).
   if (xvf3800_present) {
-    const float bmax = PIPECAT_LED_BRIGHTNESS / 255.0f;
+    const float bmax = s_led_brightness.load() / 255.0f;  // persisted level, loaded above
     const float step = 360.0f / XVF_LED_COUNT;
     float hue = 0.0f;
     for (int frame = 0; frame < 90; frame++) {  // ~90 * 40ms = 3.6s
@@ -889,7 +990,7 @@ static void configure_xvf3800_dsp_profile() {
   // byte->channel mapping visually. Gated OFF by default; -DPIPECAT_LED_SELFTEST=1
   // runs one cycle, =2 loops forever (easy for a human to eyeball), then boots on.
   {
-    const uint8_t b = PIPECAT_LED_BRIGHTNESS;
+    const uint8_t b = s_led_brightness.load();
     const uint32_t seq[] = {
         (uint32_t)b << 16,               // red
         (uint32_t)b << 8,                // green
@@ -1066,6 +1167,9 @@ static void init_i2s() {
 }
 
 void pipecat_init_audio_capture() {
+  // Restore the persisted LED level FIRST: init_i2c_and_codec() runs the boot
+  // rainbow splash, and a 2 AM reboot must splash at the night level.
+  led_brightness_load();
   init_i2c_and_codec();
   init_i2s();
 }
