@@ -690,6 +690,19 @@ extern volatile uint32_t g_play_prebuffer_samples;
 // steps=0.
 extern volatile uint32_t g_play_prebuffer_effective_ms;
 extern volatile uint32_t g_play_prebuffer_steps;
+// Decimator droop compensator (t_1ce88efe) cost accounting. This filter runs
+// ON the audio publisher task, which the RTP publisher shares; the "No audio
+// frame" peer-churn scar came from exactly that task being starved. These are
+// the numbers that make the cost a fact instead of an assumption. Compiled in
+// even when PIPECAT_DECIM_COMP=0 (they then read zero, and decim_comp reports
+// 0 so a reader can tell "off" from "on but free").
+#ifndef PIPECAT_DECIM_COMP
+#define PIPECAT_DECIM_COMP 1
+#endif
+extern volatile uint32_t g_decim_comp_last_us;
+extern volatile uint32_t g_decim_comp_max_us;
+extern volatile uint32_t g_decim_comp_frames;
+extern volatile uint64_t g_decim_comp_total_us;
 // From vendored components/peer/rtp.c — splits reordering from true loss.
 extern "C" {
 extern volatile uint32_t g_rtp_late_drops;
@@ -766,7 +779,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
     }
   }
   constexpr size_t kRttSamplesCapacity = 800;
-  constexpr size_t kBodyCapacity = 2200;
+  constexpr size_t kBodyCapacity = 2400;  // +decim_comp_* fields (t_1ce88efe)
   char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -793,6 +806,9 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
       "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
       "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu,"
+      "\"decim_comp\":%u,\"decim_comp_last_us\":%lu,"
+      "\"decim_comp_max_us\":%lu,\"decim_comp_frames\":%lu,"
+      "\"decim_comp_total_us\":%llu,"
       "\"led_brightness\":%u}",
       (unsigned long)g_play_stat_frames, (unsigned long)g_play_stat_write_fail,
       (unsigned long)g_play_stat_underruns, (unsigned long)g_play_stat_plc,
@@ -816,7 +832,10 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       (unsigned long)g_play_stat_gap_resumes,
       (unsigned long)(g_play_prebuffer_samples / 16),
       (unsigned long)g_play_prebuffer_effective_ms,
-      (unsigned long)g_play_prebuffer_steps,
+      (unsigned long)g_play_prebuffer_steps, (unsigned)PIPECAT_DECIM_COMP,
+      (unsigned long)g_decim_comp_last_us, (unsigned long)g_decim_comp_max_us,
+      (unsigned long)g_decim_comp_frames,
+      (unsigned long long)g_decim_comp_total_us,
       (unsigned)pipecat_led_brightness());
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
