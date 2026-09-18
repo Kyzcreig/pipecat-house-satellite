@@ -29,33 +29,36 @@
 
 // Uplink (mic-direction) Opus encoder settings.
 //
-// 2026-09-18 (t_8757e3d4) — bitrate 30000 -> 48000 per lane. MEASURED, not
-// assumed: encoding 8 real far-field command-tap captures through libopus and
+// 2026-09-18 (t_8757e3d4) — bitrate 30000 -> 64000 per lane. MEASURED, not
+// assumed: encoding 30 real far-field command-tap captures through libopus and
 // scoring the 4-8 kHz fricative band (the /s/,/f/ cues far-field STT loses
-// first) against the encoder input showed this is the ONLY knob that moves:
+// first) against the encoder input, paired per-file, FEC held ON throughout:
 //
-//   30k/lane (was)  fricative-band segSNR  5.96 dB   <- rate-starved
-//   48k/lane (now)                         9.22 dB   (+3.25 dB, FEC retained)
-//   64k/lane                               8.73 dB   (no better than 48k)
+//   30k/lane (was)  fricative segSNR   9.17 dB
+//   48k/lane                          13.30 dB  (+4.13, sd 0.32, wins 30/30)
+//   64k/lane (now)                    15.64 dB  (+6.47, sd 0.67, wins 30/30)
 //
-// The band is coded WIDEBAND (<=8 kHz) at every rate — Opus was not dropping
-// the band, it was under-allocating bits to it. 48k/lane is the knee; 64k buys
-// nothing. Airtime cost is +0.05 percentage points of channel time per
-// satellite (packet RATE is unchanged at 50 pps; only payload grows), against
-// measured AP utilisation of 41-49% — noise.
+// 64k beats 48k on 30/30 files (mean +2.34 dB, sd 0.43) — unanimous, so this is
+// signal, not sampling noise. The band is coded WIDEBAND (<=8 kHz) at every
+// rate, so Opus was never DROPPING the band; it was under-ALLOCATING bits to it.
+// Airtime cost is +0.09 percentage points of channel time per satellite (packet
+// RATE is unchanged at 50 pps; only payload grows, 150 -> 320 B), against
+// measured AP utilisation of 41-49% — noise. Server seam verified at the larger
+// payload before flashing: uplink_loss_protection.py decodes 100/100 frames plus
+// both PLC and FEC concealment lanes; worst-case frame 274 B vs the 1276 B
+// OPUS_BUFFER_SIZE.
 //
 // DELIBERATELY UNCHANGED, each against an explicit proposal to change it:
-//   COMPLEXITY stays 0. Raising it to 5 measured WORSE on this audio
-//     (fricative -0.83 dB) for 2.4x the encode CPU. Opus complexity trades CPU
-//     for rate-distortion efficiency at a CONSTRAINED rate; once the rate is
-//     adequate there is nothing left for it to buy. Fix the rate, not the
-//     search effort.
+//   COMPLEXITY stays 0. Raising it to 5 measured WORSE on this audio for 2.4x
+//     the encode CPU. Opus complexity buys rate-distortion search effort under
+//     RATE PRESSURE; relieve the pressure and it has nothing left to buy. Fix
+//     the rate, not the search effort.
 //   INBAND_FEC stays ON / PACKET_LOSS_PERC stays 10. Live server counters
 //     (:7860/health.uplink_loss) show gap_events=328 with fec=328 — in-band FEC
-//     healed EVERY uplink gap observed in ~48 h. Disabling it would convert
-//     every one of those into PLC concealment to buy +4 dB more fricative SNR;
-//     we take the +3.25 dB that is free of that trade instead.
-#define OPUS_ENCODER_BITRATE 48000
+//     healed EVERY uplink gap observed in ~48 h. Those bits are not idle; they
+//     are why the 0.004% gap rate is inaudible. All gains above are measured
+//     WITH FEC on, so none of them are financed by dropping it.
+#define OPUS_ENCODER_BITRATE 64000
 #define OPUS_ENCODER_COMPLEXITY 0
 #define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 
