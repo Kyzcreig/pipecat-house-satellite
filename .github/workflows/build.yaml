@@ -10,6 +10,11 @@ jobs:
     # The flashed satellite firmware is xiao-esp32-s3 (esp32s3, IDF 5.5.4 per
     # dependencies.lock). The upstream job ran idf.py at the repo root, which
     # has no CMakeLists.txt, so it could never pass.
+    # Production images are built with PlatformIO's framework-espidf 5.5.4,
+    # which comments "-Wall" "-Werror" "-Wextra" out of tools/cmake/build.cmake.
+    # Stock espressif/idf:v5.5.4 keeps them and fails ota.cpp on a -Wrestrict
+    # false positive (run 36253100920). Apply the same edit so CI compiles
+    # exactly what gets flashed.
     runs-on: ubuntu-latest
 
     steps:
@@ -31,5 +36,7 @@ jobs:
         -e PIPECAT_SMALLWEBRTC_URL=http://ci.invalid:7860/api/offer \
         -e PIPECAT_DUAL_STREAM=1 \
         espressif/idf:v5.5.4 \
-        /bin/bash -c 'idf.py set-target esp32s3 && idf.py build'
+        /bin/bash -c 'sed -i -E "s/^( *)(\"-Wall\"|\"-Werror\"|\"-Wextra\")$/\1# \2/" $IDF_PATH/tools/cmake/build.cmake && \
+          test $(grep -cE "^ *# \"-(Wall|Werror|Wextra)\"$" $IDF_PATH/tools/cmake/build.cmake) -eq 3 && \
+          idf.py set-target esp32s3 && idf.py build'
       shell: bash
