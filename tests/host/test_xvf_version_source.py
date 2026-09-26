@@ -72,7 +72,9 @@ assert re.search(
     r'snprintf\(s_xvf_version,\s*sizeof\(s_xvf_version\),\s*"%u\.%u\.%u"',
     codec_body,
 )
-assert "const char *pipecat_xvf3800_version() { return s_xvf_version; }" in MEDIA
+assert re.search(
+    r"const char \*pipecat_xvf3800_version\(\)\s*\{\s*return s_xvf_version;\s*\}", MEDIA
+)
 assert "extern const char *pipecat_xvf3800_version();" in MAIN_H
 
 # 4. /ota/status and /xvf/params (both branches) report "xvf_version".

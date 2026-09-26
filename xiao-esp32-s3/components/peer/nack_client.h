@@ -42,7 +42,6 @@ extern "C" {
 /* Only NACK bursts RED can't reach. RED (N-2) owns gaps of <= 2. */
 #define NACK_MIN_GAP 3
 
-
 /* Splice window: an rtx must arrive within this long after the NACK was sent to
  * be usable (inside the 80ms prebuffer). 20ms was too tight for the REAL round
  * trip (measured 2026-07-12: 41/41 rtx arrived but ALL counted late) — the
@@ -52,7 +51,8 @@ extern "C" {
  * nack_protocol_generated.h beside the shared wire bounds. */
 
 /* Pending-rtx table size: how many in-flight NACKed seqs we track at once. One
- * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps. */
+ * >=3 burst arms up to NACK_MAX_SEQS; a little headroom for overlapping gaps.
+ */
 #define NACK_PENDING_SLOTS 16
 #define NACK_RTX_MAX_RETRANSMITS 2u
 #define NACK_EFFECT_BUCKET_MS 10000u
@@ -65,7 +65,8 @@ extern "C" {
 
 /* Result of offering an arriving rtx to the pending table. */
 typedef enum NackTakeResult {
-  NACK_TAKE_UNKNOWN = 0, /* seq was never NACKed (or already consumed) -> ignore */
+  NACK_TAKE_UNKNOWN =
+      0, /* seq was never NACKed (or already consumed) -> ignore */
   NACK_TAKE_INWINDOW = 1, /* armed and still inside NACK_WAIT_MS -> splice it */
   NACK_TAKE_LATE = 2,     /* armed but the window expired -> drop, count late */
 } NackTakeResult;
@@ -82,7 +83,7 @@ typedef struct NackPending {
   uint16_t seq;
   uint32_t deadline_ms; /* now_ms + NACK_WAIT_MS at arm time */
   uint32_t sent_bucket_epoch;
-  uint8_t active;       /* NACK_SLOT_* */
+  uint8_t active; /* NACK_SLOT_* */
 } NackPending;
 
 typedef struct NackEffectBucket {
@@ -116,7 +117,7 @@ typedef struct NackClient {
 } NackClient;
 
 /* Zero a client (all slots free, counters 0). */
-void nack_client_init(NackClient* c);
+void nack_client_init(NackClient *c);
 
 /* Plan the seqs to NACK for a detected gap of `gap` missing packets whose
  * OLDEST missing seq is `first_missing` (i.e. last_good_seq + 1). Fills
@@ -126,7 +127,7 @@ void nack_client_init(NackClient* c);
  * Does NOT arm the pending table; rtp.c arms before send so a failed request
  * still resolves to deferred PLC after NACK_WAIT_MS.
  */
-int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
+int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t *out_seqs,
                          int max_out);
 
 /* The server advertises mr=2; older mr=0/1 peers remain wire-compatible. */
@@ -134,41 +135,43 @@ int nack_client_accepts_reliability(uint32_t reliability_parameter);
 
 /* Parse one exact [seq:u16][payload_len:u16][opus bytes] network-order frame.
  * The returned payload aliases frame. Malformed/empty/oversized frames fail. */
-int nack_parse_rtx_frame(const uint8_t* frame, size_t frame_len, uint16_t* seq,
-                         const uint8_t** payload, size_t* payload_len);
+int nack_parse_rtx_frame(const uint8_t *frame, size_t frame_len, uint16_t *seq,
+                         const uint8_t **payload, size_t *payload_len);
 
 /* Arm one requested seq as pending (deadline = now_ms + NACK_WAIT_MS) and bump
  * nack_sent. Returns 1 on success. A full table returns 0 without evicting an
  * armed sequence: eviction would suppress that sequence's deferred PLC. */
-int nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms);
+int nack_client_arm(NackClient *c, uint16_t seq, uint32_t now_ms);
 
 /* Offer an arriving rtx for `seq` at `now_ms`. Returns NACK_TAKE_INWINDOW (and
  * bumps nack_recovered + frees the slot) if it was armed and still fresh;
  * NACK_TAKE_LATE (bumps nack_late + frees the slot) if armed but expired;
  * NACK_TAKE_UNKNOWN if we never NACKed it (or already consumed it). */
-NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms);
+NackTakeResult nack_client_take(NackClient *c, uint16_t seq, uint32_t now_ms);
 
-/* Sweep expired pending entries at `now_ms`, counting each as late and retaining
- * its arm time for a straggler RTT sample. Expired slots may be reused by arm().
- * Returns the number newly expired. */
-int nack_client_sweep(NackClient* c, uint32_t now_ms);
+/* Sweep expired pending entries at `now_ms`, counting each as late and
+ * retaining its arm time for a straggler RTT sample. Expired slots may be
+ * reused by arm(). Returns the number newly expired. */
+int nack_client_sweep(NackClient *c, uint32_t now_ms);
 
 /* Record the cumulative audio-RTP receive counter. A <=1-packet delta across
- * >=500ms marks the current effect bucket as outage evidence, not NACK failure. */
-void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
+ * >=500ms marks the current effect bucket as outage evidence, not NACK failure.
+ */
+void nack_client_note_packet_progress(NackClient *c, uint32_t now_ms,
                                       uint32_t packets_received);
 
 /* Trip at <20% recovered across >=10 resolved, non-outage requests in the
  * rolling 10-minute window. Dark state expires into a clean re-probe at 60s. */
-int nack_client_should_dark(NackClient* c, uint32_t now_ms);
+int nack_client_should_dark(NackClient *c, uint32_t now_ms);
 
 /* ── rtp.c wiring surface (implemented in the vendored rtp.c; declared here so
  * the C++ callers — webrtc.cpp/rtvi.cpp — get the prototypes through one
- * extern-"C" header without touching the pristine submodule rtp.h). ───────── */
+ * extern-"C" header without touching the pristine submodule rtp.h). ─────────
+ */
 
 /* Data-channel sender: transmits `json` (the NACK request) over the RTVI
  * reliable channel. Registered by webrtc.cpp once the channel is open. */
-typedef void (*NackSendFn)(const char* json, size_t len);
+typedef void (*NackSendFn)(const char *json, size_t len);
 
 /* Register (or clear with NULL) the data-channel sender. Also resets the
  * pending table — a fresh peer means all prior NACKs are moot. */
@@ -177,7 +180,7 @@ void rtp_nack_register_sender(NackSendFn fn);
 /* Offer an rtx payload (decoded opus bytes for `seq`) arriving over the data
  * channel at `now_ms`. In-window rtx frames are staged for the decode task to
  * splice; returns 1 if accepted, 0 if late/unknown (or NACK compiled out). */
-int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
+int rtp_nack_feed_rtx(uint16_t seq, const uint8_t *payload, size_t len,
                       uint32_t now_ms);
 
 #ifdef __cplusplus

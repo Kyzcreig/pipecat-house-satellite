@@ -1,3 +1,5 @@
+#include "rtp.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -7,7 +9,6 @@
 #include "peer_connection.h"
 #include "red_unwrap.h"
 #include "red_wrap.h"
-#include "rtp.h"
 #include "utils.h"
 
 typedef enum RtpH264Type {
@@ -43,23 +44,25 @@ typedef struct FuHeader {
 static RedWrapState s_uplink_red;
 static uint8_t s_uplink_red_payload[RTP_PAYLOAD_SIZE];
 #endif
-#define FU_PAYLOAD_SIZE (CONFIG_MTU - sizeof(RtpHeader) - sizeof(FuHeader) - sizeof(NaluHeader))
+#define FU_PAYLOAD_SIZE \
+  (CONFIG_MTU - sizeof(RtpHeader) - sizeof(FuHeader) - sizeof(NaluHeader))
 
-int rtp_packet_validate(uint8_t* packet, size_t size) {
+int rtp_packet_validate(uint8_t *packet, size_t size) {
   if (size < 12)
     return 0;
 
-  RtpHeader* rtp_header = (RtpHeader*)packet;
+  RtpHeader *rtp_header = (RtpHeader *)packet;
   return ((rtp_header->type < 64) || (rtp_header->type >= 96));
 }
 
-uint32_t rtp_get_ssrc(uint8_t* packet) {
-  RtpHeader* rtp_header = (RtpHeader*)packet;
+uint32_t rtp_get_ssrc(uint8_t *packet) {
+  RtpHeader *rtp_header = (RtpHeader *)packet;
   return ntohl(rtp_header->ssrc);
 }
 
-static int rtp_encoder_encode_h264_single(RtpEncoder* rtp_encoder, uint8_t* buf, size_t size) {
-  RtpPacket* rtp_packet = (RtpPacket*)rtp_encoder->buf;
+static int rtp_encoder_encode_h264_single(RtpEncoder *rtp_encoder, uint8_t *buf,
+                                          size_t size) {
+  RtpPacket *rtp_packet = (RtpPacket *)rtp_encoder->buf;
 
   rtp_packet->header.version = 2;
   rtp_packet->header.padding = 0;
@@ -81,12 +84,14 @@ static int rtp_encoder_encode_h264_single(RtpEncoder* rtp_encoder, uint8_t* buf,
 #endif
 
   memcpy(rtp_packet->payload, buf, size);
-  rtp_encoder->on_packet(rtp_encoder->buf, size + sizeof(RtpHeader), rtp_encoder->user_data);
+  rtp_encoder->on_packet(rtp_encoder->buf, size + sizeof(RtpHeader),
+                         rtp_encoder->user_data);
   return 0;
 }
 
-static int rtp_encoder_encode_h264_fu_a(RtpEncoder* rtp_encoder, uint8_t* buf, size_t size) {
-  RtpPacket* rtp_packet = (RtpPacket*)rtp_encoder->buf;
+static int rtp_encoder_encode_h264_fu_a(RtpEncoder *rtp_encoder, uint8_t *buf,
+                                        size_t size) {
+  RtpPacket *rtp_packet = (RtpPacket *)rtp_encoder->buf;
 
   rtp_packet->header.version = 2;
   rtp_packet->header.padding = 0;
@@ -106,8 +111,8 @@ static int rtp_encoder_encode_h264_fu_a(RtpEncoder* rtp_encoder, uint8_t* buf, s
     rtp_encoder->timestamp += rtp_encoder->timestamp_increment;
   }
 
-  NaluHeader* fu_indicator = (NaluHeader*)rtp_packet->payload;
-  FuHeader* fu_header = (FuHeader*)rtp_packet->payload + sizeof(NaluHeader);
+  NaluHeader *fu_indicator = (NaluHeader *)rtp_packet->payload;
+  FuHeader *fu_header = (FuHeader *)rtp_packet->payload + sizeof(NaluHeader);
   fu_header->s = 1;
 
   while (size > 0) {
@@ -121,15 +126,21 @@ static int rtp_encoder_encode_h264_fu_a(RtpEncoder* rtp_encoder, uint8_t* buf, s
     if (size <= FU_PAYLOAD_SIZE) {
       fu_header->e = 1;
       rtp_packet->header.markerbit = 1;
-      memcpy(rtp_packet->payload + sizeof(NaluHeader) + sizeof(FuHeader), buf, size);
-      rtp_encoder->on_packet(rtp_encoder->buf, size + sizeof(RtpHeader) + sizeof(NaluHeader) + sizeof(FuHeader), rtp_encoder->user_data);
+      memcpy(rtp_packet->payload + sizeof(NaluHeader) + sizeof(FuHeader), buf,
+             size);
+      rtp_encoder->on_packet(
+          rtp_encoder->buf,
+          size + sizeof(RtpHeader) + sizeof(NaluHeader) + sizeof(FuHeader),
+          rtp_encoder->user_data);
       break;
     }
 
     fu_header->e = 0;
 
-    memcpy(rtp_packet->payload + sizeof(NaluHeader) + sizeof(FuHeader), buf, FU_PAYLOAD_SIZE);
-    rtp_encoder->on_packet(rtp_encoder->buf, CONFIG_MTU, rtp_encoder->user_data);
+    memcpy(rtp_packet->payload + sizeof(NaluHeader) + sizeof(FuHeader), buf,
+           FU_PAYLOAD_SIZE);
+    rtp_encoder->on_packet(rtp_encoder->buf, CONFIG_MTU,
+                           rtp_encoder->user_data);
     size -= FU_PAYLOAD_SIZE;
     buf += FU_PAYLOAD_SIZE;
 
@@ -138,8 +149,8 @@ static int rtp_encoder_encode_h264_fu_a(RtpEncoder* rtp_encoder, uint8_t* buf, s
   return 0;
 }
 
-static uint8_t* h264_find_nalu(uint8_t* buf_start, uint8_t* buf_end) {
-  uint8_t* p = buf_start + 2;
+static uint8_t *h264_find_nalu(uint8_t *buf_start, uint8_t *buf_end) {
+  uint8_t *p = buf_start + 2;
 
   while (p < buf_end) {
     if (*(p - 2) == 0x00 && *(p - 1) == 0x00 && *p == 0x01)
@@ -150,8 +161,9 @@ static uint8_t* h264_find_nalu(uint8_t* buf_start, uint8_t* buf_end) {
   return buf_end;
 }
 
-static int rtp_encoder_encode_h264(RtpEncoder* rtp_encoder, uint8_t* buf, size_t size) {
-  uint8_t* buf_end = buf + size;
+static int rtp_encoder_encode_h264(RtpEncoder *rtp_encoder, uint8_t *buf,
+                                   size_t size) {
+  uint8_t *buf_end = buf + size;
   uint8_t *pstart, *pend;
   size_t nalu_size;
 
@@ -176,22 +188,22 @@ static int rtp_encoder_encode_h264(RtpEncoder* rtp_encoder, uint8_t* buf, size_t
   return 0;
 }
 
-static int rtp_encoder_encode_generic(RtpEncoder* rtp_encoder, uint8_t* buf, size_t size) {
-  RtpHeader* rtp_header = (RtpHeader*)rtp_encoder->buf;
+static int rtp_encoder_encode_generic(RtpEncoder *rtp_encoder, uint8_t *buf,
+                                      size_t size) {
+  RtpHeader *rtp_header = (RtpHeader *)rtp_encoder->buf;
   rtp_header->version = 2;
   rtp_header->padding = 0;
   rtp_header->extension = 0;
   rtp_header->csrccount = 0;
   rtp_header->markerbit = 0;
   uint8_t payload_type = rtp_encoder->type;
-  uint8_t* payload = buf;
+  uint8_t *payload = buf;
   size_t payload_size = size;
 #if PIPECAT_UPLINK_RED
   if (rtp_encoder->type == PT_OPUS) {
-    int wrapped = red_wrap_packet(&s_uplink_red, buf, size,
-                                  rtp_encoder->timestamp,
-                                  s_uplink_red_payload,
-                                  sizeof(s_uplink_red_payload));
+    int wrapped =
+        red_wrap_packet(&s_uplink_red, buf, size, rtp_encoder->timestamp,
+                        s_uplink_red_payload, sizeof(s_uplink_red_payload));
     if (wrapped >= 0) {
       payload_type = PT_RED;
       payload = s_uplink_red_payload;
@@ -206,12 +218,14 @@ static int rtp_encoder_encode_generic(RtpEncoder* rtp_encoder, uint8_t* buf, siz
   rtp_header->ssrc = htonl(rtp_encoder->ssrc);
   memcpy(rtp_encoder->buf + sizeof(RtpHeader), payload, payload_size);
 
-  rtp_encoder->on_packet(rtp_encoder->buf, payload_size + sizeof(RtpHeader), rtp_encoder->user_data);
+  rtp_encoder->on_packet(rtp_encoder->buf, payload_size + sizeof(RtpHeader),
+                         rtp_encoder->user_data);
 
   return 0;
 }
 
-void rtp_encoder_init(RtpEncoder* rtp_encoder, MediaCodec codec, RtpOnPacket on_packet, void* user_data) {
+void rtp_encoder_init(RtpEncoder *rtp_encoder, MediaCodec codec,
+                      RtpOnPacket on_packet, void *user_data) {
   rtp_encoder->on_packet = on_packet;
   rtp_encoder->user_data = user_data;
   rtp_encoder->timestamp = 0;
@@ -250,15 +264,16 @@ void rtp_encoder_init(RtpEncoder* rtp_encoder, MediaCodec codec, RtpOnPacket on_
   }
 }
 
-int rtp_encoder_encode(RtpEncoder* rtp_encoder, const uint8_t* buf, size_t size) {
-  return rtp_encoder->encode_func(rtp_encoder, (uint8_t*)buf, size);
+int rtp_encoder_encode(RtpEncoder *rtp_encoder, const uint8_t *buf,
+                       size_t size) {
+  return rtp_encoder->encode_func(rtp_encoder, (uint8_t *)buf, size);
 }
 
-static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
+static int rtp_decode_h264(RtpDecoder *rtp_decoder, uint8_t *buf, size_t size) {
   static const uint32_t nalu_start_4bytecode = 0x01000000;
   static uint8_t nalu_buf[CONFIG_MAX_NALU_SIZE];
   static int offset = 0;
-  RtpPacket* rtp_packet = (RtpPacket*)buf;
+  RtpPacket *rtp_packet = (RtpPacket *)buf;
   uint8_t nalu_type = *rtp_packet->payload & 0x1f;
   int payload_size = size - sizeof(RtpHeader);
   if (nalu_type > 0 && nalu_type < 24) {
@@ -272,11 +287,11 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
     }
     return (int)size;
   } else {
-    NaluHeader* fu_indicator = (NaluHeader*)rtp_packet->payload;
-    FuHeader* fu_header = (FuHeader*)(rtp_packet->payload + sizeof(NaluHeader));
-    uint8_t reconstructed_nalu_type = (fu_indicator->f << 7) |
-                                      (fu_indicator->nri << 5) |
-                                      fu_header->type;
+    NaluHeader *fu_indicator = (NaluHeader *)rtp_packet->payload;
+    FuHeader *fu_header =
+        (FuHeader *)(rtp_packet->payload + sizeof(NaluHeader));
+    uint8_t reconstructed_nalu_type =
+        (fu_indicator->f << 7) | (fu_indicator->nri << 5) | fu_header->type;
     payload_size -= sizeof(NaluHeader) + sizeof(FuHeader);
     if (fu_header->s) {
       memcpy(nalu_buf, &nalu_start_4bytecode, sizeof(nalu_start_4bytecode));
@@ -301,25 +316,28 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
 }
 
 // Reorder-vs-loss counters (2026-07-09): exposed via /playback/stats.
-volatile uint32_t g_rtp_late_drops = 0;   // packets arriving behind playback (reordering)
-volatile uint32_t g_rtp_gap_events = 0;   // distinct seq gaps (PLC bursts fired)
+volatile uint32_t g_rtp_late_drops =
+    0;  // packets arriving behind playback (reordering)
+volatile uint32_t g_rtp_gap_events = 0;  // distinct seq gaps (PLC bursts fired)
 
 // RED / RFC 2198 counters (2026-07-11, audio-resilience ladder Phase 3).
 // packets_received is the frozen loss_burden denominator (ladder spec REV 3):
-//   loss_burden = (plc + fec + red_recovered + nack_recovered) / packets_received
+//   loss_burden = (plc + fec + red_recovered + nack_recovered) /
+//   packets_received
 volatile uint32_t g_rtp_packets_received = 0;  // ALL audio RTP packets in
-volatile uint32_t g_red_recovered = 0;         // lost frames recovered from RED blocks
-volatile uint32_t g_red_dup_drops = 0;         // late/dup RED packets dropped (redundancy discarded)
+volatile uint32_t g_red_recovered = 0;  // lost frames recovered from RED blocks
+volatile uint32_t g_red_dup_drops =
+    0;  // late/dup RED packets dropped (redundancy discarded)
 
-// --- NACK retransmit client (2026-07-12, audio-resilience ladder Phase 5) -----
-// On a seq gap of >= NACK_MIN_GAP (3) packets — deeper than RED's N-2 reach —
-// re-request the missing seqs over the RTVI data channel; a resend that lands
-// within NACK_WAIT_MS (60ms, inside the 80ms prebuffer) is spliced as REAL
-// audio. Bit-exact recovery that beats concealment. DARK unless PIPECAT_NACK is
-// compiled in (top CMakeLists add_compile_definitions). Pure decision + table
-// logic lives in nack_client.{c,h} (host-tested); this file owns the wiring:
-// building the request JSON, calling the registered data-channel sender, and
-// feeding an arriving rtx back into the live decoder.
+// --- NACK retransmit client (2026-07-12, audio-resilience ladder Phase 5)
+// ----- On a seq gap of >= NACK_MIN_GAP (3) packets — deeper than RED's N-2
+// reach — re-request the missing seqs over the RTVI data channel; a resend that
+// lands within NACK_WAIT_MS (60ms, inside the 80ms prebuffer) is spliced as
+// REAL audio. Bit-exact recovery that beats concealment. DARK unless
+// PIPECAT_NACK is compiled in (top CMakeLists add_compile_definitions). Pure
+// decision + table logic lives in nack_client.{c,h} (host-tested); this file
+// owns the wiring: building the request JSON, calling the registered
+// data-channel sender, and feeding an arriving rtx back into the live decoder.
 //
 // DEFERRED CONCEALMENT (the ordering problem): the pre-NACK code conceals a
 // gap SYNCHRONOUSLY (RED block or (NULL,0) PLC signal per missing frame,
@@ -337,9 +355,9 @@ volatile uint32_t g_red_dup_drops = 0;         // late/dup RED packets dropped (
 // Exactly one of {rtx splice, deferred PLC} ever fires per NACKed seq.
 //
 // THREADING: rtp_decode_generic runs on the peer-connection task while
-// rtp_nack_feed_rtx is called from the WebRTC data-channel callback. The opus decoder
-// behind s_audio_on_packet is NOT thread-safe, so feed_rtx never calls it —
-// an in-window rtx is validated (take) and parked in a tiny staging FIFO;
+// rtp_nack_feed_rtx is called from the WebRTC data-channel callback. The opus
+// decoder behind s_audio_on_packet is NOT thread-safe, so feed_rtx never calls
+// it — an in-window rtx is validated (take) and parked in a tiny staging FIFO;
 // the decode task drains the FIFO into the decoder at the next packet
 // arrival (same instant the deferred-PLC sweep runs). g_nack + the FIFO are
 // the only shared state and are guarded by one portMUX with tiny critical
@@ -371,12 +389,11 @@ static NackSendFn s_nack_send = NULL;
 // injected into the same decode path a normal packet takes. One audio
 // decoder -> one slot.
 static RtpOnPacket s_audio_on_packet = NULL;
-static void* s_audio_user_data = NULL;
+static void *s_audio_user_data = NULL;
 
 #ifdef PIPECAT_NACK
-#include "freertos/FreeRTOS.h"
-
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 
 static portMUX_TYPE s_nack_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -420,9 +437,11 @@ static void nack_apply_circuit_breaker(uint32_t now_ms) {
   if (is_dark == was_dark) {
     return;
   }
-  const char* message =
-      is_dark ? "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":\"dark\"}"
-              : "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":\"restore\"}";
+  const char *message =
+      is_dark
+          ? "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":\"dark\"}"
+          : "{\"type\":\"nack-state\",\"t\":\"nack-state\",\"state\":"
+            "\"restore\"}";
   if (s_nack_send != NULL) {
     s_nack_send(message, strlen(message));
   }
@@ -437,7 +456,8 @@ static void nack_apply_circuit_breaker(uint32_t now_ms) {
 // Decode-task side of deferred concealment, run once per arriving packet
 // BEFORE the packet's own gap handling: (1) splice any staged rtx frames
 // (real recovered audio) into the decoder, (2) emit the deferred (NULL,0)
-// PLC signal for every NACKed seq whose NACK_WAIT_MS window expired without an rtx.
+// PLC signal for every NACKed seq whose NACK_WAIT_MS window expired without an
+// rtx.
 static void nack_sweep_and_drain(uint32_t now_ms) {
   for (;;) {
     uint8_t buf[NACK_RTX_MAX_PAYLOAD];
@@ -465,7 +485,7 @@ static void nack_sweep_and_drain(uint32_t now_ms) {
       // everywhere: any parse failure -> treat as bare opus.
       RedParsed red;
       if (red_unwrap(buf, len, PT_OPUS, &red) == 0) {
-        s_audio_on_packet((uint8_t*)red.primary, red.primary_size,
+        s_audio_on_packet((uint8_t *)red.primary, red.primary_size,
                           s_audio_user_data);
       } else {
         s_audio_on_packet(buf, len, s_audio_user_data);
@@ -503,12 +523,12 @@ static void nack_sweep_and_drain(uint32_t now_ms) {
   nack_apply_circuit_breaker(now_ms);
 }
 
-// Build "{\"t\":\"nack\",\"seqs\":[s0,s1,...]}" for `count` seqs and send it over
-// the data channel. Arms each seq BEFORE sending: an armed entry is what
+// Build "{\"t\":\"nack\",\"seqs\":[s0,s1,...]}" for `count` seqs and send it
+// over the data channel. Arms each seq BEFORE sending: an armed entry is what
 // drives the deferred PLC (sweep), so even a lost/failed request degrades to
 // correct concealment after NACK_WAIT_MS — and rtx can never race an unarmed
 // table.
-static int nack_request(const uint16_t* seqs, int count, uint32_t now_ms) {
+static int nack_request(const uint16_t *seqs, int count, uint32_t now_ms) {
   if (s_nack_send == NULL || g_nack_auto_dark || count <= 0) {
     return 0;
   }
@@ -571,7 +591,7 @@ void rtp_nack_register_sender(NackSendFn fn) {
 // Fed by webrtc.cpp after strict parsing of one binary pipecat-rtx frame.
 // Returns 1 if the rtx was accepted for splicing
 // (in-window; staged for the decode task), 0 otherwise (late/unknown/full).
-int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
+int rtp_nack_feed_rtx(uint16_t seq, const uint8_t *payload, size_t len,
                       uint32_t now_ms) {
   g_nack_rtx_arrived++;
 #ifdef PIPECAT_NACK
@@ -602,8 +622,8 @@ int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
   }
   g_nack_late = g_nack.nack_late;
   portEXIT_CRITICAL(&s_nack_mux);
-  LOGI("NACK_V2_RTX seq=%u rtt_ms=%lu result=%s staged=%d",
-       (unsigned)seq, (unsigned long)rtt_ms,
+  LOGI("NACK_V2_RTX seq=%u rtt_ms=%lu result=%s staged=%d", (unsigned)seq,
+       (unsigned long)rtt_ms,
        r == NACK_TAKE_INWINDOW ? "recovered"
                                : (r == NACK_TAKE_LATE ? "late" : "unknown"),
        staged);
@@ -618,7 +638,7 @@ int rtp_nack_feed_rtx(uint16_t seq, const uint8_t* payload, size_t len,
 #endif
 }
 
-size_t rtp_nack_format_rtt_samples(char* out, size_t capacity) {
+size_t rtp_nack_format_rtt_samples(char *out, size_t capacity) {
   if (out == NULL || capacity < 3) {
     return 0;
   }
@@ -627,9 +647,9 @@ size_t rtp_nack_format_rtt_samples(char* out, size_t capacity) {
   uint16_t count;
   portENTER_CRITICAL(&s_nack_mux);
   count = s_nack_rtt_sample_count;
-  uint16_t start = (uint16_t)((s_nack_rtt_sample_head + NACK_RTT_SAMPLE_CAP -
-                               count) %
-                              NACK_RTT_SAMPLE_CAP);
+  uint16_t start =
+      (uint16_t)((s_nack_rtt_sample_head + NACK_RTT_SAMPLE_CAP - count) %
+                 NACK_RTT_SAMPLE_CAP);
   for (uint16_t i = 0; i < count; i++) {
     samples[i] = s_nack_rtt_samples[(start + i) % NACK_RTT_SAMPLE_CAP];
   }
@@ -659,9 +679,9 @@ size_t rtp_nack_format_rtt_samples(char* out, size_t capacity) {
 #endif
 }
 
-
-static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
-  RtpPacket* rtp_packet = (RtpPacket*)buf;
+static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
+                              size_t size) {
+  RtpPacket *rtp_packet = (RtpPacket *)buf;
   if (size < sizeof(RtpHeader)) {
     return -1;
   }
@@ -669,9 +689,9 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
 
 #ifdef PIPECAT_NACK
   // Deferred-concealment resolution point (see the NACK block above): on
-  // EVERY audio packet arrival: first splice any staged rtx frames (real audio),
-  // then sweep requests whose NACK_WAIT_MS window has actually expired and
-  // then emit the deferred PLC signal for NACKed seqs whose window expired.
+  // EVERY audio packet arrival: first splice any staged rtx frames (real
+  // audio), then sweep requests whose NACK_WAIT_MS window has actually expired
+  // and then emit the deferred PLC signal for NACKed seqs whose window expired.
   // Runs BEFORE this packet's own gap handling and payload delivery.
   if (rtp_decoder->on_packet != NULL &&
       rtp_decoder->on_packet == s_audio_on_packet) {
@@ -687,14 +707,14 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
   // primary block rides the normal decode path, redundant blocks fill seq
   // gaps below. SAFETY RULE (spec): if parsing fails in ANY way, treat the
   // whole payload as bare opus — RED bugs degrade to yesterday's behavior.
-  uint8_t* payload = rtp_packet->payload;
+  uint8_t *payload = rtp_packet->payload;
   size_t payload_size = size - sizeof(RtpHeader);
   RedParsed red;
   int red_ok = 0;
   if (rtp_packet->header.type == RED_PAYLOAD_TYPE) {
     if (red_unwrap(payload, payload_size, PT_OPUS, &red) == 0) {
       red_ok = 1;
-      payload = (uint8_t*)red.primary;
+      payload = (uint8_t *)red.primary;
       payload_size = red.primary_size;
     }
     // else: fail-safe fallthrough — payload stays the full buffer (bare opus)
@@ -716,15 +736,19 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
   // (can't add fields to RtpDecoder — rtp.h stays in the pristine submodule).
   enum { RTP_SEQ_SLOTS = 4 };
   static struct {
-    RtpDecoder* dec;
+    RtpDecoder *dec;
     uint16_t last_seq;
     uint32_t last_ts;
     uint8_t initialized;
   } seq_state[RTP_SEQ_SLOTS];
   int slot = -1;
   for (int i = 0; i < RTP_SEQ_SLOTS; i++) {
-    if (seq_state[i].dec == rtp_decoder) { slot = i; break; }
-    if (slot < 0 && seq_state[i].dec == NULL) slot = i;
+    if (seq_state[i].dec == rtp_decoder) {
+      slot = i;
+      break;
+    }
+    if (slot < 0 && seq_state[i].dec == NULL)
+      slot = i;
   }
   if (slot >= 0) {
     uint16_t seq = ntohs(rtp_packet->header.seq_number);
@@ -760,7 +784,8 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
         if (red_ok) {
           // RTP ts units per packet, derived from the actual stream (960 for
           // 20ms opus @48k) so a ptime change can't silently break mapping.
-          uint32_t ts_step = (ts - seq_state[slot].last_ts) / (uint32_t)(delta + 1);
+          uint32_t ts_step =
+              (ts - seq_state[slot].last_ts) / (uint32_t)(delta + 1);
           planned = red_recover_plan(&red, delta, ts_step, actions);
         }
 #ifdef PIPECAT_NACK
@@ -775,12 +800,11 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
         // the RED/FEC path below stays byte-identical for them. Frames past
         // the 8-seq cap (9..15 of a monster gap) keep immediate RED/PLC.
         int nacked = 0;
-        if (delta >= NACK_MIN_GAP && s_nack_send != NULL &&
-            !g_nack_auto_dark &&
+        if (delta >= NACK_MIN_GAP && s_nack_send != NULL && !g_nack_auto_dark &&
             rtp_decoder->on_packet == s_audio_on_packet) {
           uint16_t nack_seqs[NACK_MAX_SEQS];
-          nacked = nack_client_plan_gap(expected, delta, nack_seqs,
-                                        NACK_MAX_SEQS);
+          nacked =
+              nack_client_plan_gap(expected, delta, nack_seqs, NACK_MAX_SEQS);
           if (nacked > 0) {
             nacked = nack_request(nack_seqs, nacked, nack_now_ms());
           }
@@ -793,8 +817,9 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
           }
 #endif
           if (i < planned && actions[i] >= 0) {
-            RedBlock* b = &red.blocks[actions[i]];
-            rtp_decoder->on_packet((uint8_t*)b->data, b->length, rtp_decoder->user_data);
+            RedBlock *b = &red.blocks[actions[i]];
+            rtp_decoder->on_packet((uint8_t *)b->data, b->length,
+                                   rtp_decoder->user_data);
             g_red_recovered++;
           } else {
             rtp_decoder->on_packet(NULL, 0, rtp_decoder->user_data);
@@ -810,11 +835,13 @@ static int rtp_decode_generic(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size
   // --- END VENDORED PATCH ---
   if (rtp_decoder->on_packet != NULL)
     rtp_decoder->on_packet(payload, payload_size, rtp_decoder->user_data);
-  // even if there is no callback set, assume everything is ok for caller and do not return an error
+  // even if there is no callback set, assume everything is ok for caller and do
+  // not return an error
   return (int)size;
 }
 
-void rtp_decoder_init(RtpDecoder* rtp_decoder, MediaCodec codec, RtpOnPacket on_packet, void* user_data) {
+void rtp_decoder_init(RtpDecoder *rtp_decoder, MediaCodec codec,
+                      RtpOnPacket on_packet, void *user_data) {
   rtp_decoder->on_packet = on_packet;
   rtp_decoder->user_data = user_data;
 
@@ -836,8 +863,9 @@ void rtp_decoder_init(RtpDecoder* rtp_decoder, MediaCodec codec, RtpOnPacket on_
   }
 }
 
-int rtp_decoder_decode(RtpDecoder* rtp_decoder, const uint8_t* buf, size_t size) {
+int rtp_decoder_decode(RtpDecoder *rtp_decoder, const uint8_t *buf,
+                       size_t size) {
   if (rtp_decoder->decode_func == NULL)
     return -1;
-  return rtp_decoder->decode_func(rtp_decoder, (uint8_t*)buf, size);
+  return rtp_decoder->decode_func(rtp_decoder, (uint8_t *)buf, size);
 }

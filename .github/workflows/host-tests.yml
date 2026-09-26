@@ -1,0 +1,52 @@
+name: Host tests
+# Runs every tests/host/run_*.sh (pure C/C++ + python3, no ESP-IDF) as its own
+# matrix job, so a red check names the suite. The matrix is discovered from the
+# tree: a new run_*.sh is covered without editing this file, and an empty
+# discovery fails instead of passing vacuously.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      suites: ${{ steps.list.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        shell: bash
+        run: |
+          suites=$(cd tests/host 2>/dev/null && ls run_*.sh 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+          if [ -z "$suites" ] || [ "$suites" = "[]" ]; then
+            echo "::error::no tests/host/run_*.sh found; host-tests would pass vacuously"
+            exit 1
+          fi
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "$suites"
+
+  host:
+    needs: discover
+    name: ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.discover.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@v4
+      # ubuntu-24.04 runners ship vm.mmap_rnd_bits=32, which makes ASan-built
+      # binaries die with DEADLYSIGNAL before main(); 28 is the ASan-safe value.
+      - name: ASan-compatible ASLR entropy
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Run suite
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: bash "tests/host/$SUITE"

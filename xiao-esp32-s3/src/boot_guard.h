@@ -30,18 +30,18 @@ static constexpr uint32_t kPipecatFaultHoldCapMs = 15u * 60u * 1000u;
 static constexpr uint32_t kPipecatBootGuardCountCap = 16u;
 
 enum class PipecatResetKind : uint8_t {
-  kPowerOn,  // cold boot: RTC memory is garbage, counters restart
-  kFault,    // WDT / panic / brownout
-  kSoftware, // esp_restart(); becomes kNetWatchdog if we flagged it first
-  kOther,    // external pin, deep sleep, unknown
+  kPowerOn,   // cold boot: RTC memory is garbage, counters restart
+  kFault,     // WDT / panic / brownout
+  kSoftware,  // esp_restart(); becomes kNetWatchdog if we flagged it first
+  kOther,     // external pin, deep sleep, unknown
 };
 
 struct PipecatBootGuardState {
   uint32_t magic;
-  uint32_t fault_boots;       // consecutive boots that followed a fault reset
-  uint32_t netwdt_restarts;   // consecutive network-watchdog restarts
-  uint32_t netwdt_pending;    // 1 = the next ESP_RST_SW was our watchdog
-  uint32_t total_boots;       // since the last cold power-on (diagnostic)
+  uint32_t fault_boots;      // consecutive boots that followed a fault reset
+  uint32_t netwdt_restarts;  // consecutive network-watchdog restarts
+  uint32_t netwdt_pending;   // 1 = the next ESP_RST_SW was our watchdog
+  uint32_t total_boots;      // since the last cold power-on (diagnostic)
 };
 
 static inline uint32_t pipecat_boot_guard_sat_inc(uint32_t v) {
@@ -52,7 +52,8 @@ static inline uint32_t pipecat_boot_guard_sat_inc(uint32_t v) {
 // followed a fault (for logging).
 static inline bool pipecat_boot_guard_on_boot(PipecatBootGuardState *s,
                                               PipecatResetKind kind) {
-  if (s->magic != kPipecatBootGuardMagic || kind == PipecatResetKind::kPowerOn) {
+  if (s->magic != kPipecatBootGuardMagic ||
+      kind == PipecatResetKind::kPowerOn) {
     s->magic = kPipecatBootGuardMagic;
     s->fault_boots = 0;
     s->netwdt_restarts = 0;
@@ -70,10 +71,13 @@ static inline bool pipecat_boot_guard_on_boot(PipecatBootGuardState *s,
 }
 
 // How long to hold before init on this boot.
-static inline uint32_t pipecat_boot_guard_hold_ms(const PipecatBootGuardState *s) {
-  if (s->fault_boots == 0) return 0;
+static inline uint32_t pipecat_boot_guard_hold_ms(
+    const PipecatBootGuardState *s) {
+  if (s->fault_boots == 0)
+    return 0;
   uint32_t shift = s->fault_boots - 1;
-  if (shift > 4) shift = 4;  // 60 s << 4 = 16 min > cap
+  if (shift > 4)
+    shift = 4;  // 60 s << 4 = 16 min > cap
   const uint32_t ms = kPipecatFaultHoldBaseMs << shift;
   return ms > kPipecatFaultHoldCapMs ? kPipecatFaultHoldCapMs : ms;
 }
@@ -81,7 +85,8 @@ static inline uint32_t pipecat_boot_guard_hold_ms(const PipecatBootGuardState *s
 static inline uint32_t pipecat_net_watchdog_deadline_ms(
     const PipecatBootGuardState *s) {
   uint32_t shift = s->netwdt_restarts;
-  if (shift > 3) shift = 3;  // 10 min << 3 = 80 min > cap
+  if (shift > 3)
+    shift = 3;  // 10 min << 3 = 80 min > cap
   const uint32_t ms = kPipecatNetWatchdogBaseMs << shift;
   return ms > kPipecatNetWatchdogCapMs ? kPipecatNetWatchdogCapMs : ms;
 }
@@ -114,7 +119,9 @@ class PipecatNetWatchdog {
     unhealthy_ms_ += elapsed_ms;
     return false;
   }
-  uint32_t unhealthy_ms() const { return unhealthy_ms_; }
+  uint32_t unhealthy_ms() const {
+    return unhealthy_ms_;
+  }
 
  private:
   uint32_t unhealthy_ms_ = 0;
@@ -126,7 +133,8 @@ static constexpr uint32_t kPipecatWifiBackoffCapMs = 30000u;
 
 static inline uint32_t pipecat_wifi_backoff_ms(uint32_t attempt) {
   uint32_t shift = attempt;
-  if (shift > 5) shift = 5;  // 1 s << 5 = 32 s > cap
+  if (shift > 5)
+    shift = 5;  // 1 s << 5 = 32 s > cap
   const uint32_t ms = kPipecatWifiBackoffBaseMs << shift;
   return ms > kPipecatWifiBackoffCapMs ? kPipecatWifiBackoffCapMs : ms;
 }

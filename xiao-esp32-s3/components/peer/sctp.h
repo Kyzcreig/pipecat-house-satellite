@@ -148,13 +148,13 @@ typedef struct {
   char label[32];  // Stream label
   uint16_t sid;    // Stream ID
 #ifdef PIPECAT_NACK
-  uint8_t channel_type;             // DCEP OPEN byte 1
-  uint32_t reliability_parameter;   // DCEP OPEN bytes 4..7
+  uint8_t channel_type;            // DCEP OPEN byte 1
+  uint32_t reliability_parameter;  // DCEP OPEN bytes 4..7
 #endif
 } SctpStreamEntry;
 
 typedef struct Sctp {
-  struct socket* sock;
+  struct socket *sock;
 
   int local_port;
   int remote_port;
@@ -167,37 +167,40 @@ typedef struct Sctp {
   uint8_t inbound_tsn_valid;
   uint64_t sid2_trace_until_us;
 #endif
-  DtlsSrtp* dtls_srtp;
+  DtlsSrtp *dtls_srtp;
   int stream_count;
   SctpStreamEntry stream_table[SCTP_MAX_STREAMS];
 
   /* datachannel */
-  void (*onmessage)(char* msg, size_t len, void* userdata, uint16_t sid);
-  void (*onopen)(void* userdata);
-  void (*onclose)(void* userdata);
+  void (*onmessage)(char *msg, size_t len, void *userdata, uint16_t sid);
+  void (*onopen)(void *userdata);
+  void (*onclose)(void *userdata);
 
-  void* userdata;
+  void *userdata;
   uint8_t buf[CONFIG_MTU];
 } Sctp;
 
-int sctp_create_association(Sctp* sctp, DtlsSrtp* dtls_srtp);
+int sctp_create_association(Sctp *sctp, DtlsSrtp *dtls_srtp);
 
-void sctp_destroy_association(Sctp* sctp);
+void sctp_destroy_association(Sctp *sctp);
 
 void sctp_usrsctp_init();
 
 void sctp_usrsctp_deinit();
 
-int sctp_is_connected(Sctp* sctp);
+int sctp_is_connected(Sctp *sctp);
 
-void sctp_incoming_data(Sctp* sctp, char* buf, size_t len);
+void sctp_incoming_data(Sctp *sctp, char *buf, size_t len);
 
-int sctp_outgoing_data(Sctp* sctp, char* buf, size_t len, SctpDataPpid ppid, uint16_t sid);
+int sctp_outgoing_data(Sctp *sctp, char *buf, size_t len, SctpDataPpid ppid,
+                       uint16_t sid);
 
-void sctp_onmessage(Sctp* sctp, void (*onmessage)(char* msg, size_t len, void* userdata, uint16_t sid));
+void sctp_onmessage(Sctp *sctp,
+                    void (*onmessage)(char *msg, size_t len, void *userdata,
+                                      uint16_t sid));
 
-void sctp_onopen(Sctp* sctp, void (*onopen)(void* userdata));
+void sctp_onopen(Sctp *sctp, void (*onopen)(void *userdata));
 
-void sctp_onclose(Sctp* sctp, void (*onclose)(void* userdata));
+void sctp_onclose(Sctp *sctp, void (*onclose)(void *userdata));
 
 #endif  // SCTP_H_

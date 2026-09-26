@@ -25,11 +25,11 @@
 #include "prebuffer_ctl.h"
 
 static int tests_run = 0;
-#define RUN(fn)                 \
-  do {                          \
-    fn();                       \
-    tests_run++;                \
-    printf("ok - %s\n", #fn);   \
+#define RUN(fn)               \
+  do {                        \
+    fn();                     \
+    tests_run++;              \
+    printf("ok - %s\n", #fn); \
   } while (0)
 
 /* ── gap_resumes (underrun blind-spot fix) ───────────────────────────────── */
@@ -86,7 +86,7 @@ static void test_custom_resume_window(void) {
 static void test_ms_tick_wraparound(void) {
   prebuffer_ctl c;
   pbc_init(&c, 0, 0);
-  pbc_on_full_drain(&c, 0xFFFFFF00u); /* just before uint32 wrap */
+  pbc_on_full_drain(&c, 0xFFFFFF00u);          /* just before uint32 wrap */
   assert(pbc_on_refill(&c, 0x00000064u) == 1); /* 356ms across the wrap */
   assert(c.gap_resumes == 1);
 }
@@ -154,7 +154,8 @@ static void test_adaptive_one_step_per_burst(void) {
   prebuffer_ctl c;
   pbc_init(&c, 1, 0);
   pbc_track_recoveries(&c, 0, 0);
-  pbc_track_recoveries(&c, 7, 1000); /* over threshold: +1 step, window consumed */
+  pbc_track_recoveries(&c, 7,
+                       1000); /* over threshold: +1 step, window consumed */
   assert(c.offset_steps == 1);
   pbc_track_recoveries(&c, 8, 1100); /* 1 more event: below threshold */
   assert(c.offset_steps == 1);       /* no runaway growth */
@@ -237,7 +238,8 @@ static void test_adaptive_slow_trickle_never_grows(void) {
 }
 
 static void test_adaptive_effective_at_default_base_80(void) {
-  /* The new static default is 80ms; one growth step -> 120, two -> 160 (cap). */
+  /* The new static default is 80ms; one growth step -> 120, two -> 160 (cap).
+   */
   prebuffer_ctl c;
   pbc_init(&c, 1, 0);
   pbc_track_recoveries(&c, 0, 0);

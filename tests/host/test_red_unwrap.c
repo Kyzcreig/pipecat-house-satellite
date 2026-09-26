@@ -2,7 +2,8 @@
  *
  * Pure byte logic — builds and runs on ANY host compiler, no ESP-IDF:
  *   ./tests/host/run_red_tests.sh          (from the repo root)
- * which does: cc -I xiao-esp32-s3/components/peer test_red_unwrap.c red_unwrap.c
+ * which does: cc -I xiao-esp32-s3/components/peer test_red_unwrap.c
+ * red_unwrap.c
  *
  * Golden vectors are SHARED with the server-side tests
  * (pipecat-house-voice server/tests/test_red_encapsulation.py) — the server's
@@ -22,15 +23,15 @@
 #define FRAME_TS 960 /* one 20ms opus frame @48k */
 
 static int tests_run = 0;
-#define RUN(fn)                 \
-  do {                          \
-    fn();                       \
-    tests_run++;                \
-    printf("ok - %s\n", #fn);   \
+#define RUN(fn)               \
+  do {                        \
+    fn();                     \
+    tests_run++;              \
+    printf("ok - %s\n", #fn); \
   } while (0)
 
 /* Build one 4-byte redundant block header. */
-static size_t hdr(uint8_t* out, uint8_t pt, uint16_t ts_offset, uint16_t len) {
+static size_t hdr(uint8_t *out, uint8_t pt, uint16_t ts_offset, uint16_t len) {
   uint32_t v = ((uint32_t)ts_offset << 10) | len;
   out[0] = 0x80 | pt;
   out[1] = (v >> 16) & 0xFF;
@@ -39,7 +40,8 @@ static size_t hdr(uint8_t* out, uint8_t pt, uint16_t ts_offset, uint16_t len) {
   return 4;
 }
 
-/* ── golden vectors (mirror server tests) ─────────────────────────────────── */
+/* ── golden vectors (mirror server tests) ───────────────────────────────────
+ */
 
 static void test_primary_only(void) {
   /* server: test_first_packet_primary_only */
@@ -56,8 +58,10 @@ static void test_one_redundant_block(void) {
   uint8_t payload[32];
   size_t n = hdr(payload, OPUS_PT, FRAME_TS, 2);
   payload[n++] = OPUS_PT;
-  memcpy(payload + n, "\x01\x02", 2); n += 2;         /* N-1 block */
-  memcpy(payload + n, "\x03\x04\x05", 3); n += 3;     /* primary */
+  memcpy(payload + n, "\x01\x02", 2);
+  n += 2; /* N-1 block */
+  memcpy(payload + n, "\x03\x04\x05", 3);
+  n += 3; /* primary */
   RedParsed p;
   assert(red_unwrap(payload, n, OPUS_PT, &p) == 0);
   assert(p.block_count == 1);
@@ -69,12 +73,14 @@ static void test_one_redundant_block(void) {
 static void test_two_blocks_oldest_first(void) {
   /* server: test_third_packet_two_redundant_blocks_oldest_first */
   uint8_t payload[32];
-  size_t n = hdr(payload, OPUS_PT, 2 * FRAME_TS, 1);      /* N-2 oldest */
-  n += hdr(payload + n, OPUS_PT, FRAME_TS, 2);            /* N-1 */
+  size_t n = hdr(payload, OPUS_PT, 2 * FRAME_TS, 1); /* N-2 oldest */
+  n += hdr(payload + n, OPUS_PT, FRAME_TS, 2);       /* N-1 */
   payload[n++] = OPUS_PT;
-  payload[n++] = 0x01;                                    /* N-2 data */
-  memcpy(payload + n, "\x02\x02", 2); n += 2;             /* N-1 data */
-  memcpy(payload + n, "\x03\x03\x03", 3); n += 3;         /* primary */
+  payload[n++] = 0x01; /* N-2 data */
+  memcpy(payload + n, "\x02\x02", 2);
+  n += 2; /* N-1 data */
+  memcpy(payload + n, "\x03\x03\x03", 3);
+  n += 3; /* primary */
   RedParsed p;
   assert(red_unwrap(payload, n, OPUS_PT, &p) == 0);
   assert(p.block_count == 2);
@@ -91,9 +97,12 @@ static void test_realistic_sizes_vector(void) {
   size_t n = hdr(payload, OPUS_PT, 1920, 80);
   n += hdr(payload + n, OPUS_PT, 960, 100);
   payload[n++] = OPUS_PT;
-  memset(payload + n, 0x11, 80); n += 80;
-  memset(payload + n, 0x22, 100); n += 100;
-  memset(payload + n, 0x33, 90); n += 90;
+  memset(payload + n, 0x11, 80);
+  n += 80;
+  memset(payload + n, 0x22, 100);
+  n += 100;
+  memset(payload + n, 0x33, 90);
+  n += 90;
   RedParsed p;
   assert(red_unwrap(payload, n, OPUS_PT, &p) == 0);
   assert(p.block_count == 2);
@@ -102,7 +111,8 @@ static void test_realistic_sizes_vector(void) {
   assert(p.primary_size == 90 && p.primary[0] == 0x33 && p.primary[89] == 0x33);
 }
 
-/* ── malformed inputs -> safe fallback (-1) ───────────────────────────────── */
+/* ── malformed inputs -> safe fallback (-1) ─────────────────────────────────
+ */
 
 static void test_truncated_header(void) {
   uint8_t payload[] = {0x80 | OPUS_PT, 0x0F}; /* F=1 but only 2 bytes */
@@ -168,7 +178,8 @@ static void test_too_many_blocks_rejected(void) {
     n += hdr(payload + n, OPUS_PT, (uint16_t)((i + 1) * FRAME_TS), 1);
   }
   payload[n++] = OPUS_PT;
-  memset(payload + n, 0xEE, RED_MAX_BLOCKS + 2); n += RED_MAX_BLOCKS + 2;
+  memset(payload + n, 0xEE, RED_MAX_BLOCKS + 2);
+  n += RED_MAX_BLOCKS + 2;
   RedParsed p;
   assert(red_unwrap(payload, n, OPUS_PT, &p) == -1);
 }
@@ -189,16 +200,20 @@ static RedParsed make_n2_parsed(void) {
   size_t n = hdr(payload, OPUS_PT, 2 * FRAME_TS, 3);
   n += hdr(payload + n, OPUS_PT, FRAME_TS, 4);
   payload[n++] = OPUS_PT;
-  memset(payload + n, 0xA2, 3); n += 3; /* N-2 data */
-  memset(payload + n, 0xA1, 4); n += 4; /* N-1 data */
-  memset(payload + n, 0xA0, 5); n += 5; /* primary */
+  memset(payload + n, 0xA2, 3);
+  n += 3; /* N-2 data */
+  memset(payload + n, 0xA1, 4);
+  n += 4; /* N-1 data */
+  memset(payload + n, 0xA0, 5);
+  n += 5; /* primary */
   RedParsed p;
   assert(red_unwrap(payload, n, OPUS_PT, &p) == 0);
   return p;
 }
 
 static void test_plan_single_gap(void) {
-  /* 1 packet lost: the missing frame is 1 packet before primary -> N-1 block. */
+  /* 1 packet lost: the missing frame is 1 packet before primary -> N-1 block.
+   */
   RedParsed p = make_n2_parsed();
   int8_t actions[RED_MAX_GAP];
   assert(red_recover_plan(&p, 1, FRAME_TS, actions) == 1);

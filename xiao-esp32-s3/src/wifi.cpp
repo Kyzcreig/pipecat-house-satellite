@@ -30,7 +30,8 @@ static constexpr uint32_t WIFI_GOT_IP_TIMEOUT_MS = 60000;
 static esp_timer_handle_t s_ip_timeout_timer = nullptr;
 
 static void pipecat_wifi_ip_timeout_cb(void *arg) {
-  if (g_wifi_connected) return;
+  if (g_wifi_connected)
+    return;
   ESP_LOGW(LOG_TAG, "WiFi associated but no IP after %us; re-associating",
            (unsigned)(WIFI_GOT_IP_TIMEOUT_MS / 1000));
   esp_err_t err = esp_wifi_disconnect();  // -> STA_DISCONNECTED -> backoff
@@ -139,4 +140,6 @@ void pipecat_init_wifi() {
   }
 }
 
-bool pipecat_wifi_connected() { return g_wifi_connected; }
+bool pipecat_wifi_connected() {
+  return g_wifi_connected;
+}

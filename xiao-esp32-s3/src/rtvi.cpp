@@ -5,8 +5,6 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-
 #include "main.h"
 
 #define MAX_TYPE_LEN 32
@@ -89,12 +87,14 @@ static char *rtvi_message_to_string(rtvi_msg_t *msg) {
 
 bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
   cJSON *j_msg = cJSON_Parse(msg);
-  if (j_msg == NULL) return false;
+  if (j_msg == NULL)
+    return false;
 
   cJSON *j_type = cJSON_GetObjectItem(j_msg, "type");
   cJSON *j_data = cJSON_GetObjectItem(j_msg, "data");
   cJSON *j_t = cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "t") : NULL;
-  cJSON *j_nonce = cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "nonce") : NULL;
+  cJSON *j_nonce =
+      cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "nonce") : NULL;
   bool is_ping = cJSON_IsString(j_type) &&
                  strcmp(j_type->valuestring, "server-message") == 0 &&
                  cJSON_IsString(j_t) && strcmp(j_t->valuestring, "ping") == 0 &&
@@ -114,7 +114,8 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
   cJSON *pong_data = pong ? cJSON_AddObjectToObject(pong->msg, "data") : NULL;
   if (pong_data != NULL &&
       cJSON_AddStringToObject(pong_data, "t", "pong") != NULL &&
-      cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) != NULL) {
+      cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) !=
+          NULL) {
     char *pong_str = rtvi_message_to_string(pong);
     if (pong_str != NULL) {
       size_t pong_len = strlen(pong_str);
@@ -127,16 +128,19 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
       cJSON_free(pong_str);
     }
   }
-  if (pong != NULL) destroy_rtvi_message(pong);
+  if (pong != NULL)
+    destroy_rtvi_message(pong);
   cJSON_Delete(j_msg);
   return true;
 }
 
 void pipecat_rtvi_send_pending_heartbeat() {
-  if (!pending_pong_ready) return;
+  if (!pending_pong_ready)
+    return;
   int sent = peer_connection_datachannel_send_sid(
       peer_connection, pending_pong, pending_pong_len, pending_pong_sid);
-  if (sent >= 0) pending_pong_ready = false;
+  if (sent >= 0)
+    pending_pong_ready = false;
 }
 
 static void rtvi_handle_message(const rtvi_msg_t *msg) {
@@ -163,15 +167,19 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
     case hash("server-message"): {
       g_rtvi_rx_server_msg++;
       // App-specific message from webrtc_server.py. We use it to drive the LED
-      // ring phase: {"data":{"t":"led","phase":"waiting|thinking|speaking|idle"}}
+      // ring phase:
+      // {"data":{"t":"led","phase":"waiting|thinking|speaking|idle"}}
       ESP_LOGI(LOG_TAG, "RTVI server-message received");
       cJSON *j_data = cJSON_GetObjectItem(msg->msg, "data");
-      if (j_data == NULL) break;
+      if (j_data == NULL)
+        break;
       cJSON *j_t = cJSON_GetObjectItem(j_data, "t");
-      if (j_t == NULL || j_t->valuestring == NULL) break;
+      if (j_t == NULL || j_t->valuestring == NULL)
+        break;
       if (hash(j_t->valuestring) == hash("led")) {
         cJSON *j_phase = cJSON_GetObjectItem(j_data, "phase");
-        if (j_phase == NULL || j_phase->valuestring == NULL) break;
+        if (j_phase == NULL || j_phase->valuestring == NULL)
+          break;
         switch (hash(j_phase->valuestring)) {
           case hash("idle"):
             pipecat_led_set_phase(PIPECAT_LED_PHASE_IDLE);
