@@ -11,3 +11,5 @@ jobs:
       with:
         clang-format-version: '17'
         check-path: 'src'
+        # Generated from pipecat-house-voice/protocol/nack_v2_constants.json; do not reformat by hand.
+        exclude-regex: 'nack_protocol_generated\.h$'

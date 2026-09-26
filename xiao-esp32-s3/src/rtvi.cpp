@@ -1,0 +1,261 @@
+#include <cJSON.h>
+#include <esp_log.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "main.h"
+
+#define MAX_TYPE_LEN 32
+#define MAX_ID_LEN 64
+
+static int rtvi_id = 0;
+
+// rtx-delivery trace counters (2026-07-12): exposed via /playback/stats to
+// find WHERE server->device messages die. Volatile: written on the RTVI task,
+// read from the httpd task.
+volatile uint32_t g_rtvi_rx_total = 0;       // every parsed data-channel msg
+volatile uint32_t g_rtvi_rx_server_msg = 0;  // type == server-message
+volatile uint32_t g_rtvi_rx_rtx = 0;         // ... with data.t == rtx
+volatile uint32_t g_rtvi_rx_parse_fail = 0;  // cJSON_Parse failures
+volatile uint32_t g_rtvi_rx_dropped = 0;     // full-queue sheds (see below)
+static QueueHandle_t rtvi_queue;
+static PeerConnection *peer_connection = NULL;
+static rtvi_callbacks_t *rtvi_callbacks = NULL;
+static char pending_pong[256];
+static size_t pending_pong_len = 0;
+static uint16_t pending_pong_sid = 0;
+static bool pending_pong_ready = false;
+
+typedef struct {
+  cJSON *msg;
+} rtvi_msg_t;
+
+// Simple hashing function so we can fake pattern matching and switch on strings
+// as a constexpr so it gets evaluated in compile time for static strings
+static constexpr unsigned int hash(const char *s, int off = 0) {
+  return !s[off] ? 5381 : (hash(s, off + 1) * 33) ^ s[off];
+}
+
+static rtvi_msg_t *create_rtvi_message(const char *type) {
+  cJSON *j_msg = cJSON_CreateObject();
+
+  if (j_msg == NULL) {
+    ESP_LOGE(LOG_TAG, "Unable to create RTVI message");
+    return NULL;
+  }
+  if (cJSON_AddStringToObject(j_msg, "label", "rtvi-ai") == NULL) {
+    cJSON_Delete(j_msg);
+    ESP_LOGE(LOG_TAG, "Unable to create RTVI message");
+    return NULL;
+  }
+  if (cJSON_AddStringToObject(j_msg, "type", type) == NULL) {
+    cJSON_Delete(j_msg);
+    ESP_LOGE(LOG_TAG, "Unable to create RTVI message");
+    return NULL;
+  }
+
+  char id[MAX_ID_LEN];
+  sprintf(id, "%d", rtvi_id++);
+  if (cJSON_AddStringToObject(j_msg, "id", id) == NULL) {
+    cJSON_Delete(j_msg);
+    ESP_LOGE(LOG_TAG, "Unable to create RTVI message");
+    return NULL;
+  }
+
+  rtvi_msg_t *msg = (rtvi_msg_t *)malloc(sizeof(rtvi_msg_t));
+  msg->msg = j_msg;
+
+  return msg;
+}
+
+static void destroy_rtvi_message(rtvi_msg_t *msg) {
+  cJSON_Delete(msg->msg);
+  free(msg);
+}
+
+static char *rtvi_message_to_string(rtvi_msg_t *msg) {
+  if (msg == NULL || msg->msg == NULL) {
+    return NULL;
+  }
+
+  char *msg_str = cJSON_Print(msg->msg);
+
+  return msg_str;
+}
+
+bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
+  cJSON *j_msg = cJSON_Parse(msg);
+  if (j_msg == NULL)
+    return false;
+
+  cJSON *j_type = cJSON_GetObjectItem(j_msg, "type");
+  cJSON *j_data = cJSON_GetObjectItem(j_msg, "data");
+  cJSON *j_t = cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "t") : NULL;
+  cJSON *j_nonce =
+      cJSON_IsObject(j_data) ? cJSON_GetObjectItem(j_data, "nonce") : NULL;
+  bool is_ping = cJSON_IsString(j_type) &&
+                 strcmp(j_type->valuestring, "server-message") == 0 &&
+                 cJSON_IsString(j_t) && strcmp(j_t->valuestring, "ping") == 0 &&
+                 cJSON_IsNumber(j_nonce);
+  if (!is_ping) {
+    cJSON_Delete(j_msg);
+    return false;
+  }
+
+  pipecat_webrtc_note_server_ping();
+
+  // Stage the reply in the data-channel callback, then send it immediately
+  // after peer_connection_loop() returns. Sending reentrantly from this
+  // callback causes SCTP retransmit storms; sending from the RTVI task can
+  // leave the message unsent.
+  rtvi_msg_t *pong = create_rtvi_message("client-message");
+  cJSON *pong_data = pong ? cJSON_AddObjectToObject(pong->msg, "data") : NULL;
+  if (pong_data != NULL &&
+      cJSON_AddStringToObject(pong_data, "t", "pong") != NULL &&
+      cJSON_AddNumberToObject(pong_data, "nonce", j_nonce->valuedouble) !=
+          NULL) {
+    char *pong_str = rtvi_message_to_string(pong);
+    if (pong_str != NULL) {
+      size_t pong_len = strlen(pong_str);
+      if (pong_len < sizeof(pending_pong)) {
+        memcpy(pending_pong, pong_str, pong_len + 1);
+        pending_pong_len = pong_len;
+        pending_pong_sid = sid;
+        pending_pong_ready = true;
+      }
+      cJSON_free(pong_str);
+    }
+  }
+  if (pong != NULL)
+    destroy_rtvi_message(pong);
+  cJSON_Delete(j_msg);
+  return true;
+}
+
+void pipecat_rtvi_send_pending_heartbeat() {
+  if (!pending_pong_ready)
+    return;
+  int sent = peer_connection_datachannel_send_sid(
+      peer_connection, pending_pong, pending_pong_len, pending_pong_sid);
+  if (sent >= 0)
+    pending_pong_ready = false;
+}
+
+static void rtvi_handle_message(const rtvi_msg_t *msg) {
+  g_rtvi_rx_total++;
+  cJSON *j_type = cJSON_GetObjectItem(msg->msg, "type");
+  if (j_type == NULL) {
+    ESP_LOGE(LOG_TAG, "Unable to find `type` field in RTVI message");
+    return;
+  }
+
+  switch (hash(j_type->valuestring)) {
+    case hash("bot-started-speaking"):
+      rtvi_callbacks->on_bot_started_speaking();
+      break;
+    case hash("bot-stopped-speaking"):
+      rtvi_callbacks->on_bot_stopped_speaking();
+      break;
+    case hash("bot-tts-text"): {
+      cJSON *j_data = cJSON_GetObjectItem(msg->msg, "data");
+      cJSON *j_text = cJSON_GetObjectItem(j_data, "text");
+      rtvi_callbacks->on_bot_tts_text(j_text->valuestring);
+      break;
+    }
+    case hash("server-message"): {
+      g_rtvi_rx_server_msg++;
+      // App-specific message from webrtc_server.py. We use it to drive the LED
+      // ring phase:
+      // {"data":{"t":"led","phase":"waiting|thinking|speaking|idle"}}
+      ESP_LOGI(LOG_TAG, "RTVI server-message received");
+      cJSON *j_data = cJSON_GetObjectItem(msg->msg, "data");
+      if (j_data == NULL)
+        break;
+      cJSON *j_t = cJSON_GetObjectItem(j_data, "t");
+      if (j_t == NULL || j_t->valuestring == NULL)
+        break;
+      if (hash(j_t->valuestring) == hash("led")) {
+        cJSON *j_phase = cJSON_GetObjectItem(j_data, "phase");
+        if (j_phase == NULL || j_phase->valuestring == NULL)
+          break;
+        switch (hash(j_phase->valuestring)) {
+          case hash("idle"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_IDLE);
+            break;
+          case hash("waiting"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_WAITING);
+            break;
+          case hash("thinking"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_THINKING);
+            break;
+          case hash("speaking"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_SPEAKING);
+            break;
+          default:
+            break;
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+static void rtvi_task(void *pvParameter) {
+  rtvi_msg_t msg;
+
+  while (1) {
+    if (xQueueReceive(rtvi_queue, &msg, portMAX_DELAY)) {
+      rtvi_handle_message(&msg);
+      cJSON_Delete(msg.msg);
+    }
+  }
+}
+
+void pipecat_init_rtvi(PeerConnection *connection,
+                       rtvi_callbacks_t *callbacks) {
+  peer_connection = connection;
+  rtvi_callbacks = callbacks;
+
+  rtvi_queue = xQueueCreate(10, sizeof(rtvi_msg_t));
+  xTaskCreatePinnedToCore(rtvi_task, "RTVI Task", 4096, NULL, 2, NULL, 1);
+}
+
+void pipecat_rtvi_send_client_ready() {
+  rtvi_msg_t *msg = create_rtvi_message("client-ready");
+
+  char *msg_str = rtvi_message_to_string(msg);
+
+  peer_connection_datachannel_send(peer_connection, msg_str, strlen(msg_str));
+
+  cJSON_free(msg_str);
+
+  destroy_rtvi_message(msg);
+}
+
+void pipecat_rtvi_handle_message(const char *msg) {
+  cJSON *j_msg = cJSON_Parse(msg);
+  if (j_msg == NULL) {
+    g_rtvi_rx_parse_fail++;
+    ESP_LOGE(LOG_TAG, "Error parsing RTVI message");
+    return;
+  }
+
+  rtvi_msg_t rtvi_msg = {.msg = j_msg};
+
+  // This runs on the prio-8 transport loop (peer_connection_loop's onmessage
+  // callback). A blocking send here (portMAX_DELAY) would stall the loop when
+  // the 10-deep queue backs up behind the slower prio-2 rtvi_task; the stalled
+  // loop stops servicing ICE keepalive, libpeer hits CONFIG_KEEPALIVE_TIMEOUT
+  // (30s) -> PEER_CONNECTION_CLOSED -> esp_restart(). That is exactly the
+  // kitchen NACK-v2 arm reset (t_5c931cb9): a 512B RTVI flood filling this
+  // queue rebooted the device ~30s in. Liveness beats chat: shed the message
+  // (zero timeout), count the drop, and NEVER block transport.
+  if (xQueueSend(rtvi_queue, &rtvi_msg, 0) != pdTRUE) {
+    g_rtvi_rx_dropped++;
+    cJSON_Delete(j_msg);
+  }
+}

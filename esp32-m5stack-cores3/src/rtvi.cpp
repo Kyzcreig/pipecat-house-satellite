@@ -5,7 +5,6 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include "main.h"
 
 #define MAX_TYPE_LEN 32

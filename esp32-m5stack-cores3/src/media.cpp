@@ -1,16 +1,15 @@
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <opus.h>
+#include <sys/socket.h>
 
 #include <atomic>
-#include <cstring>
 #include <cstdio>
-
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <cstring>
 
 #include "esp_check.h"
-#include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "main.h"
 
 #define SAMPLE_RATE (16000)
@@ -20,6 +19,7 @@
 
 #define OPUS_ENCODER_BITRATE 30000
 #define OPUS_ENCODER_COMPLEXITY 0
+#define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 
 std::atomic<bool> is_playing = false;
 unsigned int silence_count = 0;
@@ -68,18 +68,18 @@ void pipecat_init_audio_decoder() {
 }
 
 void double_volume(int16_t *samples, size_t num_samples) {
-    for (size_t i = 0; i < num_samples; i++) {
-        int32_t amplified = (int32_t)samples[i] * 2;
+  for (size_t i = 0; i < num_samples; i++) {
+    int32_t amplified = (int32_t)samples[i] * 2;
 
-        // Clamp to 16-bit range
-        if (amplified > INT16_MAX) {
-            amplified = INT16_MAX;
-        } else if (amplified < INT16_MIN) {
-            amplified = INT16_MIN;
-        }
-
-        samples[i] = (int16_t)amplified;
+    // Clamp to 16-bit range
+    if (amplified > INT16_MAX) {
+      amplified = INT16_MAX;
+    } else if (amplified < INT16_MIN) {
+      amplified = INT16_MIN;
     }
+
+    samples[i] = (int16_t)amplified;
+  }
 }
 
 void pipecat_audio_decode(uint8_t *data, size_t size) {
@@ -117,8 +117,12 @@ void pipecat_init_audio_encoder() {
   opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
+  opus_encoder_ctl(opus_encoder,
+                   OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
 
-  read_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_DEFAULT);
+  read_buffer =
+      (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_DEFAULT);
   encoder_output_buffer = (uint8_t *)malloc(OPUS_BUFFER_SIZE);
 }
 

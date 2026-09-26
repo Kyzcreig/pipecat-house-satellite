@@ -1,0 +1,77 @@
+#include "main.h"
+
+#include <esp_event.h>
+#include <esp_log.h>
+#include <peer.h>
+
+#include "reconnect_watchdog.h"
+
+#ifndef LINUX_BUILD
+#include <freertos/task.h>
+
+#include "nvs_flash.h"
+
+static constexpr unsigned WEBRTC_LOOP_TASK_PRIORITY = 8;
+
+extern "C" void app_main(void) {
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  peer_init();
+  pipecat_init_audio_capture();
+  // Audio init probes XVF I2C and writes the baked DSP profile. Overlay durable
+  // tuning before signalling creates the first WebRTC offer.
+  pipecat_replay_xvf_params();
+  pipecat_init_audio_decoder();
+  pipecat_init_wifi();
+  pipecat_init_mdns();
+  pipecat_init_ota_server();
+  pipecat_start_ota_validation_watchdog();
+  pipecat_init_webrtc();
+  pipecat_validate_ota_if_healthy();
+
+  // Persistent reconnect watchdog. A peer-state callback is not guaranteed for
+  // a half-open SCTP/ICE path, so require both a connected peer and recent
+  // server heartbeat traffic. Restarting is the firmware's safe re-offer path;
+  // disconnects get a 30s grace, while an expired heartbeat freshness window
+  // already includes one full server ping interval plus jitter grace.
+  PipecatReconnectWatchdog reconnect_watchdog;
+
+  // audio_publisher runs at priority 7 on this core. Keep peer/SCTP handling
+  // above it so an overrun in full-duplex audio cannot strand a server ping or
+  // staged pong on the default low-priority app_main task.
+  vTaskPrioritySet(nullptr, WEBRTC_LOOP_TASK_PRIORITY);
+
+  while (1) {
+    pipecat_webrtc_loop();
+    pipecat_validate_ota_if_healthy();
+    const bool heartbeat_fresh = pipecat_webrtc_server_heartbeat_fresh();
+    if (reconnect_watchdog.update(pipecat_webrtc_connected, heartbeat_fresh,
+                                  TICK_INTERVAL)) {
+      ESP_LOGW(LOG_TAG,
+               "WebRTC reconnect deadline reached (peer_connected=%d "
+               "server_heartbeat_fresh=%d); restarting to re-offer",
+               pipecat_webrtc_connected, heartbeat_fresh);
+      esp_restart();
+    }
+    vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
+  }
+}
+#else
+int main(void) {
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  peer_init();
+  pipecat_webrtc();
+
+  while (1) {
+    pipecat_webrtc_loop();
+    vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
+  }
+}
+#endif
