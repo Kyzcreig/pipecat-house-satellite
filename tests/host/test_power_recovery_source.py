@@ -30,6 +30,15 @@ assert "g_wifi_connected = false;" in disc
 wait = WIFI[WIFI.index("while (!g_wifi_connected)"):]
 assert "esp_task_wdt_reset();" in wait.split("}")[0]
 
+# Associated-but-no-IP stall: a GOT_IP deadline armed on STA_CONNECTED
+# that drops the association (reproduced 2026-09-25 21:00 on kitchen).
+conn = WIFI[WIFI.index("WIFI_EVENT_STA_CONNECTED"):WIFI.index("WIFI_EVENT_STA_DISCONNECTED")]
+assert "esp_timer_start_once(s_ip_timeout_timer" in conn
+cb = WIFI[WIFI.index("static void pipecat_wifi_ip_timeout_cb"):]
+assert "esp_wifi_disconnect()" in cb.split("\n}\n")[0]
+got = WIFI[WIFI.index("IP_EVENT_STA_GOT_IP) {"):]
+assert "esp_timer_stop(s_ip_timeout_timer);" in got.split("}")[0]
+
 # Network watchdog + boot guard armed BEFORE any blocking init.
 body = MAIN[MAIN.index('extern "C" void app_main(void) {'):]
 first = body.index("pipecat_boot_guard_start();")
