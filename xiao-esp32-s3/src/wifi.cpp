@@ -33,7 +33,7 @@ static void pipecat_wifi_ip_timeout_cb(void *arg) {
   if (g_wifi_connected) return;
   ESP_LOGW(LOG_TAG, "WiFi associated but no IP after %us; re-associating",
            (unsigned)(WIFI_GOT_IP_TIMEOUT_MS / 1000));
-  esp_err_t err = esp_wifi_disconnect();  // -> STA_DISCONNECTED -> backoff
+  esp_err_t err = ESP_OK;  // MUTANT (t_417f5e41 CI proof): GOT_IP deadline no longer drops the association
   if (err != ESP_OK) {
     ESP_LOGW(LOG_TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(err));
     esp_timer_start_once(s_reconnect_timer, 1000ULL * 1000ULL);
