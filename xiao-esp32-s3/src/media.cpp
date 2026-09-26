@@ -1013,6 +1013,9 @@ static void configure_xvf3800_dsp_profile() {
 #endif
 }
 
+static constexpr int XVF_BOOT_PROBE_ATTEMPTS = 40;
+static constexpr int XVF_BOOT_PROBE_INTERVAL_MS = 250;
+
 static void init_i2c_and_codec() {
   i2c_master_bus_config_t bus_cfg = {
       .i2c_port = I2C_NUM_0,
@@ -1062,7 +1065,22 @@ static void init_i2c_and_codec() {
   };
   ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &xvf_cfg, &xvf3800));
 
-  esp_err_t probe = i2c_master_probe(i2c_bus, XVF3800_ADDR, pdMS_TO_TICKS(100));
+  // The XVF3800 boots its own firmware after power-up and can come up after
+  // the ESP32 on a cold start (power-outage recovery, t_2e80e072). Retry the
+  // probe for ~10 s instead of declaring it absent on the first miss. If it is
+  // still absent the boot continues (OTA stays reachable) and the network
+  // watchdog in main.cpp counts "XVF absent" as unhealthy and reboots.
+  esp_err_t probe = ESP_FAIL;
+  for (int attempt = 0; attempt < XVF_BOOT_PROBE_ATTEMPTS; attempt++) {
+    probe = i2c_master_probe(i2c_bus, XVF3800_ADDR, pdMS_TO_TICKS(100));
+    if (probe == ESP_OK) {
+      if (attempt > 0) {
+        ESP_LOGW(LOG_TAG, "XVF3800 answered on probe attempt %d", attempt + 1);
+      }
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(XVF_BOOT_PROBE_INTERVAL_MS));
+  }
   if (probe != ESP_OK) {
     ESP_LOGE(LOG_TAG,
              "XVF3800 not responding at 0x%02x: %s. "
