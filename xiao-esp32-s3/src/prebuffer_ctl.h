@@ -1,9 +1,11 @@
-/* prebuffer_ctl — playback-ring gap accounting + adaptive prebuffer (NetEQ-lite).
+/* prebuffer_ctl — playback-ring gap accounting + adaptive prebuffer
+ * (NetEQ-lite).
  *
  * Pure C, no ESP-IDF deps: host-testable (tests/host/test_prebuffer_ctl.c),
  * same pattern as components/peer/red_unwrap.{c,h}.
  *
- * Two independent jobs (audio-resilience ladder, SPEC-audio-resilience-ladder.md):
+ * Two independent jobs (audio-resilience ladder,
+ * SPEC-audio-resilience-ladder.md):
  *
  * 1) GAP-RESUME COUNTING (always on — pure counting, no behavior change).
  *    Blind spot proven 2026-07-11: a FULL ring drain re-arms the prebuffer as
@@ -48,7 +50,8 @@ extern "C" {
 #define PBC_RATE_THRESHOLD 5u /* recoveries within window -> grow one step */
 #endif
 #ifndef PBC_DECAY_QUIET_MS
-#define PBC_DECAY_QUIET_MS 30000u /* no recoveries for this long -> decay one step */
+#define PBC_DECAY_QUIET_MS \
+  30000u /* no recoveries for this long -> decay one step */
 #endif
 
 typedef struct {
@@ -59,14 +62,15 @@ typedef struct {
   uint32_t gap_resumes;
 
   /* adaptive prebuffer */
-  int adaptive;             /* 0 = dark: effective == base, no state changes */
-  uint32_t offset_steps;    /* current growth above base, in PBC_STEP_MS units */
-  uint32_t transitions;     /* cumulative count of step changes (up or down) */
+  int adaptive;          /* 0 = dark: effective == base, no state changes */
+  uint32_t offset_steps; /* current growth above base, in PBC_STEP_MS units */
+  uint32_t transitions;  /* cumulative count of step changes (up or down) */
   uint32_t window_start_ms;
   uint32_t window_events;
   uint32_t last_recovery_ms;
-  uint32_t last_recovery_total; /* snapshot of the cumulative recovery counter */
-  int have_baseline;            /* first pbc_track_recoveries() only snapshots */
+  uint32_t
+      last_recovery_total; /* snapshot of the cumulative recovery counter */
+  int have_baseline;       /* first pbc_track_recoveries() only snapshots */
 } prebuffer_ctl;
 
 /* Initialize. adaptive: enable NetEQ-lite growth/decay. resume_window_ms: the

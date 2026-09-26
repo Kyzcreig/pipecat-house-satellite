@@ -10,8 +10,8 @@
 #include <esp_timer.h>
 #include <string.h>
 
-#include "peer_connection.h"
 #include "main.h"
+#include "peer_connection.h"
 
 #ifdef PIPECAT_NACK
 #include <esp_timer.h>
@@ -61,9 +61,9 @@ static void pipecat_nack_try_arm_channel(void) {
   uint16_t sid = 0;
   uint8_t channel_type = 0;
   uint32_t reliability_parameter = UINT32_MAX;
-  if (peer_connection_lookup_datachannel(
-          peer_connection, "pipecat-rtx", &sid, &channel_type,
-          &reliability_parameter) != 0) {
+  if (peer_connection_lookup_datachannel(peer_connection, "pipecat-rtx", &sid,
+                                         &channel_type,
+                                         &reliability_parameter) != 0) {
     return;
   }
   if (channel_type != DCEP_CHANNEL_TYPE ||
@@ -111,10 +111,10 @@ void pipecat_webrtc_note_server_ping() {
 
 bool pipecat_webrtc_server_heartbeat_fresh() {
   const uint32_t last_ping_ms = last_server_ping_ms;
-  if (last_ping_ms == 0) return false;
+  if (last_ping_ms == 0)
+    return false;
   const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-  return (uint32_t)(now_ms - last_ping_ms) <=
-         WEBRTC_SERVER_HEARTBEAT_STALE_MS;
+  return (uint32_t)(now_ms - last_ping_ms) <= WEBRTC_SERVER_HEARTBEAT_STALE_MS;
 }
 
 #ifndef LINUX_BUILD
@@ -155,7 +155,8 @@ static void pipecat_ondatachannel_onmessage_task(char *msg, size_t len,
   char rtvi_message[RTVI_MESSAGE_CAP + 1];
   memcpy(rtvi_message, msg, len);
   rtvi_message[len] = '\0';
-  if (pipecat_rtvi_handle_heartbeat(rtvi_message, sid)) return;
+  if (pipecat_rtvi_handle_heartbeat(rtvi_message, sid))
+    return;
   pipecat_rtvi_handle_message(rtvi_message);
 }
 
@@ -180,8 +181,7 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
            peer_connection_state_to_string(state));
 
   if (state == PEER_CONNECTION_DISCONNECTED ||
-      state == PEER_CONNECTION_CLOSED ||
-      state == PEER_CONNECTION_FAILED) {
+      state == PEER_CONNECTION_CLOSED || state == PEER_CONNECTION_FAILED) {
     pipecat_webrtc_connected = false;
 #ifndef LINUX_BUILD
     ESP_LOGW(LOG_TAG, "Peer connection lost (%s); reconnect watchdog armed",

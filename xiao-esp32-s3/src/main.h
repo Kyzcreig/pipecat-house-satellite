@@ -1,5 +1,4 @@
 #include <peer.h>
-
 #include <stddef.h>
 
 #include "esp_err.h"
@@ -83,11 +82,12 @@ enum PipecatLedPhase {
 };
 extern "C" void pipecat_led_set_phase(int phase);
 
-extern void pipecat_init_rtvi(PeerConnection *peer_connection, rtvi_callbacks_t *callbacks);
+extern void pipecat_init_rtvi(PeerConnection *peer_connection,
+                              rtvi_callbacks_t *callbacks);
 extern void pipecat_rtvi_send_client_ready();
-extern bool pipecat_rtvi_handle_heartbeat(const char* msg, uint16_t sid);
+extern bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid);
 extern void pipecat_rtvi_send_pending_heartbeat();
-extern void pipecat_rtvi_handle_message(const char* msg);
+extern void pipecat_rtvi_handle_message(const char *msg);
 
 // Screen
 extern void pipecat_init_screen();

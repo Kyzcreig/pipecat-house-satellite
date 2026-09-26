@@ -1,14 +1,16 @@
-/* Host-side unit tests for the NACK retransmit client (Phase 5 planner + table).
+/* Host-side unit tests for the NACK retransmit client (Phase 5 planner +
+ * table).
  *
  * Pure byte logic — builds and runs on ANY host compiler, no ESP-IDF:
  *   ./tests/host/run_nack_tests.sh          (from the repo root)
- * which does: cc -I xiao-esp32-s3/components/peer test_nack_client.c nack_client.c
+ * which does: cc -I xiao-esp32-s3/components/peer test_nack_client.c
+ * nack_client.c
  *
  * Mirrors the RED host-test layout (tests/host/test_red_unwrap.c). Covers the
  * spec's Phase-5 requirements: RED owns <=2 (planner returns 0), NACK owns >=3,
- * the 8-seq amplification cap, seq wraparound, the 20ms splice window (in-window
- * recover vs late drop), unknown-seq ignore, table-full eviction, and the
- * never-arrived sweep -> late accounting.
+ * the 8-seq amplification cap, seq wraparound, the 20ms splice window
+ * (in-window recover vs late drop), unknown-seq ignore, table-full eviction,
+ * and the never-arrived sweep -> late accounting.
  */
 #include <assert.h>
 #include <stdio.h>
@@ -16,14 +18,15 @@
 #include "nack_client.h"
 
 static int tests_run = 0;
-#define RUN(fn)                 \
-  do {                          \
-    fn();                       \
-    tests_run++;                \
-    printf("ok - %s\n", #fn);   \
+#define RUN(fn)               \
+  do {                        \
+    fn();                     \
+    tests_run++;              \
+    printf("ok - %s\n", #fn); \
   } while (0)
 
-/* ── planner: RED/NACK boundary + cap ─────────────────────────────────────── */
+/* ── planner: RED/NACK boundary + cap ───────────────────────────────────────
+ */
 
 static void test_plan_below_min_gap_is_red(void) {
   /* gap 1 and 2 belong to FEC/RED — planner must return 0 (no NACK). */
@@ -114,8 +117,8 @@ static void test_parse_binary_rtx_fuzzed_lengths_drop_safely(void) {
     for (uint16_t declared = 0; declared <= 40; declared++) {
       frame[2] = (uint8_t)(declared >> 8);
       frame[3] = (uint8_t)(declared & 0xff);
-      int ok = nack_parse_rtx_frame(frame, actual, &seq, &payload,
-                                    &payload_len);
+      int ok =
+          nack_parse_rtx_frame(frame, actual, &seq, &payload, &payload_len);
       int expected = actual >= RTX_FRAME_HEADER_SIZE && declared > 0 &&
                      declared <= RTX_FRAME_CAP &&
                      declared == actual - RTX_FRAME_HEADER_SIZE;
@@ -128,12 +131,13 @@ static void test_parse_binary_rtx_fuzzed_lengths_drop_safely(void) {
   }
 }
 
-/* ── pending table: arm / take within window / late / unknown ─────────────── */
+/* ── pending table: arm / take within window / late / unknown ───────────────
+ */
 
 static void test_arm_and_recover_in_window(void) {
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 42, 1000);           /* deadline = 1020 */
+  nack_client_arm(&c, 42, 1000); /* deadline = 1020 */
   assert(c.nack_sent == 1);
   /* rtx at 1015 (within 20ms) -> spliced, counted recovered. */
   assert(nack_client_take(&c, 42, 1015) == NACK_TAKE_INWINDOW);
@@ -145,7 +149,7 @@ static void test_arm_and_recover_in_window(void) {
 static void test_recover_at_exact_deadline(void) {
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 7, 500);             /* deadline = 520 */
+  nack_client_arm(&c, 7, 500); /* deadline = 520 */
   assert(nack_client_take(&c, 7, 520) == NACK_TAKE_INWINDOW); /* boundary ok */
   assert(c.nack_recovered == 1);
 }
@@ -153,7 +157,7 @@ static void test_recover_at_exact_deadline(void) {
 static void test_late_rtx_dropped(void) {
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 9, 1000);            /* deadline = 1000 + NACK_WAIT_MS */
+  nack_client_arm(&c, 9, 1000); /* deadline = 1000 + NACK_WAIT_MS */
   /* rtx 1ms past the deadline -> LATE, not spliced. */
   assert(nack_client_take(&c, 9, 1001 + NACK_WAIT_MS) == NACK_TAKE_LATE);
   assert(c.nack_recovered == 0 && c.nack_late == 1);
@@ -170,8 +174,8 @@ static void test_unknown_seq_ignored(void) {
 static void test_sweep_never_arrived(void) {
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 1, 1000);            /* deadline 1020 */
-  nack_client_arm(&c, 2, 1000);            /* deadline 1020 */
+  nack_client_arm(&c, 1, 1000); /* deadline 1020 */
+  nack_client_arm(&c, 2, 1000); /* deadline 1020 */
   /* Before expiry: nothing swept. */
   assert(nack_client_sweep(&c, 1010) == 0);
   /* After expiry: both tallied late; slots kept EXPIRED for RTT capture. */
@@ -180,8 +184,8 @@ static void test_sweep_never_arrived(void) {
   /* A straggler rtx on an expired slot: LATE result, RTT recorded, no
    * double late-count, slot then freed. */
   assert(nack_client_take(&c, 1, 1200) == NACK_TAKE_LATE);
-  assert(c.nack_late == 2);           /* counted once, at sweep */
-  assert(c.last_rtt_ms == 200);       /* 1200 - arm(1000) */
+  assert(c.nack_late == 2);     /* counted once, at sweep */
+  assert(c.last_rtt_ms == 200); /* 1200 - arm(1000) */
   assert(nack_client_take(&c, 1, 1300) == NACK_TAKE_UNKNOWN); /* now freed */
 }
 
@@ -193,7 +197,8 @@ static void test_arm_full_table_rejects_without_evicting_pending_audio(void) {
     nack_client_arm(&c, (uint16_t)(200 + i), (uint32_t)(1000 + i));
   }
   assert(c.nack_sent == NACK_PENDING_SLOTS);
-  /* One more arm fails closed: evicting seq 200 would suppress its deferred PLC. */
+  /* One more arm fails closed: evicting seq 200 would suppress its deferred
+   * PLC. */
   assert(nack_client_arm(&c, 999, 1010) == 0);
   assert(c.nack_sent == NACK_PENDING_SLOTS);
   assert(nack_client_take(&c, 200, 1010) == NACK_TAKE_INWINDOW);
@@ -201,12 +206,13 @@ static void test_arm_full_table_rejects_without_evicting_pending_audio(void) {
 }
 
 static void test_ms_clock_wrap_boundary(void) {
-  /* deadline computed near the 32-bit ms wrap; signed delta keeps it correct. */
+  /* deadline computed near the 32-bit ms wrap; signed delta keeps it correct.
+   */
   NackClient c;
   nack_client_init(&c);
-  uint32_t near_wrap = 0xFFFFFFF0u;        /* +NACK_WAIT_MS wraps past 2^32 */
-  nack_client_arm(&c, 3, near_wrap);       /* deadline wraps (near_wrap + WAITd) */
-  uint32_t after = near_wrap + 10;         /* 10ms later, still in window */
+  uint32_t near_wrap = 0xFFFFFFF0u;  /* +NACK_WAIT_MS wraps past 2^32 */
+  nack_client_arm(&c, 3, near_wrap); /* deadline wraps (near_wrap + WAITd) */
+  uint32_t after = near_wrap + 10;   /* 10ms later, still in window */
   assert(nack_client_take(&c, 3, after) == NACK_TAKE_INWINDOW);
 }
 
@@ -221,9 +227,10 @@ static void test_recovered_seq_not_swept(void) {
    * (which would trigger rtp.c's deferred PLC = duplicate audio). */
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 42, 1000);           /* deadline 1020 */
+  nack_client_arm(&c, 42, 1000); /* deadline 1020 */
   assert(nack_client_take(&c, 42, 1005) == NACK_TAKE_INWINDOW);
-  assert(nack_client_sweep(&c, 1010 + NACK_WAIT_MS) == 0);  /* nothing left to expire */
+  assert(nack_client_sweep(&c, 1010 + NACK_WAIT_MS) ==
+         0); /* nothing left to expire */
   assert(c.nack_recovered == 1 && c.nack_late == 0);
 }
 
@@ -232,10 +239,10 @@ static void test_swept_seq_rejects_rtx(void) {
    * (not spliced), and the mix of outcomes across seqs stays disjoint. */
   NackClient c;
   nack_client_init(&c);
-  nack_client_arm(&c, 10, 1000);           /* will recover in-window */
-  nack_client_arm(&c, 11, 1000);           /* will expire via sweep */
+  nack_client_arm(&c, 10, 1000); /* will recover in-window */
+  nack_client_arm(&c, 11, 1000); /* will expire via sweep */
   assert(nack_client_take(&c, 10, 1010) == NACK_TAKE_INWINDOW);
-  assert(nack_client_sweep(&c, 1030 + NACK_WAIT_MS) == 1);  /* only seq 11 */
+  assert(nack_client_sweep(&c, 1030 + NACK_WAIT_MS) == 1); /* only seq 11 */
   /* Straggler rtx on the swept slot: LATE (rtp.c only splices INWINDOW),
    * RTT captured, late counted once (at sweep). */
   assert(nack_client_take(&c, 11, 1051) == NACK_TAKE_LATE); /* no splice */
@@ -259,8 +266,7 @@ static void test_rtx_reliability_accepts_zero_through_two(void) {
 static void note_healthy_packets(NackClient *c, uint32_t start_ms,
                                  uint32_t start_packets) {
   for (uint32_t i = 0; i < 5; i++) {
-    nack_client_note_packet_progress(c, start_ms + i * 20u,
-                                     start_packets + i);
+    nack_client_note_packet_progress(c, start_ms + i * 20u, start_packets + i);
   }
 }
 
@@ -307,7 +313,8 @@ static void test_circuit_breaker_excludes_zero_progress_outage_bucket(void) {
   NackClient c;
   nack_client_init(&c);
   nack_client_note_packet_progress(&c, 100, 1000);
-  /* One packet after a one-second zero-progress gap marks this bucket outage. */
+  /* One packet after a one-second zero-progress gap marks this bucket outage.
+   */
   nack_client_note_packet_progress(&c, 1100, 1001);
   arm_ten(&c, 0, 1100);
   assert(nack_client_sweep(&c, 1200) == 10);
@@ -315,7 +322,8 @@ static void test_circuit_breaker_excludes_zero_progress_outage_bucket(void) {
   assert(c.auto_dark == 0);
 }
 
-static void test_circuit_breaker_excludes_outage_crossing_bucket_boundary(void) {
+static void test_circuit_breaker_excludes_outage_crossing_bucket_boundary(
+    void) {
   NackClient c;
   nack_client_init(&c);
   note_healthy_packets(&c, 9800, 1000);

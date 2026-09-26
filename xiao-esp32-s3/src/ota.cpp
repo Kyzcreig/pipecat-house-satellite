@@ -14,11 +14,10 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mdns.h"
-#include "mbedtls/sha256.h"
-#include "nvs.h"
-
 #include "main.h"
+#include "mbedtls/sha256.h"
+#include "mdns.h"
+#include "nvs.h"
 
 #define OTA_HTTP_PORT 80
 #define OTA_REBOOT_DELAY_MS 1000
@@ -60,7 +59,8 @@ static void bytes_to_hex(const uint8_t *bytes, size_t len, char *out,
                          size_t out_len) {
   static const char hex[] = "0123456789abcdef";
   if (out_len < (len * 2 + 1)) {
-    if (out_len > 0) out[0] = '\0';
+    if (out_len > 0)
+      out[0] = '\0';
     return;
   }
   for (size_t i = 0; i < len; i++) {
@@ -99,7 +99,8 @@ static bool health_check_passes() {
     if (now_us - last_log_us > 5000000LL) {
       last_log_us = now_us;
       ESP_LOGW(LOG_TAG,
-               "OTA validation health failed: wifi=%d mdns=%d ota_http=%d xvf3800=%d",
+               "OTA validation health failed: wifi=%d mdns=%d ota_http=%d "
+               "xvf3800=%d",
                pipecat_wifi_connected(), pipecat_mdns_started(),
                pipecat_ota_server_started(), pipecat_xvf3800_present());
     }
@@ -110,10 +111,13 @@ static bool health_check_passes() {
 static esp_err_t save_uploaded_sha(const char *sha_hex, const char *label) {
   nvs_handle_t nvs;
   esp_err_t ret = nvs_open(OTA_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (ret != ESP_OK) return ret;
+  if (ret != ESP_OK)
+    return ret;
   ret = nvs_set_str(nvs, OTA_NVS_SHA_KEY, sha_hex);
-  if (ret == ESP_OK) ret = nvs_set_str(nvs, OTA_NVS_LABEL_KEY, label);
-  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  if (ret == ESP_OK)
+    ret = nvs_set_str(nvs, OTA_NVS_LABEL_KEY, label);
+  if (ret == ESP_OK)
+    ret = nvs_commit(nvs);
   nvs_close(nvs);
   return ret;
 }
@@ -126,9 +130,11 @@ static bool load_uploaded_sha_for_running(char *sha_hex, size_t sha_hex_len) {
   size_t sha_len = sizeof(saved_sha);
   nvs_handle_t nvs;
   esp_err_t ret = nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvs);
-  if (ret != ESP_OK) return false;
+  if (ret != ESP_OK)
+    return false;
   ret = nvs_get_str(nvs, OTA_NVS_LABEL_KEY, label, &label_len);
-  if (ret == ESP_OK) ret = nvs_get_str(nvs, OTA_NVS_SHA_KEY, saved_sha, &sha_len);
+  if (ret == ESP_OK)
+    ret = nvs_get_str(nvs, OTA_NVS_SHA_KEY, saved_sha, &sha_len);
   nvs_close(nvs);
   if (ret != ESP_OK || strncmp(label, running->label, sizeof(label)) != 0) {
     return false;
@@ -143,9 +149,11 @@ static esp_err_t save_dsp_param(const char *param, float value) {
   }
   nvs_handle_t nvs;
   esp_err_t ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (ret != ESP_OK) return ret;
+  if (ret != ESP_OK)
+    return ret;
   ret = nvs_set_blob(nvs, param, &value, sizeof(value));
-  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  if (ret == ESP_OK)
+    ret = nvs_commit(nvs);
   nvs_close(nvs);
   return ret;
 }
@@ -163,9 +171,11 @@ static esp_err_t load_dsp_param(nvs_handle_t nvs, const char *param,
 static esp_err_t clear_dsp_params() {
   nvs_handle_t nvs;
   esp_err_t ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-  if (ret != ESP_OK) return ret;
+  if (ret != ESP_OK)
+    return ret;
   ret = nvs_erase_all(nvs);
-  if (ret == ESP_OK) ret = nvs_commit(nvs);
+  if (ret == ESP_OK)
+    ret = nvs_commit(nvs);
   nvs_close(nvs);
   return ret;
 }
@@ -179,8 +189,7 @@ static void restore_dsp_default(const char *param) {
   PipecatXvfTuneResult fallback = {};
   esp_err_t ret = pipecat_xvf_tune(param, default_value, &fallback);
   if (ret != ESP_OK || !fallback.applied) {
-    ESP_LOGE(LOG_TAG,
-             "nvs_dsp: %s baked fallback %.6g FAILED: %s applied=%d",
+    ESP_LOGE(LOG_TAG, "nvs_dsp: %s baked fallback %.6g FAILED: %s applied=%d",
              param, (double)default_value, esp_err_to_name(ret),
              fallback.applied);
   } else {
@@ -236,8 +245,8 @@ void pipecat_replay_xvf_params() {
              "nvs_dsp: %s stored=%.6g applied=%.6g readback=%s%.6g "
              "clamped=%d",
              param, (double)stored_value, (double)result.applied_value,
-             result.readback_valid ? "" : "ack-only:",
-             (double)result.readback, result.clamped);
+             result.readback_valid ? "" : "ack-only:", (double)result.readback,
+             result.clamped);
     if (result.clamped) {
       esp_err_t save_ret = save_dsp_param(param, result.applied_value);
       if (save_ret != ESP_OK) {
@@ -326,7 +335,8 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
   esp_err_t ret = esp_ota_begin(update, OTA_SIZE_UNKNOWN, &ota_handle);
   if (ret != ESP_OK) {
     ESP_LOGE(LOG_TAG, "esp_ota_begin failed: %s", esp_err_to_name(ret));
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "OTA begin failed");
     return ESP_FAIL;
   }
 
@@ -345,7 +355,8 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
   int remaining = req->content_len;
   int written = 0;
   while (remaining > 0) {
-    int recv_len = httpd_req_recv(req, (char *)buf, MIN(remaining, OTA_CHUNK_SIZE));
+    int recv_len =
+        httpd_req_recv(req, (char *)buf, MIN(remaining, OTA_CHUNK_SIZE));
     if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
       continue;
     }
@@ -394,7 +405,8 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
 
   ret = save_uploaded_sha(sha_hex, update->label);
   if (ret != ESP_OK) {
-    ESP_LOGW(LOG_TAG, "Unable to persist uploaded SHA: %s", esp_err_to_name(ret));
+    ESP_LOGW(LOG_TAG, "Unable to persist uploaded SHA: %s",
+             esp_err_to_name(ret));
   }
 
   ret = esp_ota_set_boot_partition(update);
@@ -407,9 +419,10 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
   }
 
   char body[128];
-  snprintf(body, sizeof(body),
-           "{\"status\":\"reboot_pending\",\"boot_slot\":\"%s\",\"sha256\":\"%s\"}",
-           update->label, sha_hex);
+  snprintf(
+      body, sizeof(body),
+      "{\"status\":\"reboot_pending\",\"boot_slot\":\"%s\",\"sha256\":\"%s\"}",
+      update->label, sha_hex);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);
   xTaskCreate(reboot_task, "ota_reboot", 2048, NULL, 5, NULL);
@@ -425,17 +438,17 @@ void pipecat_init_mdns() {
       {"fw", "pipecat-house-satellite"},
       {"role", "xvf3800"},
   };
-  ESP_ERROR_CHECK(mdns_service_add(PIPECAT_MDNS_INSTANCE, "_http", "_tcp",
-                                   OTA_HTTP_PORT, service_txt,
-                                   sizeof(service_txt) / sizeof(service_txt[0])));
+  ESP_ERROR_CHECK(mdns_service_add(
+      PIPECAT_MDNS_INSTANCE, "_http", "_tcp", OTA_HTTP_PORT, service_txt,
+      sizeof(service_txt) / sizeof(service_txt[0])));
   g_mdns_started = true;
-  ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)",
-           PIPECAT_MDNS_HOSTNAME, PIPECAT_MDNS_INSTANCE);
+  ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)", PIPECAT_MDNS_HOSTNAME,
+           PIPECAT_MDNS_INSTANCE);
 }
 
 // POST /xvf/tune?param=<name>&value=<float>[&persist=0]. Persistent allowlisted
-// params are committed to NVS only after typed write/readback succeeds. dac_atten
-// is ack-only. persist=0 keeps one-off experiments volatile.
+// params are committed to NVS only after typed write/readback succeeds.
+// dac_atten is ack-only. persist=0 keeps one-off experiments volatile.
 static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   char query[128] = {0};
   char param[32] = {0};
@@ -443,15 +456,15 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   char persist_s[8] = {0};
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
       httpd_query_key_value(query, "param", param, sizeof(param)) != ESP_OK ||
-      httpd_query_key_value(query, "value", value_s, sizeof(value_s)) != ESP_OK) {
+      httpd_query_key_value(query, "value", value_s, sizeof(value_s)) !=
+          ESP_OK) {
     httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_sendstr(req, "{\"error\":\"need ?param=<name>&value=<float>\"}");
     return ESP_OK;
   }
-  bool persist =
-      httpd_query_key_value(query, "persist", persist_s, sizeof(persist_s)) !=
-          ESP_OK ||
-      strcmp(persist_s, "0") != 0;
+  bool persist = httpd_query_key_value(query, "persist", persist_s,
+                                       sizeof(persist_s)) != ESP_OK ||
+                 strcmp(persist_s, "0") != 0;
   char *value_end = nullptr;
   float value = strtof(value_s, &value_end);
   if (value_end == value_s || *value_end != '\0' || !isfinite(value)) {
@@ -487,8 +500,7 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
                "\"value\":%.6g,\"readback\":null,\"applied\":null,"
                "\"clamped\":%s,\"persisted\":%s}",
                param, (double)value, (double)result.applied_value,
-               result.clamped ? "true" : "false",
-               persisted ? "true" : "false");
+               result.clamped ? "true" : "false", persisted ? "true" : "false");
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, body);
@@ -547,18 +559,19 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
       const char *param = pipecat_xvf_persistent_param_name(i);
       float value = 0.0f;
       esp_err_t load_ret = load_dsp_param(nvs, param, &value);
-      if (load_ret == ESP_ERR_NVS_NOT_FOUND) continue;
+      if (load_ret == ESP_ERR_NVS_NOT_FOUND)
+        continue;
       if (load_ret != ESP_OK) {
         ESP_LOGE(LOG_TAG, "nvs_dsp: introspection read %s failed: %s", param,
                  esp_err_to_name(load_ret));
         continue;
       }
-      int written = isfinite(value)
-                        ? snprintf(body + used, sizeof(body) - used,
-                                   "%s\"%s\":%.9g", count ? "," : "", param,
-                                   (double)value)
-                        : snprintf(body + used, sizeof(body) - used,
-                                   "%s\"%s\":null", count ? "," : "", param);
+      int written =
+          isfinite(value)
+              ? snprintf(body + used, sizeof(body) - used, "%s\"%s\":%.9g",
+                         count ? "," : "", param, (double)value)
+              : snprintf(body + used, sizeof(body) - used, "%s\"%s\":null",
+                         count ? "," : "", param);
       if (written < 0 || static_cast<size_t>(written) >= sizeof(body) - used) {
         nvs_close(nvs);
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -573,8 +586,7 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "500 Internal Server Error");
     char error_body[96];
     snprintf(error_body, sizeof(error_body),
-             "{\"error\":\"NVS open failed: %s\"}",
-             esp_err_to_name(open_ret));
+             "{\"error\":\"NVS open failed: %s\"}", esp_err_to_name(open_ret));
     return httpd_resp_sendstr(req, error_body);
   }
 
@@ -597,8 +609,7 @@ static esp_err_t xvf_read_handler(httpd_req_t *req) {
 
   float readback = 0.0f;
   bool readback_valid = false;
-  esp_err_t ret =
-      pipecat_xvf_read_param(param, &readback, &readback_valid);
+  esp_err_t ret = pipecat_xvf_read_param(param, &readback, &readback_valid);
   char body[160];
   if (ret == ESP_OK) {
     if (readback_valid) {
@@ -640,8 +651,8 @@ static esp_err_t xvf_beam_handler(httpd_req_t *req) {
   char body[384];
   if (!pipecat_xvf_beam_json(&telemetry, body, sizeof(body))) {
     httpd_resp_set_status(req, "500 Internal Server Error");
-    return httpd_resp_sendstr(req,
-                              "{\"ok\":false,\"error\":\"beam response overflow\"}");
+    return httpd_resp_sendstr(
+        req, "{\"ok\":false,\"error\":\"beam response overflow\"}");
   }
   return httpd_resp_sendstr(req, body);
 }
@@ -662,7 +673,8 @@ extern volatile uint32_t g_play_stat_gap_resumes;
 extern volatile uint32_t g_play_prebuffer_samples;
 // Phase 6 adaptive prebuffer (NetEQ-lite, dark unless
 // PIPECAT_ADAPTIVE_PREBUFFER=1): effective prebuffer actually in force +
-// cumulative step transitions. Adaptive off => effective==prebuffer_ms, steps=0.
+// cumulative step transitions. Adaptive off => effective==prebuffer_ms,
+// steps=0.
 extern volatile uint32_t g_play_prebuffer_effective_ms;
 extern volatile uint32_t g_play_prebuffer_steps;
 // From vendored components/peer/rtp.c — splits reordering from true loss.
@@ -671,7 +683,8 @@ extern volatile uint32_t g_rtp_late_drops;
 extern volatile uint32_t g_rtp_gap_events;
 // RED / RFC 2198 counters (audio-resilience ladder Phase 3, 2026-07-11).
 // packets_received is the frozen loss_burden denominator (ladder spec REV 3):
-//   loss_burden = (plc + fec + red_recovered + nack_recovered) / packets_received
+//   loss_burden = (plc + fec + red_recovered + nack_recovered) /
+//   packets_received
 extern volatile uint32_t g_rtp_packets_received;
 extern volatile uint32_t g_red_recovered;
 extern volatile uint32_t g_red_dup_drops;
@@ -722,7 +735,9 @@ void pipecat_play_selftest_clip();
 static esp_err_t playback_selftest_handler(httpd_req_t *req) {
   pipecat_play_selftest_clip();
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"ok\":true,\"path\":\"flash->ring->FIR->I2S (no opus/network)\"}");
+  httpd_resp_sendstr(
+      req,
+      "{\"ok\":true,\"path\":\"flash->ring->FIR->I2S (no opus/network)\"}");
   return ESP_OK;
 }
 
@@ -739,8 +754,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   }
   constexpr size_t kRttSamplesCapacity = 800;
   constexpr size_t kBodyCapacity = 2200;
-  char *scratch =
-      (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
+  char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                "Unable to allocate playback stats response");
@@ -748,59 +762,47 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   char *rtt_samples = scratch;
   char *body = scratch + kRttSamplesCapacity;
   rtp_nack_format_rtt_samples(rtt_samples, kRttSamplesCapacity);
-  snprintf(body, kBodyCapacity,
-           "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
-           "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
-           "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
-           "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
-           "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%lu,"
-           "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
-           "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
-           "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,\"rtvi_rx_parse_fail\":%lu,\"rtvi_rx_dropped\":%lu,"
-           "\"dcep_open_rx_sid0\":%lu,\"dcep_open_rx_sid2\":%lu,"
-           "\"dcep_ack_tx_sid0\":%lu,\"dcep_ack_tx_sid2\":%lu,"
-           "\"dcep_ack_rx_sid0\":%lu,\"dcep_ack_rx_sid2\":%lu,"
-           "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
-           "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
-           "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
-           (unsigned long)g_play_stat_frames,
-           (unsigned long)g_play_stat_write_fail,
-           (unsigned long)g_play_stat_underruns,
-           (unsigned long)g_play_stat_plc,
-           (unsigned long)g_play_stat_fec,
-           (unsigned long)g_rtp_late_drops,
-           (unsigned long)g_rtp_gap_events,
-           (unsigned long)g_rtp_packets_received,
-           (unsigned long)g_red_recovered,
-           (unsigned long)g_red_dup_drops,
-           (unsigned long)g_nack_sent,
-           (unsigned long)g_nack_recovered,
-           (unsigned long)g_nack_late,
-           (unsigned long)g_nack_last_rtt_ms,
-           (unsigned long)g_nack_max_rtt_ms,
-           (unsigned long)g_nack_rtx_arrived,
-           (unsigned long)g_nack_auto_dark,
-           (unsigned long)g_rtx_malformed,
-           (unsigned long)g_nack_rtt_sample_total,
-           rtt_samples,
-           (unsigned long)g_rtvi_rx_total,
-           (unsigned long)g_rtvi_rx_server_msg,
-           (unsigned long)g_rtvi_rx_rtx,
-           (unsigned long)g_rtvi_rx_parse_fail,
-           (unsigned long)g_rtvi_rx_dropped,
-           (unsigned long)g_sctp_dcep_open_rx_sid0,
-           (unsigned long)g_sctp_dcep_open_rx_sid2,
-           (unsigned long)g_sctp_dcep_ack_tx_sid0,
-           (unsigned long)g_sctp_dcep_ack_tx_sid2,
-           (unsigned long)g_sctp_dcep_ack_rx_sid0,
-           (unsigned long)g_sctp_dcep_ack_rx_sid2,
-           (unsigned long)g_sctp_reconfig_rx,
-           (unsigned long)g_sctp_reconfig_tx,
-           (unsigned long)g_sctp_abort_tx,
-           (unsigned long)g_play_stat_gap_resumes,
-           (unsigned long)(g_play_prebuffer_samples / 16),
-           (unsigned long)g_play_prebuffer_effective_ms,
-           (unsigned long)g_play_prebuffer_steps);
+  snprintf(
+      body, kBodyCapacity,
+      "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
+      "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
+      "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
+      "\"nack_sent\":%lu,\"nack_recovered\":%lu,\"nack_late\":%lu,"
+      "\"nack_last_rtt_ms\":%lu,\"nack_max_rtt_ms\":%lu,\"nack_rtx_arrived\":%"
+      "lu,"
+      "\"nack_auto_dark\":%lu,\"rtx_malformed\":%lu,"
+      "\"nack_rtt_sample_total\":%lu,\"nack_rtt_samples_ms\":%s,"
+      "\"rtvi_rx_total\":%lu,\"rtvi_rx_server_msg\":%lu,\"rtvi_rx_rtx\":%lu,"
+      "\"rtvi_rx_parse_fail\":%lu,\"rtvi_rx_dropped\":%lu,"
+      "\"dcep_open_rx_sid0\":%lu,\"dcep_open_rx_sid2\":%lu,"
+      "\"dcep_ack_tx_sid0\":%lu,\"dcep_ack_tx_sid2\":%lu,"
+      "\"dcep_ack_rx_sid0\":%lu,\"dcep_ack_rx_sid2\":%lu,"
+      "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
+      "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
+      "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu}",
+      (unsigned long)g_play_stat_frames, (unsigned long)g_play_stat_write_fail,
+      (unsigned long)g_play_stat_underruns, (unsigned long)g_play_stat_plc,
+      (unsigned long)g_play_stat_fec, (unsigned long)g_rtp_late_drops,
+      (unsigned long)g_rtp_gap_events, (unsigned long)g_rtp_packets_received,
+      (unsigned long)g_red_recovered, (unsigned long)g_red_dup_drops,
+      (unsigned long)g_nack_sent, (unsigned long)g_nack_recovered,
+      (unsigned long)g_nack_late, (unsigned long)g_nack_last_rtt_ms,
+      (unsigned long)g_nack_max_rtt_ms, (unsigned long)g_nack_rtx_arrived,
+      (unsigned long)g_nack_auto_dark, (unsigned long)g_rtx_malformed,
+      (unsigned long)g_nack_rtt_sample_total, rtt_samples,
+      (unsigned long)g_rtvi_rx_total, (unsigned long)g_rtvi_rx_server_msg,
+      (unsigned long)g_rtvi_rx_rtx, (unsigned long)g_rtvi_rx_parse_fail,
+      (unsigned long)g_rtvi_rx_dropped, (unsigned long)g_sctp_dcep_open_rx_sid0,
+      (unsigned long)g_sctp_dcep_open_rx_sid2,
+      (unsigned long)g_sctp_dcep_ack_tx_sid0,
+      (unsigned long)g_sctp_dcep_ack_tx_sid2,
+      (unsigned long)g_sctp_dcep_ack_rx_sid0,
+      (unsigned long)g_sctp_dcep_ack_rx_sid2, (unsigned long)g_sctp_reconfig_rx,
+      (unsigned long)g_sctp_reconfig_tx, (unsigned long)g_sctp_abort_tx,
+      (unsigned long)g_play_stat_gap_resumes,
+      (unsigned long)(g_play_prebuffer_samples / 16),
+      (unsigned long)g_play_prebuffer_effective_ms,
+      (unsigned long)g_play_prebuffer_steps);
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
   free(scratch);
@@ -884,18 +886,23 @@ void pipecat_init_ota_server() {
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
 }
 
-bool pipecat_mdns_started() { return g_mdns_started; }
+bool pipecat_mdns_started() {
+  return g_mdns_started;
+}
 
-bool pipecat_ota_server_started() { return g_ota_server != nullptr; }
+bool pipecat_ota_server_started() {
+  return g_ota_server != nullptr;
+}
 
 static void ota_validation_watchdog_task(void *arg) {
   vTaskDelay(pdMS_TO_TICKS(OTA_ROLLBACK_TIMEOUT_MS));
   esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
   get_running_ota_state(&state);
   if (!g_validation_confirmed && state == ESP_OTA_IMG_PENDING_VERIFY) {
-    ESP_LOGE(LOG_TAG,
-             "OTA image still pending after %d ms; marking invalid and rolling back",
-             OTA_ROLLBACK_TIMEOUT_MS);
+    ESP_LOGE(
+        LOG_TAG,
+        "OTA image still pending after %d ms; marking invalid and rolling back",
+        OTA_ROLLBACK_TIMEOUT_MS);
     esp_ota_mark_app_invalid_rollback_and_reboot();
   }
   vTaskDelete(NULL);

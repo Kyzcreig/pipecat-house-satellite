@@ -37,14 +37,14 @@ assert "pipecat_xvf_read_beam" in MAIN_H
 # Every HTTP poll performs all three device reads, independent of LED/assistant phase.
 assert "XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS = 11" in MEDIA
 read_body = function_body(MEDIA, "esp_err_t pipecat_xvf_read_beam(")
-read_tokens = re.sub(r"\s+", " ", read_body)
+read_tokens = re.sub(r"\(\s+", "(", re.sub(r"\s+", " ", read_body))  # layout-independent
 presence_guard = "if (!xvf3800_present || !xvf_beam_telemetry_supported)"
 assert presence_guard in read_tokens
 assert read_tokens.index(presence_guard) < read_tokens.index("xvf_read_floats(")
 required_reads = [
-    "xvf_read_floats( XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4)",
-    "xvf_read_floats( XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS, telemetry->selected_azimuth, 2)",
-    "xvf_read_floats( XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4)",
+    "xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4)",
+    "xvf_read_floats(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS, telemetry->selected_azimuth, 2)",
+    "xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4)",
 ]
 for read in required_reads:
     assert read in read_tokens

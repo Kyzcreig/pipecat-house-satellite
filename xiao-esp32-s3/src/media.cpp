@@ -14,7 +14,6 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include "main.h"
 
 #define WEBRTC_SAMPLE_RATE (16000)
@@ -33,10 +32,10 @@
 
 // TRANSPORT-DIRECTION-SYMMETRY:
 // | mechanism | server -> satellite | satellite -> server |
-// | Opus FEC | server hint + firmware FEC decode | firmware hint + server FEC decode |
-// | RFC 2198 | server wrap + firmware unwrap | firmware wrap + server unwrap |
-// | seq gaps | firmware PLC | server PLC |
-// | counters | /playback/stats | /health.uplink_loss |
+// | Opus FEC | server hint + firmware FEC decode | firmware hint + server FEC
+// decode | | RFC 2198 | server wrap + firmware unwrap | firmware wrap + server
+// unwrap | | seq gaps | firmware PLC | server PLC | | counters |
+// /playback/stats | /health.uplink_loss |
 #define I2S_WRITE_TIMEOUT_MS 200
 #define XVF_CONTROL_TIMEOUT_MS 100
 #define XVF_CONTROL_RETRIES 8
@@ -107,7 +106,8 @@ static constexpr uint8_t XVF_CMD_AEC_SPENERGY_VALUES = 80;
 
 // --- LED ring + mute (GPO servicer), ported from ESPHome respeaker_xvf3800 ---
 // The 12-LED ring and the mute GPIO are driven by the XVF3800 (XMOS) chip over
-// this same I2C control port. The ring takes a 48-byte payload = 12 x [B,G,R,0].
+// this same I2C control port. The ring takes a 48-byte payload = 12 x
+// [B,G,R,0].
 static constexpr uint8_t XVF_RESID_GPO = 20;
 static constexpr uint8_t XVF_CMD_GPO_READ_VALUES = 0;
 static constexpr uint8_t XVF_CMD_GPO_WRITE_VALUE = 1;
@@ -128,11 +128,13 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 #define PIPECAT_LED_BRIGHTNESS 150  // 0-255 scale applied to each channel
 #endif
 #ifndef PIPECAT_LED_BOOT_SPLASH
-#define PIPECAT_LED_BOOT_SPLASH 1  // flowing-rainbow splash at boot (visible "on")
+#define PIPECAT_LED_BOOT_SPLASH \
+  1  // flowing-rainbow splash at boot (visible "on")
 #endif
 // XVF3800 mic input gain. 90 (old default) clipped loud/near speech before the
-// limiter -> peak pinned at 32768, degrading wake. 60 gives ~+9.5dB of headroom;
-// AGC (maxgain 64) still boosts far-field back toward the wake threshold.
+// limiter -> peak pinned at 32768, degrading wake. 60 gives ~+9.5dB of
+// headroom; AGC (maxgain 64) still boosts far-field back toward the wake
+// threshold.
 #ifndef PIPECAT_MIC_GAIN
 #define PIPECAT_MIC_GAIN 60.0f
 #endif
@@ -240,9 +242,8 @@ static esp_err_t xvf_read_bytes(uint8_t resid, uint8_t cmd, uint8_t *out,
       return ESP_OK;
     }
     if (status != XVF_CTRL_WAIT && status != XVF_SERVICER_COMMAND_RETRY) {
-      ESP_LOGW(LOG_TAG,
-               "XVF3800 read resid=%u cmd=%u returned status 0x%02x", resid,
-               cmd, status);
+      ESP_LOGW(LOG_TAG, "XVF3800 read resid=%u cmd=%u returned status 0x%02x",
+               resid, cmd, status);
       return ESP_ERR_INVALID_RESPONSE;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -258,8 +259,7 @@ static void store_le32(uint8_t *out, uint32_t value) {
 }
 
 static uint32_t load_le32(const uint8_t *in) {
-  return static_cast<uint32_t>(in[0]) |
-         (static_cast<uint32_t>(in[1]) << 8) |
+  return static_cast<uint32_t>(in[0]) | (static_cast<uint32_t>(in[1]) << 8) |
          (static_cast<uint32_t>(in[2]) << 16) |
          (static_cast<uint32_t>(in[3]) << 24);
 }
@@ -329,34 +329,33 @@ static const TuneEntry kTuneEntries[] = {
      TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f,
      PIPECAT_AEC_FAR_EXTGAIN_DB, false},
     // XMOS XVF3800 v3.2.1 documented range: 0..1000 linear gain.
-    {"asr_gain", XVF_RESID_AEC, 36, TuneTarget::XVF_FLOAT, true, true,
-     0.0f, 1000.0f, 1.0f, false},
+    {"asr_gain", XVF_RESID_AEC, 36, TuneTarget::XVF_FLOAT, true, true, 0.0f,
+     1000.0f, 1.0f, false},
     {"ref_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
      TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, 1.0f, false},
     {"mic_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
-     TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, PIPECAT_MIC_GAIN,
-     false},
+     TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, PIPECAT_MIC_GAIN, false},
     {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
      TuneTarget::XVF_INT32, false, true, -64.0f, 256.0f, 12.0f, false},
-    {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF,
-     TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
+    {"echo_onoff", XVF_RESID_PP, XVF_CMD_PP_ECHOONOFF, TuneTarget::XVF_INT32,
+     false, true, 0.0f, 1.0f, 1.0f, false},
     {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF,
      TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
     // XMOS-documented PP ranges/defaults. One table keeps HTTP, persistence,
     // boot replay, and introspection in lockstep.
-    {"gamma_e", XVF_RESID_PP, XVF_CMD_PP_GAMMA_E, TuneTarget::XVF_FLOAT,
-     true, true, 0.0f, 2.0f, 1.0f, false},
-    {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE,
-     TuneTarget::XVF_INT32, true, true, 0.0f, 15.0f, 15.0f, true},
-    {"agc_maxgain", XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN,
-     TuneTarget::XVF_FLOAT, true, true, 1.0f, 1000.0f, 64.0f, false},
+    {"gamma_e", XVF_RESID_PP, XVF_CMD_PP_GAMMA_E, TuneTarget::XVF_FLOAT, true,
+     true, 0.0f, 2.0f, 1.0f, false},
+    {"dtsensitive", XVF_RESID_PP, XVF_CMD_PP_DTSENSITIVE, TuneTarget::XVF_INT32,
+     true, true, 0.0f, 15.0f, 15.0f, true},
+    {"agc_maxgain", XVF_RESID_PP, XVF_CMD_PP_AGCMAXGAIN, TuneTarget::XVF_FLOAT,
+     true, true, 1.0f, 1000.0f, 64.0f, false},
     {"agc_desired", XVF_RESID_PP, XVF_CMD_PP_AGCDESIREDLEVEL,
      TuneTarget::XVF_FLOAT, true, true, 1.0e-8f, 1.0f,
      PIPECAT_AGC_DESIRED_LEVEL, false},
-    {"min_nn", XVF_RESID_PP, XVF_CMD_PP_MIN_NN, TuneTarget::XVF_FLOAT,
-     true, true, 0.0f, 1.0f, 0.51f, false},
-    {"min_ns", XVF_RESID_PP, XVF_CMD_PP_MIN_NS, TuneTarget::XVF_FLOAT,
-     true, true, 0.0f, 1.0f, 0.15f, false},
+    {"min_nn", XVF_RESID_PP, XVF_CMD_PP_MIN_NN, TuneTarget::XVF_FLOAT, true,
+     true, 0.0f, 1.0f, 0.51f, false},
+    {"min_ns", XVF_RESID_PP, XVF_CMD_PP_MIN_NS, TuneTarget::XVF_FLOAT, true,
+     true, 0.0f, 1.0f, 0.15f, false},
     // AIC3104 attenuation is ack-only: 0=0 dB, 128=mute.
     {"dac_atten", 0, 0, TuneTarget::DAC_ATTEN, true, true, 0.0f, 128.0f,
      static_cast<float>(PIPECAT_DAC_ATTEN), false},
@@ -409,7 +408,8 @@ bool pipecat_xvf_param_persistent(const char *param) {
 size_t pipecat_xvf_persistent_param_count() {
   size_t count = 0;
   for (const auto &entry : kTuneEntries) {
-    if (entry.persistent) count++;
+    if (entry.persistent)
+      count++;
   }
   return count;
 }
@@ -447,14 +447,14 @@ esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
     return ESP_OK;
   }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
-  esp_err_t ret =
-      xvf_read_scalar(entry->resid, entry->cmd, is_float, readback);
+  esp_err_t ret = xvf_read_scalar(entry->resid, entry->cmd, is_float, readback);
   *readback_valid = ret == ESP_OK;
   return ret;
 }
 
-// Apply one named tune and verify typed XVF registers by readback. DAC attenuation
-// is the sole ack-only target because the codec path has no independent reader.
+// Apply one named tune and verify typed XVF registers by readback. DAC
+// attenuation is the sole ack-only target because the codec path has no
+// independent reader.
 esp_err_t pipecat_xvf_tune(const char *param, float value,
                            PipecatXvfTuneResult *result) {
   if (result == nullptr) {
@@ -475,11 +475,10 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
 
   if (entry->target == TuneTarget::DAC_ATTEN) {
     int atten = static_cast<int>(applied_value);
-    bool ok = aic3104_write(AIC3104_PAGE_CTRL, 0x00) &&
-              aic3104_write(AIC3104_LEFT_DAC_VOLUME,
-                            static_cast<uint8_t>(atten)) &&
-              aic3104_write(AIC3104_RIGHT_DAC_VOLUME,
-                            static_cast<uint8_t>(atten));
+    bool ok =
+        aic3104_write(AIC3104_PAGE_CTRL, 0x00) &&
+        aic3104_write(AIC3104_LEFT_DAC_VOLUME, static_cast<uint8_t>(atten)) &&
+        aic3104_write(AIC3104_RIGHT_DAC_VOLUME, static_cast<uint8_t>(atten));
     result->ack_only = true;
     result->applied = ok;
     ESP_LOGI(LOG_TAG,
@@ -491,13 +490,13 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
   }
 
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
-  esp_err_t ret =
-      is_float ? xvf_write_float(entry->resid, entry->cmd, applied_value)
-               : xvf_write_int32(entry->resid, entry->cmd,
-                                 static_cast<int32_t>(applied_value));
+  esp_err_t ret = is_float
+                      ? xvf_write_float(entry->resid, entry->cmd, applied_value)
+                      : xvf_write_int32(entry->resid, entry->cmd,
+                                        static_cast<int32_t>(applied_value));
   if (ret == ESP_OK) {
-    ret = xvf_read_scalar(entry->resid, entry->cmd, is_float,
-                          &result->readback);
+    ret =
+        xvf_read_scalar(entry->resid, entry->cmd, is_float, &result->readback);
   }
   if (ret == ESP_OK) {
     result->readback_valid = true;
@@ -545,9 +544,9 @@ esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry) {
   // Do not short-circuit: every endpoint poll attempts all three registers.
   esp_err_t azimuth_ret = xvf_read_floats(
       XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4);
-  esp_err_t selected_ret = xvf_read_floats(
-      XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS,
-      telemetry->selected_azimuth, 2);
+  esp_err_t selected_ret =
+      xvf_read_floats(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS,
+                      telemetry->selected_azimuth, 2);
   esp_err_t spenergy_ret = xvf_read_floats(
       XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4);
   if (azimuth_ret != ESP_OK) {
@@ -568,10 +567,11 @@ static int azimuth_to_led(float radians) {
   return led % 12;
 }
 
-// Write all 12 LEDs in one GPO transaction. rgb[i] is 0x00RRGGBB; the ring wants
-// per-LED [B, G, R, 0x00]. This needs a 51-byte I2C write (3 header + 48 payload),
-// which exceeds xvf_write_bytes()'s 29-byte cap, so it has its own buffer.
-// Ported from ESPHome respeaker_xvf3800::set_led_ring (GPO resid 20, cmd 18).
+// Write all 12 LEDs in one GPO transaction. rgb[i] is 0x00RRGGBB; the ring
+// wants per-LED [B, G, R, 0x00]. This needs a 51-byte I2C write (3 header + 48
+// payload), which exceeds xvf_write_bytes()'s 29-byte cap, so it has its own
+// buffer. Ported from ESPHome respeaker_xvf3800::set_led_ring (GPO resid 20,
+// cmd 18).
 static esp_err_t xvf_write_led_ring(const uint32_t rgb[XVF_LED_COUNT]) {
   if (xvf3800 == nullptr) {
     return ESP_ERR_INVALID_STATE;
@@ -585,7 +585,7 @@ static esp_err_t xvf_write_led_ring(const uint32_t rgb[XVF_LED_COUNT]) {
     payload[3 + i * 4 + 0] = static_cast<uint8_t>(c & 0xFF);          // B
     payload[3 + i * 4 + 1] = static_cast<uint8_t>((c >> 8) & 0xFF);   // G
     payload[3 + i * 4 + 2] = static_cast<uint8_t>((c >> 16) & 0xFF);  // R
-    payload[3 + i * 4 + 3] = 0x00;                                    // W/unused
+    payload[3 + i * 4 + 3] = 0x00;  // W/unused
   }
   esp_err_t ret = i2c_master_transmit(xvf3800, payload, sizeof(payload),
                                       pdMS_TO_TICKS(XVF_CONTROL_TIMEOUT_MS));
@@ -604,18 +604,18 @@ static esp_err_t xvf_led_fill(uint32_t rgb) {
   return xvf_write_led_ring(ring);
 }
 
-// --- LED state machine (ported behavior from ESPHome respeaker_xvf3800) --------
-// Drives the ring from the device's own state signals. Wake is SERVER-side in
-// Track-B, so "listening" here is inferred from mic activity + the server's
-// wake-ack sound arriving; "speaking" from is_playing. Colors follow the HA
-// Voice PE convention. All scaled by PIPECAT_LED_BRIGHTNESS.
+// --- LED state machine (ported behavior from ESPHome respeaker_xvf3800)
+// -------- Drives the ring from the device's own state signals. Wake is
+// SERVER-side in Track-B, so "listening" here is inferred from mic activity +
+// the server's wake-ack sound arriving; "speaking" from is_playing. Colors
+// follow the HA Voice PE convention. All scaled by PIPECAT_LED_BRIGHTNESS.
 enum LedState {
-  LED_OFF = 0,       // no WebRTC peer -> ring dark
-  LED_IDLE,          // connected, quiet -> dim cyan breathing
-  LED_LISTENING,     // recent mic energy -> solid cyan
-  LED_SPEAKING,      // reply audio playing -> green breathing
-  LED_THINKING,      // server processing the command -> flowing rainbow
-  LED_WAITING,       // wake fired, waiting for command -> purple beam at talker
+  LED_OFF = 0,    // no WebRTC peer -> ring dark
+  LED_IDLE,       // connected, quiet -> dim cyan breathing
+  LED_LISTENING,  // recent mic energy -> solid cyan
+  LED_SPEAKING,   // reply audio playing -> green breathing
+  LED_THINKING,   // server processing the command -> flowing rainbow
+  LED_WAITING,    // wake fired, waiting for command -> purple beam at talker
 };
 
 static LedState g_led_state = LED_OFF;
@@ -625,17 +625,19 @@ static LedState g_led_state = LED_OFF;
 // RTVI data channel (wake fired / thinking / speaking / idle), exactly like the
 // old ESPHome firmware used voice_assistant_phase. This is the source of truth;
 // mic-energy inference is only a fallback when no server phase has arrived.
-// A phase is honored for LED_PHASE_TTL_MS after it's received, then we fall back
-// to device-local inference (so a dropped "idle" message can't stick forever).
+// A phase is honored for LED_PHASE_TTL_MS after it's received, then we fall
+// back to device-local inference (so a dropped "idle" message can't stick
+// forever).
 enum ServerPhase {
-  PHASE_NONE = 0,   // no server signal -> device-local inference
-  PHASE_IDLE,       // server says idle (waiting for wake) -> rainbow, no flicker
-  PHASE_WAITING,    // wake fired -> purple beam at the wake direction
-  PHASE_THINKING,   // processing -> flowing rainbow
-  PHASE_SPEAKING,   // replying -> green comet
+  PHASE_NONE = 0,  // no server signal -> device-local inference
+  PHASE_IDLE,      // server says idle (waiting for wake) -> rainbow, no flicker
+  PHASE_WAITING,   // wake fired -> purple beam at the wake direction
+  PHASE_THINKING,  // processing -> flowing rainbow
+  PHASE_SPEAKING,  // replying -> green comet
 };
 static std::atomic<int> g_server_phase{PHASE_NONE};
-static std::atomic<uint32_t> g_server_phase_ms{0};  // millis() of last phase msg
+static std::atomic<uint32_t> g_server_phase_ms{
+    0};  // millis() of last phase msg
 // TTL: server sends idle explicitly, so a long TTL is safe; the fallback only
 // matters if the data channel dies mid-turn.
 static constexpr uint32_t LED_PHASE_TTL_MS = 30000;
@@ -655,28 +657,48 @@ static uint32_t led_hsv(float h, float s, float v) {
   float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
   float m = v - c;
   float r = 0, g = 0, b = 0;
-  if (h < 60)       { r = c; g = x; b = 0; }
-  else if (h < 120) { r = x; g = c; b = 0; }
-  else if (h < 180) { r = 0; g = c; b = x; }
-  else if (h < 240) { r = 0; g = x; b = c; }
-  else if (h < 300) { r = x; g = 0; b = c; }
-  else              { r = c; g = 0; b = x; }
+  if (h < 60) {
+    r = c;
+    g = x;
+    b = 0;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+    b = 0;
+  } else if (h < 180) {
+    r = 0;
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    r = 0;
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    g = 0;
+    b = c;
+  } else {
+    r = c;
+    g = 0;
+    b = x;
+  }
   uint8_t rr = static_cast<uint8_t>((r + m) * 255.0f);
   uint8_t gg = static_cast<uint8_t>((g + m) * 255.0f);
   uint8_t bb = static_cast<uint8_t>((b + m) * 255.0f);
-  return (static_cast<uint32_t>(rr) << 16) |
-         (static_cast<uint32_t>(gg) << 8) | bb;
+  return (static_cast<uint32_t>(rr) << 16) | (static_cast<uint32_t>(gg) << 8) |
+         bb;
 }
 
 // Render the current LED state to the ring, using the ESPHome effect set:
 //   IDLE      -> flowing rainbow (each LED hue-offset, whole ring rotating)
-//   LISTENING -> led_beam (a smooth bright dot pointing at the talker) + cyan base
-//   SPEAKING  -> comet_ccw (a bright head with a fading tail, rotating)
+//   LISTENING -> led_beam (a smooth bright dot pointing at the talker) + cyan
+//   base SPEAKING  -> comet_ccw (a bright head with a fading tail, rotating)
 //   OFF       -> dark
 // beam_led = -1 for none, else the LED index (0..11) at the active talker.
 static void led_render(LedState state, int beam_led) {
 #if !PIPECAT_LED_ENABLE
-  (void)state; (void)beam_led;
+  (void)state;
+  (void)beam_led;
   return;
 #else
   if (!xvf3800_present) {
@@ -696,13 +718,15 @@ static void led_render(LedState state, int beam_led) {
       // Flowing rainbow: 12 evenly-spaced hues, whole wheel rotating.
       // THINKING spins faster than IDLE for a more "working" feel.
       rainbow_hue += (state == LED_THINKING) ? 9.0f : 3.0f;  // deg per tick
-      if (rainbow_hue >= 360.0f) rainbow_hue -= 360.0f;
+      if (rainbow_hue >= 360.0f)
+        rainbow_hue -= 360.0f;
       const float step = 360.0f / XVF_LED_COUNT;
       float h = rainbow_hue;
       for (int i = 0; i < XVF_LED_COUNT; i++) {
         ring[i] = led_hsv(h, 1.0f, bmax);  // rainbow at full brightness
         h += step;
-        if (h >= 360.0f) h -= 360.0f;
+        if (h >= 360.0f)
+          h -= 360.0f;
       }
       break;
     }
@@ -722,11 +746,15 @@ static void led_render(LedState state, int beam_led) {
         } else {
           // Ease toward target along the SHORTEST path around the 12-LED ring.
           float d = target - beam_center;
-          if (d > XVF_LED_COUNT / 2.0f) d -= XVF_LED_COUNT;
-          if (d < -XVF_LED_COUNT / 2.0f) d += XVF_LED_COUNT;
+          if (d > XVF_LED_COUNT / 2.0f)
+            d -= XVF_LED_COUNT;
+          if (d < -XVF_LED_COUNT / 2.0f)
+            d += XVF_LED_COUNT;
           beam_center += d * 0.25f;  // 25% per tick -> smooth float, ~5 ticks
-          if (beam_center < 0.0f) beam_center += XVF_LED_COUNT;
-          if (beam_center >= XVF_LED_COUNT) beam_center -= XVF_LED_COUNT;
+          if (beam_center < 0.0f)
+            beam_center += XVF_LED_COUNT;
+          if (beam_center >= XVF_LED_COUNT)
+            beam_center -= XVF_LED_COUNT;
         }
       }
       float center = (beam_led >= 0) ? beam_center : 0.0f;
@@ -734,10 +762,12 @@ static void led_render(LedState state, int beam_led) {
         uint32_t base = led_hsv(275.0f, 1.0f, bmax * 0.25f);  // dim purple base
         if (beam_led >= 0) {
           float dist = fabsf(i - center);
-          if (dist > XVF_LED_COUNT / 2.0f) dist = XVF_LED_COUNT - dist;
+          if (dist > XVF_LED_COUNT / 2.0f)
+            dist = XVF_LED_COUNT - dist;
           float f = 1.0f - (dist / (fade + 1.0f));
           if (f > 0.0f) {
-            uint32_t dot = led_hsv(275.0f, 1.0f, bmax * f);  // purple beam at talker
+            uint32_t dot =
+                led_hsv(275.0f, 1.0f, bmax * f);  // purple beam at talker
             base = dot;
           }
         }
@@ -748,7 +778,8 @@ static void led_render(LedState state, int beam_led) {
     case LED_SPEAKING: {
       // comet_ccw: a bright green head with a fading tail sweeping the ring.
       comet_pos += 0.6f;  // LEDs per tick
-      if (comet_pos >= XVF_LED_COUNT) comet_pos -= XVF_LED_COUNT;
+      if (comet_pos >= XVF_LED_COUNT)
+        comet_pos -= XVF_LED_COUNT;
       int head = (int)comet_pos;
       const int tail = 4;
       ring[head % XVF_LED_COUNT] = led_hsv(140.0f, 1.0f, bmax);  // green head
@@ -778,22 +809,25 @@ static void configure_xvf3800_dsp_profile() {
     }
   };
 
-  // ASR audio routing (ported from ESPHome respeaker_xvf3800 "Phase 2c PERMANENT
-  // FIX", proven 2026-06-09 with a 6/6-vs-0/4 word-recall A/B). The ESP32 mono
-  // path reads I2S channel 0 (LEFT slot). The XVF3800 has two relevant output
-  // categories:
-  //   category 6 (PROCESSED / voice-comm) -> runs the conferencing post-processor
-  //     (aggressive NS + de-reverb) which SPECTRALLY GUTS speech for ASR. This is
-  //     what we shipped before, and it garbled STT ("what time is it" -> "a 20").
+  // ASR audio routing (ported from ESPHome respeaker_xvf3800 "Phase 2c
+  // PERMANENT FIX", proven 2026-06-09 with a 6/6-vs-0/4 word-recall A/B). The
+  // ESP32 mono path reads I2S channel 0 (LEFT slot). The XVF3800 has two
+  // relevant output categories:
+  //   category 6 (PROCESSED / voice-comm) -> runs the conferencing
+  //   post-processor
+  //     (aggressive NS + de-reverb) which SPECTRALLY GUTS speech for ASR. This
+  //     is what we shipped before, and it garbled STT ("what time is it" -> "a
+  //     20").
   //   category 7 (ASR)  -> the clean post-beamformer autoselect output, no
   //     suppression, which is what Parakeet/Riva is trained on.
-  // Put category-7 (ASR) auto-select on the LEFT slot so STT gets the clean beam,
-  // and engage AEC ASR-mode. XVF params are volatile (reset on XMOS power-cycle /
-  // DFU), so this re-applies on every boot, exactly like the ESPHome component.
+  // Put category-7 (ASR) auto-select on the LEFT slot so STT gets the clean
+  // beam, and engage AEC ASR-mode. XVF params are volatile (reset on XMOS
+  // power-cycle / DFU), so this re-applies on every boot, exactly like the
+  // ESPHome component.
 #if PIPECAT_DUAL_STREAM
   // Both independent 16 kHz lanes must be upsampled onto the 48 kHz I2S slots.
-  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR,
-                           XVF_CMD_AUDIO_MGR_OP_UPSAMPLE, 1, 1));
+  record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_UPSAMPLE,
+                           1, 1));
 #endif
   record(xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L,
                            XVF_AUDIO_CATEGORY_ASR,
@@ -812,19 +846,18 @@ static void configure_xvf3800_dsp_profile() {
   // ≈ +18 dB) which OVERDRIVES the analog output stage — the 2026-07-09
   // crackle hunt proved it by ear + stats (delivery clean, crackle scaled
   // with level, gone at ref_gain=1.0 + DAC −6dB). Keep at 1.0.
-  record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN,
-                         1.0f));
+  record(
+      xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN, 1.0f));
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
                          PIPECAT_MIC_GAIN));
-  record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
-                         12));
+  record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, 12));
 
   // Keep adaptive beamforming/AEC active and align the far-end reference gain
   // with the host playback path. Per-build override is useful when speaker
   // attenuation changes between bench and kitchen enclosures.
   // ASROUTONOFF=1: engage ASR-mode output (bypass the conferencing post-proc),
-  // the mate to the category-7 LEFT-slot routing above. Was 0 (OFF) before, which
-  // fed suppressed audio to STT and caused the garbling.
+  // the mate to the category-7 LEFT-slot routing above. Was 0 (OFF) before,
+  // which fed suppressed audio to STT and caused the garbling.
   record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_ASROUTONOFF, 1));
   record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSONOFF, 0));
   record(xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2));
@@ -871,11 +904,13 @@ static void configure_xvf3800_dsp_profile() {
       for (int i = 0; i < XVF_LED_COUNT; i++) {
         ring[i] = led_hsv(h, 1.0f, bmax);
         h += step;
-        if (h >= 360.0f) h -= 360.0f;
+        if (h >= 360.0f)
+          h -= 360.0f;
       }
       xvf_write_led_ring(ring);
       hue += 6.0f;
-      if (hue >= 360.0f) hue -= 360.0f;
+      if (hue >= 360.0f)
+        hue -= 360.0f;
       vTaskDelay(pdMS_TO_TICKS(40));
     }
     xvf_led_fill(0x000000);
@@ -884,16 +919,17 @@ static void configure_xvf3800_dsp_profile() {
 #endif
 
 #if PIPECAT_LED_SELFTEST
-  // One-shot (or looping) LED-ring confirmation: cycle R -> G -> B -> dim-white so
-  // we can (a) confirm the ring is XMOS-wired on this board and (b) verify the
-  // byte->channel mapping visually. Gated OFF by default; -DPIPECAT_LED_SELFTEST=1
-  // runs one cycle, =2 loops forever (easy for a human to eyeball), then boots on.
+  // One-shot (or looping) LED-ring confirmation: cycle R -> G -> B -> dim-white
+  // so we can (a) confirm the ring is XMOS-wired on this board and (b) verify
+  // the byte->channel mapping visually. Gated OFF by default;
+  // -DPIPECAT_LED_SELFTEST=1 runs one cycle, =2 loops forever (easy for a human
+  // to eyeball), then boots on.
   {
     const uint8_t b = PIPECAT_LED_BRIGHTNESS;
     const uint32_t seq[] = {
-        (uint32_t)b << 16,               // red
-        (uint32_t)b << 8,                // green
-        (uint32_t)b,                     // blue
+        (uint32_t)b << 16,                             // red
+        (uint32_t)b << 8,                              // green
+        (uint32_t)b,                                   // blue
         ((uint32_t)b << 16) | ((uint32_t)b << 8) | b,  // white
     };
     const char *names[] = {"RED", "GREEN", "BLUE", "WHITE"};
@@ -921,9 +957,10 @@ static void init_i2c_and_codec() {
       .glitch_ignore_cnt = 7,
       .intr_priority = 0,
       .trans_queue_depth = 0,
-      .flags = {
-          .enable_internal_pullup = 1,
-      },
+      .flags =
+          {
+              .enable_internal_pullup = 1,
+          },
   };
   ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &i2c_bus));
 
@@ -932,32 +969,36 @@ static void init_i2c_and_codec() {
       .device_address = AIC3104_ADDR,
       .scl_speed_hz = 100 * 1000,
       .scl_wait_us = 0,
-      .flags = {
-          .disable_ack_check = 0,
-      },
+      .flags =
+          {
+              .disable_ack_check = 0,
+          },
   };
   ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &codec_cfg, &aic3104));
 
   // ESPHome's AIC3104 component uses these DAC volume registers for unmute.
   // The XMOS firmware owns the deeper codec clocking/routing setup.
   // DAC digital volume: 0x00 = 0 dB (loudest), each step = -0.5 dB attenuation.
-  // Was 0x10 (-8 dB); 0x00 = 0 dB, ~8 dB louder. Env-tunable so speaker loudness
-  // can be adjusted without a code change (PIPECAT_DAC_ATTEN = register value).
+  // Was 0x10 (-8 dB); 0x00 = 0 dB, ~8 dB louder. Env-tunable so speaker
+  // loudness can be adjusted without a code change (PIPECAT_DAC_ATTEN =
+  // register value).
   aic3104_write(AIC3104_PAGE_CTRL, 0x00);
   aic3104_write(AIC3104_LEFT_DAC_VOLUME, PIPECAT_DAC_ATTEN);
   aic3104_write(AIC3104_RIGHT_DAC_VOLUME, PIPECAT_DAC_ATTEN);
 
   // XVF3800 control port. If this probe fails, the XMOS DFU firmware is
   // missing -- no I2S clocks will ever appear and our slave-mode reads/writes
-  // will hang at the watchdog timeout. Refusing to advance saves debugging time.
+  // will hang at the watchdog timeout. Refusing to advance saves debugging
+  // time.
   i2c_device_config_t xvf_cfg = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
       .device_address = XVF3800_ADDR,
       .scl_speed_hz = 100 * 1000,
       .scl_wait_us = 0,
-      .flags = {
-          .disable_ack_check = 0,
-      },
+      .flags =
+          {
+              .disable_ack_check = 0,
+          },
   };
   ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &xvf_cfg, &xvf3800));
 
@@ -983,8 +1024,8 @@ static void init_i2c_and_codec() {
   if (ver_ret == ESP_OK) {
     snprintf(s_xvf_version, sizeof(s_xvf_version), "%u.%u.%u", ver[0], ver[1],
              ver[2]);
-    ESP_LOGI(LOG_TAG, "XVF3800 alive at 0x%02x, app firmware v%s",
-             XVF3800_ADDR, s_xvf_version);
+    ESP_LOGI(LOG_TAG, "XVF3800 alive at 0x%02x, app firmware v%s", XVF3800_ADDR,
+             s_xvf_version);
   } else {
     ESP_LOGW(LOG_TAG,
              "XVF3800 ack'd at 0x%02x but version read failed: %s. "
@@ -1070,9 +1111,13 @@ void pipecat_init_audio_capture() {
   init_i2s();
 }
 
-bool pipecat_xvf3800_present() { return xvf3800_present; }
+bool pipecat_xvf3800_present() {
+  return xvf3800_present;
+}
 
-const char *pipecat_xvf3800_version() { return s_xvf_version; }
+const char *pipecat_xvf3800_version() {
+  return s_xvf_version;
+}
 
 static void update_is_playing(int16_t *in_buf, size_t in_samples) {
   bool any_set = false;
@@ -1103,9 +1148,10 @@ static void update_is_playing(int16_t *in_buf, size_t in_samples) {
 // beep rasped worse after the FIR landed). Taps scaled by 0.668 (-3.5dB):
 // worst-case now 32763 = mathematically clip-free. The -3.5dB is made up at
 // the DAC (we run 0dB atten with headroom to spare).
-static const int16_t kInterpFir[24] = {
-    -130, -38, 213, 555, 509, -462, -2057, -2682, -315, 5640, 13153, 18419,
-    18419, 13153, 5640, -315, -2682, -2057, -462, 509, 555, 213, -38, -130};
+static const int16_t kInterpFir[24] = {-130,  -38,   213,  555,  509,   -462,
+                                       -2057, -2682, -315, 5640, 13153, 18419,
+                                       18419, 13153, 5640, -315, -2682, -2057,
+                                       -462,  509,   555,  213,  -38,   -130};
 
 static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
                                          int32_t *dst) {
@@ -1115,7 +1161,8 @@ static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
   size_t out = 0;
   for (size_t i = 0; i < src_samples; i++) {
     // shift in the new sample
-    for (int k = 0; k < 7; k++) hist[k] = hist[k + 1];
+    for (int k = 0; k < 7; k++)
+      hist[k] = hist[k + 1];
     hist[7] = src[i];
     for (int p = 0; p < UPSAMPLE_RATIO; p++) {
       int32_t acc = 0;
@@ -1124,8 +1171,10 @@ static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
         acc += (int32_t)kInterpFir[3 * t + p] * (int32_t)hist[7 - t];
       }
       int32_t sample16 = acc >> 15;
-      if (sample16 > 32767) sample16 = 32767;
-      if (sample16 < -32768) sample16 = -32768;
+      if (sample16 > 32767)
+        sample16 = 32767;
+      if (sample16 < -32768)
+        sample16 = -32768;
       int32_t sample = sample16 << 16;
       dst[out++] = sample;
       dst[out++] = sample;
@@ -1134,22 +1183,24 @@ static void mono_16k_to_stereo_48k_32bit(int16_t *src, size_t src_samples,
 }
 
 #if PIPECAT_DUAL_STREAM
-static void stereo_48k_32bit_to_stereo_16k(int32_t *src,
-                                           size_t src_samples, int16_t *dst) {
+static void stereo_48k_32bit_to_stereo_16k(int32_t *src, size_t src_samples,
+                                           int16_t *dst) {
   size_t out = 0;
-  for (size_t i = 0; i + 5 < src_samples &&
-                     out < PCM_SAMPLES_PER_FRAME * 2;
+  for (size_t i = 0; i + 5 < src_samples && out < PCM_SAMPLES_PER_FRAME * 2;
        i += UPSAMPLE_RATIO * 2) {
-    int32_t left = (src[i + 0] >> 16) + (src[i + 2] >> 16) +
-                   (src[i + 4] >> 16);
-    int32_t right = (src[i + 1] >> 16) + (src[i + 3] >> 16) +
-                    (src[i + 5] >> 16);
+    int32_t left = (src[i + 0] >> 16) + (src[i + 2] >> 16) + (src[i + 4] >> 16);
+    int32_t right =
+        (src[i + 1] >> 16) + (src[i + 3] >> 16) + (src[i + 5] >> 16);
     left /= UPSAMPLE_RATIO;
     right /= UPSAMPLE_RATIO;
-    if (left > 32767) left = 32767;
-    if (left < -32768) left = -32768;
-    if (right > 32767) right = 32767;
-    if (right < -32768) right = -32768;
+    if (left > 32767)
+      left = 32767;
+    if (left < -32768)
+      left = -32768;
+    if (right > 32767)
+      right = 32767;
+    if (right < -32768)
+      right = -32768;
     dst[out++] = static_cast<int16_t>(left);
     dst[out++] = static_cast<int16_t>(right);
   }
@@ -1170,16 +1221,18 @@ static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
   // at ~8kHz. 24-bit headroom: XVF samples are 32-bit with audio in the top
   // 16, so >>16 per sample then sum 6 and >>im into range.
   size_t out = 0;
-  for (size_t i = 0; i + (UPSAMPLE_RATIO * 2 - 1) < src_frames &&
-                     out < PCM_SAMPLES_PER_FRAME;
+  for (size_t i = 0;
+       i + (UPSAMPLE_RATIO * 2 - 1) < src_frames && out < PCM_SAMPLES_PER_FRAME;
        i += UPSAMPLE_RATIO * 2) {
     int32_t acc = 0;
     for (size_t j = 0; j < UPSAMPLE_RATIO * 2; j++) {
       acc += src[i + j] >> 16;
     }
     int32_t avg = acc / (int32_t)(UPSAMPLE_RATIO * 2);
-    if (avg > 32767) avg = 32767;
-    if (avg < -32768) avg = -32768;
+    if (avg > 32767)
+      avg = 32767;
+    if (avg < -32768)
+      avg = -32768;
     dst[out++] = (int16_t)avg;
   }
   while (out < PCM_SAMPLES_PER_FRAME) {
@@ -1244,7 +1297,8 @@ static inline uint32_t play_ring_count() {
 volatile uint32_t g_play_stat_frames = 0;
 volatile uint32_t g_play_stat_write_fail = 0;
 volatile uint32_t g_play_stat_underruns = 0;
-volatile uint32_t g_play_stat_plc = 0;  // opus PLC frames (lost RTP packets concealed)
+volatile uint32_t g_play_stat_plc =
+    0;  // opus PLC frames (lost RTP packets concealed)
 
 // Underrun BLIND-SPOT fix (2026-07-11, ladder instrumentation): a FULL ring
 // drain re-arms the prebuffer as "normal end of utterance" and was NOT
@@ -1269,7 +1323,8 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 #define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
 #endif
 #ifndef PIPECAT_GAP_RESUME_MS
-#define PIPECAT_GAP_RESUME_MS 750  // full-drain -> refill window = mid-speech gap
+#define PIPECAT_GAP_RESUME_MS \
+  750  // full-drain -> refill window = mid-speech gap
 #endif
 // Recovery-event inputs to the adaptive controller. g_play_stat_fec is
 // defined further down this file; g_red_recovered lives in the vendored
@@ -1292,7 +1347,8 @@ volatile uint32_t g_play_prebuffer_samples = 1280;
 // with NO opus and NO network — the definitive opus-vs-analog splitter for
 // crackle triage: embedded clean + streamed crackly => opus/transport;
 // embedded crackly too => DAC/analog/speaker.
-extern const uint8_t selftest_clip_start[] asm("_binary_selftest_clip_pcm_start");
+extern const uint8_t selftest_clip_start[] asm(
+    "_binary_selftest_clip_pcm_start");
 extern const uint8_t selftest_clip_end[] asm("_binary_selftest_clip_pcm_end");
 
 void pipecat_play_selftest_clip() {
@@ -1306,7 +1362,8 @@ void pipecat_play_selftest_clip() {
       continue;
     }
     size_t n = total - pushed;
-    if (n > free_space) n = free_space;
+    if (n > free_space)
+      n = free_space;
     for (size_t i = 0; i < n; i++) {
       play_ring[(play_ring_head + i) & PLAY_RING_MASK] = pcm[pushed + i];
     }
@@ -1340,7 +1397,8 @@ static void pipecat_playback_task(void *arg) {
     // controller; a no-op unless PIPECAT_ADAPTIVE_PREBUFFER=1 was baked in.
     pbc_track_recoveries(
         &pbc, g_play_stat_plc + g_play_stat_fec + g_red_recovered, now_ms);
-    uint32_t effective_ms = pbc_effective_ms(&pbc, g_play_prebuffer_samples / 16);
+    uint32_t effective_ms =
+        pbc_effective_ms(&pbc, g_play_prebuffer_samples / 16);
     g_play_prebuffer_effective_ms = effective_ms;
     g_play_prebuffer_steps = pbc.transitions;
 
@@ -1353,7 +1411,8 @@ static void pipecat_playback_task(void *arg) {
       // that drain was a mid-speech gap, not end of utterance.
       if (pbc_on_refill(&pbc, now_ms)) {
         g_play_stat_gap_resumes = pbc.gap_resumes;
-        ESP_LOGW(LOG_TAG, "gap resume: ring refilled %lums after full drain "
+        ESP_LOGW(LOG_TAG,
+                 "gap resume: ring refilled %lums after full drain "
                  "(mid-speech gap, total %lu)",
                  (unsigned long)(now_ms - pbc.drain_at_ms),
                  (unsigned long)pbc.gap_resumes);
@@ -1385,9 +1444,9 @@ static void pipecat_playback_task(void *arg) {
     size_t bytes_written = 0;
     size_t bytes_to_write =
         PCM_SAMPLES_PER_FRAME * UPSAMPLE_RATIO * 2 * sizeof(int32_t);
-    esp_err_t ret = i2s_channel_write(tx_handle, i2s_play_buffer,
-                                      bytes_to_write, &bytes_written,
-                                      pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
+    esp_err_t ret =
+        i2s_channel_write(tx_handle, i2s_play_buffer, bytes_to_write,
+                          &bytes_written, pdMS_TO_TICKS(I2S_WRITE_TIMEOUT_MS));
     frames++;
     g_play_stat_frames++;
     if (ret == ESP_OK) {
@@ -1419,11 +1478,12 @@ void pipecat_init_audio_decoder() {
     return;
   }
 
-  decoder_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
+  decoder_buffer =
+      (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
   i2s_play_buffer =
       (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
-  play_ring = (int16_t *)heap_caps_malloc(
-      PLAY_RING_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  play_ring = (int16_t *)heap_caps_malloc(PLAY_RING_SAMPLES * sizeof(int16_t),
+                                          MALLOC_CAP_SPIRAM);
   if (play_ring == nullptr) {  // PSRAM unavailable? fall back to internal
     play_ring = (int16_t *)heap_caps_malloc(PLAY_RING_SAMPLES * sizeof(int16_t),
                                             MALLOC_CAP_8BIT);
@@ -1477,8 +1537,9 @@ void pipecat_reset_audio_decoder() {
   }
 }
 
-static uint32_t s_pending_gap = 0;   // gaps signaled but not yet filled
-volatile uint32_t g_play_stat_fec = 0;  // gaps recovered via in-band FEC (real audio)
+static uint32_t s_pending_gap = 0;  // gaps signaled but not yet filled
+volatile uint32_t g_play_stat_fec =
+    0;  // gaps recovered via in-band FEC (real audio)
 
 void pipecat_audio_decode(uint8_t *data, size_t size) {
   // NULL data = gap signal from the vendored libpeer rtp.c: one RTP packet
@@ -1556,17 +1617,15 @@ void pipecat_init_audio_encoder() {
   }
 
 #if PIPECAT_DUAL_STREAM
-  opus_encoder_ctl(opus_encoder,
-                   OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE * 2));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE * 2));
 #else
   opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
 #endif
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
-  opus_encoder_ctl(
-      opus_encoder,
-      OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
+  opus_encoder_ctl(opus_encoder,
+                   OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
 
 #if PIPECAT_DUAL_STREAM
   read_buffer =
@@ -1592,9 +1651,9 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
 #endif
 #else
   size_t bytes_read = 0;
-  esp_err_t ret = i2s_channel_read(rx_handle, i2s_capture_buffer,
-                                   BOARD_FRAME_BYTES, &bytes_read,
-                                   pdMS_TO_TICKS(200));
+  esp_err_t ret =
+      i2s_channel_read(rx_handle, i2s_capture_buffer, BOARD_FRAME_BYTES,
+                       &bytes_read, pdMS_TO_TICKS(200));
   // Throttled diagnostic: report mic capture health once per second.
   // Helps the bench operator see whether XVF3800 is actually clocking I2S
   // and what audio level the mic array is delivering.
@@ -1616,13 +1675,15 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     size_t samples = bytes_read / sizeof(int32_t);
     for (size_t i = 0; i < samples; i++) {
       int32_t raw = i2s_capture_buffer[i];
-      uint32_t rawmag =
-          raw < 0 ? static_cast<uint32_t>(-(int64_t)raw)
-                  : static_cast<uint32_t>(raw);
-      if (rawmag > diag_raw_peak) diag_raw_peak = rawmag;
+      uint32_t rawmag = raw < 0 ? static_cast<uint32_t>(-(int64_t)raw)
+                                : static_cast<uint32_t>(raw);
+      if (rawmag > diag_raw_peak)
+        diag_raw_peak = rawmag;
       int32_t s = raw >> 16;
-      if (s < 0) s = -s;
-      if (s > diag_peak) diag_peak = s;
+      if (s < 0)
+        s = -s;
+      if (s > diag_peak)
+        diag_peak = s;
     }
 #if PIPECAT_DUAL_STREAM
     stereo_48k_32bit_to_stereo_16k(i2s_capture_buffer,
@@ -1637,8 +1698,10 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
 #endif
       int32_t s = read_buffer[i];
-      if (s < 0) s = -s;
-      if (s > diag_mono_peak) diag_mono_peak = s;
+      if (s < 0)
+        s = -s;
+      if (s > diag_mono_peak)
+        diag_mono_peak = s;
     }
   } else {
 #if PIPECAT_DUAL_STREAM
@@ -1653,15 +1716,15 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
     // real I2S data and not all-zero garbage. Helps diagnose silent stream
     // vs unsynced framing.
     ESP_LOGI(LOG_TAG,
-             "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak |s16|=%ld mono=%ld raw=%lu full_duplex=%d%s",
+             "mic capture: %lu/%lu ok, %lu zero-byte, last_err=%s, peak "
+             "|s16|=%ld mono=%ld raw=%lu full_duplex=%d%s",
              (unsigned long)diag_ok, (unsigned long)diag_frames,
              (unsigned long)diag_zero_bytes, esp_err_to_name(diag_last_err),
              (long)diag_peak, (long)diag_mono_peak,
              (unsigned long)diag_raw_peak, is_playing ? 1 : 0,
              xvf3800_present ? "" : " [XVF3800 ABSENT]");
     if (diag_ok > 0) {
-      ESP_LOGI(LOG_TAG,
-               "raw: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+      ESP_LOGI(LOG_TAG, "raw: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
                (unsigned long)i2s_capture_buffer[0],
                (unsigned long)i2s_capture_buffer[1],
                (unsigned long)i2s_capture_buffer[2],
@@ -1685,10 +1748,9 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
   }
 #endif
 
-  auto encoded_size =
-      opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
-                  PCM_SAMPLES_PER_FRAME, encoder_output_buffer,
-                  OPUS_BUFFER_SIZE);
+  auto encoded_size = opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
+                                  PCM_SAMPLES_PER_FRAME, encoder_output_buffer,
+                                  OPUS_BUFFER_SIZE);
   if (encoded_size > 0) {
     peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                encoded_size);
@@ -1717,17 +1779,22 @@ static void pipecat_led_step() {
 
   int phase = g_server_phase.load();
   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-  bool phase_fresh =
-      (phase != PHASE_NONE) &&
-      ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
+  bool phase_fresh = (phase != PHASE_NONE) &&
+                     ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
 
   if (!pipecat_webrtc_connected) {
     st = LED_OFF;
     led_beam = -1;
   } else if (phase_fresh) {
     switch (phase) {
-      case PHASE_SPEAKING: st = LED_SPEAKING; led_beam = -1; break;
-      case PHASE_THINKING: st = LED_THINKING; led_beam = -1; break;
+      case PHASE_SPEAKING:
+        st = LED_SPEAKING;
+        led_beam = -1;
+        break;
+      case PHASE_THINKING:
+        st = LED_THINKING;
+        led_beam = -1;
+        break;
       case PHASE_WAITING:
         st = LED_WAITING;
         // Point the purple beam at whoever triggered the wake. Poll ~4Hz
@@ -1736,15 +1803,17 @@ static void pipecat_led_step() {
         if (xvf3800_present && xvf_beam_telemetry_supported &&
             (++beam_poll_tick % 5 == 0)) {
           float az[4] = {};
-          if (xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES,
-                              az, 4) == ESP_OK) {
+          if (xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, az,
+                              4) == ESP_OK) {
             led_beam = azimuth_to_led(az[3]);
           }
         }
         break;
       case PHASE_IDLE:
       default:
-        st = LED_IDLE; led_beam = -1; break;
+        st = LED_IDLE;
+        led_beam = -1;
+        break;
     }
   } else if (is_playing) {
     st = LED_SPEAKING;

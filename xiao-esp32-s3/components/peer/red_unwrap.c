@@ -7,8 +7,8 @@
 
 #include <string.h>
 
-int red_unwrap(const uint8_t* payload, size_t size, uint8_t expected_pt,
-               RedParsed* out) {
+int red_unwrap(const uint8_t *payload, size_t size, uint8_t expected_pt,
+               RedParsed *out) {
   if (payload == NULL || out == NULL || size < 1) {
     return -1;
   }
@@ -31,9 +31,9 @@ int red_unwrap(const uint8_t* payload, size_t size, uint8_t expected_pt,
     }
     uint32_t v = ((uint32_t)payload[pos + 1] << 16) |
                  ((uint32_t)payload[pos + 2] << 8) | payload[pos + 3];
-    RedBlock* b = &out->blocks[out->block_count];
-    b->ts_offset = (uint16_t)(v >> 10);   /* 14 bits */
-    b->length = (uint16_t)(v & 0x3FF);    /* 10 bits */
+    RedBlock *b = &out->blocks[out->block_count];
+    b->ts_offset = (uint16_t)(v >> 10); /* 14 bits */
+    b->length = (uint16_t)(v & 0x3FF);  /* 10 bits */
     if (b->ts_offset == 0) {
       return -1; /* a redundant block at offset 0 makes no sense */
     }
@@ -66,7 +66,7 @@ int red_unwrap(const uint8_t* payload, size_t size, uint8_t expected_pt,
   return 0;
 }
 
-int red_recover_plan(const RedParsed* parsed, int gap, uint32_t ts_step,
+int red_recover_plan(const RedParsed *parsed, int gap, uint32_t ts_step,
                      int8_t actions[RED_MAX_GAP]) {
   if (parsed == NULL || actions == NULL || gap <= 0 || ts_step == 0) {
     return 0;

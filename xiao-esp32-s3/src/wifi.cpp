@@ -64,4 +64,6 @@ void pipecat_init_wifi() {
   }
 }
 
-bool pipecat_wifi_connected() { return g_wifi_connected; }
+bool pipecat_wifi_connected() {
+  return g_wifi_connected;
+}
