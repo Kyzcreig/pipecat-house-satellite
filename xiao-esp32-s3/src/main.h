@@ -54,6 +54,12 @@ extern bool pipecat_xvf_param_self_persist(const char *param,
 extern uint8_t pipecat_led_brightness();
 extern void pipecat_replay_xvf_params();
 
+// Unattended recovery / boot guard (main.cpp, t_2e80e072)
+extern const char *pipecat_reset_reason_name();
+extern uint32_t pipecat_boot_fault_count();
+extern uint32_t pipecat_boots_since_poweron();
+extern uint32_t pipecat_net_watchdog_deadline_s();
+
 // OTA / mDNS
 extern void pipecat_init_mdns();
 extern void pipecat_init_ota_server();

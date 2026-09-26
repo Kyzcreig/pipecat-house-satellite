@@ -282,16 +282,21 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   const esp_app_desc_t *app = esp_app_get_description();
   int64_t uptime_s = esp_timer_get_time() / 1000000LL;
   bool app_valid = ota_state_is_valid_for_status(state);
-  char body[512];
+  char body[640];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
            ",\"firmware_version\":\"%s\",\"xvf_version\":\"%s\","
            "\"satellite_id\":\"%s\","
-           "\"mdns_hostname\":\"%s.local\"}",
+           "\"mdns_hostname\":\"%s.local\","
+           "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
+           "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
-           PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME);
+           PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME,
+           pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
+           (unsigned)pipecat_boots_since_poweron(),
+           (unsigned)pipecat_net_watchdog_deadline_s());
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
