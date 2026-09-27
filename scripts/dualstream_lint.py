@@ -89,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         r"OPUS_SET_BITRATE\(OPUS_ENCODER_BITRATE\)\);\s*"
         r"#endif",
         media,
-        "dual-stream Opus must budget 60 kb/s while flag-off stays at 30 kb/s",
+        "dual-stream Opus must budget 2x the per-lane bitrate while flag-off "
+        "stays at 1x (the per-lane value itself lives in OPUS_ENCODER_BITRATE)",
         errors,
     )
     require(
@@ -122,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "dualstream-lint: OK — default is mono [7,3]/[7,3]; flag-on preserves "
-        "[7,3]/[6,3] as stereo Opus at 60 kb/s"
+        "[7,3]/[6,3] as stereo Opus at 2x the per-lane bitrate"
     )
     return 0
 

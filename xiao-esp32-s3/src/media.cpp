@@ -27,9 +27,66 @@
 #define BOARD_FRAME_SAMPLES (PCM_SAMPLES_PER_FRAME * UPSAMPLE_RATIO * 2)
 #define BOARD_FRAME_BYTES (BOARD_FRAME_SAMPLES * sizeof(int32_t))
 
-#define OPUS_ENCODER_BITRATE 30000
+// Uplink (mic-direction) Opus encoder settings.
+//
+// 2026-09-18 (t_8757e3d4) — bitrate 30000 -> 64000 per lane. MEASURED, not
+// assumed: encoding 30 real far-field command-tap captures through libopus and
+// scoring the 4-8 kHz fricative band (the /s/,/f/ cues far-field STT loses
+// first) against the encoder input, paired per-file, FEC held ON throughout:
+//
+//   30k/lane (was)  fricative segSNR   9.17 dB
+//   48k/lane                          13.30 dB  (+4.13, sd 0.32, wins 30/30)
+//   64k/lane (now)                    15.64 dB  (+6.47, sd 0.67, wins 30/30)
+//
+// 64k beats 48k on 30/30 files (mean +2.34 dB, sd 0.43) — unanimous, so this is
+// signal, not sampling noise. The band is coded WIDEBAND (<=8 kHz) at every
+// rate, so Opus was never DROPPING the band; it was under-ALLOCATING bits to
+// it. Airtime cost is +0.09 percentage points of channel time per satellite
+// (packet RATE is unchanged at 50 pps; only payload grows, 150 -> 320 B),
+// against measured AP utilisation of 41-49% — noise. Server seam verified at
+// the larger payload before flashing: uplink_loss_protection.py decodes 100/100
+// frames plus both PLC and FEC concealment lanes; worst-case frame 274 B vs the
+// 1276 B OPUS_BUFFER_SIZE.
+//
+// DELIBERATELY UNCHANGED, each against an explicit proposal to change it:
+//   COMPLEXITY stays 0. Raising it to 5 measured WORSE on this audio for 2.4x
+//     the encode CPU. Opus complexity buys rate-distortion search effort under
+//     RATE PRESSURE; relieve the pressure and it has nothing left to buy. Fix
+//     the rate, not the search effort.
+//   INBAND_FEC stays ON / PACKET_LOSS_PERC stays 10. Live server counters
+//     (:7860/health.uplink_loss) show gap_events=328 with fec=328 — in-band FEC
+//     healed EVERY uplink gap observed in ~48 h. Those bits are not idle; they
+//     are why the 0.004% gap rate is inaudible. All gains above are measured
+//     WITH FEC on, so none of them are financed by dropping it.
+#define OPUS_ENCODER_BITRATE 64000
 #define OPUS_ENCODER_COMPLEXITY 0
 #define OPUS_EXPECTED_PACKET_LOSS_PCT 10
+
+// 2026-09-18 (t_109a4778) — in-band FEC is a CODEC-MODE switch, not a budget
+// knob. LBRR (Opus in-band FEC) exists only in the SILK layer, so
+// OPUS_SET_INBAND_FEC(1) pins the encoder to SILK-WB: TOC bytes of real packets
+// (RFC 6716 s3.1, config = payload[0] >> 3) read SILK 100% with FEC on at 30k
+// and 64k/lane, CELT 100% with it off. Measured at 64k/lane on 30 far-field
+// captures: FEC-on 16.10 dB vs FEC-off 27.37 dB fricative segSNR (+11.27 dB,
+// sd 0.91), while the PACKET_LOSS_PERC dial (10/5/2/1) moves < 0.4 dB — the
+// dial is inert because no setting of it lets SILK become CELT.
+//
+// That is a proxy metric. The decision rule for shipping CELT is WER on the
+// paired corpus (t_843a617e), so the mode is a BUILD-TIME arm, default = live
+// behaviour (FEC on / SILK). PIPECAT_UPLINK_INBAND_FEC=0 at configure time
+// builds the CELT arm (FEC off, plp 0). With FEC off, uplink gap healing falls
+// to server-side PLC in uplink_loss_protection.py (the FEC lane there becomes
+// a no-op: opus_decode(decode_fec=1) on a CELT packet yields PLC, not LBRR).
+#ifndef PIPECAT_UPLINK_INBAND_FEC
+#define PIPECAT_UPLINK_INBAND_FEC 1
+#endif
+#if PIPECAT_UPLINK_INBAND_FEC
+#define OPUS_UPLINK_FEC_ENABLE 1
+#define OPUS_UPLINK_PLP OPUS_EXPECTED_PACKET_LOSS_PCT
+#else
+#define OPUS_UPLINK_FEC_ENABLE 0
+#define OPUS_UPLINK_PLP 0
+#endif
 
 // TRANSPORT-DIRECTION-SYMMETRY:
 // | mechanism | server -> satellite | satellite -> server |
@@ -1753,9 +1810,14 @@ void pipecat_init_audio_encoder() {
 #endif
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-  opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
-  opus_encoder_ctl(opus_encoder,
-                   OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_PACKET_LOSS_PCT));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(OPUS_UPLINK_FEC_ENABLE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_PACKET_LOSS_PERC(OPUS_UPLINK_PLP));
+  ESP_LOGI(LOG_TAG,
+           "uplink opus: bitrate=%d/lane complexity=%d inband_fec=%d plp=%d "
+           "(mode=%s)",
+           OPUS_ENCODER_BITRATE, OPUS_ENCODER_COMPLEXITY,
+           OPUS_UPLINK_FEC_ENABLE, OPUS_UPLINK_PLP,
+           OPUS_UPLINK_FEC_ENABLE ? "SILK-locked" : "CELT-eligible");
 
 #if PIPECAT_DUAL_STREAM
   read_buffer =
