@@ -38,6 +38,20 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
 # CONFIG_ESP_CONSOLE_UART is not set
 
-# Keep the bench board alive while WebRTC/audio bring-up is in progress.
+# Interrupt WDT stays off (bench-era choice, not in scope of t_2e80e072).
 # CONFIG_ESP_INT_WDT is not set
-# CONFIG_ESP_TASK_WDT_EN is not set
+
+# Unattended recovery (t_2e80e072): task WDT on app_main (init + main loop,
+# subscribed explicitly in main.cpp). Idle-task checks stay OFF: the audio
+# publisher legitimately saturates core 0 and must not trip a reset.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0 is not set
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
+
+# Brownout detector: IDF default is already on (level 7); pin it so a flickering
+# outage resets cleanly instead of half-running on a sagging rail.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y

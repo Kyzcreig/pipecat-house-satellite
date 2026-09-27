@@ -44,7 +44,19 @@ extern bool pipecat_xvf_param_persistent(const char *param);
 extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);
 extern bool pipecat_xvf_param_default(const char *param, float *value);
+// Params that own their persistence outside the xvf_dsp namespace
+// (led_brightness). true = handled, *ret is the NVS result.
+extern bool pipecat_xvf_param_self_persist(const char *param,
+                                           float applied_value, esp_err_t *ret);
+// Live LED ring master brightness 0..255 (runtime, NVS-persisted).
+extern uint8_t pipecat_led_brightness();
 extern void pipecat_replay_xvf_params();
+
+// Unattended recovery / boot guard (main.cpp, t_2e80e072)
+extern const char *pipecat_reset_reason_name();
+extern uint32_t pipecat_boot_fault_count();
+extern uint32_t pipecat_boots_since_poweron();
+extern uint32_t pipecat_net_watchdog_deadline_s();
 
 // OTA / mDNS
 extern void pipecat_init_mdns();
