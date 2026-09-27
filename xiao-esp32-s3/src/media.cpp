@@ -40,13 +40,13 @@
 //
 // 64k beats 48k on 30/30 files (mean +2.34 dB, sd 0.43) — unanimous, so this is
 // signal, not sampling noise. The band is coded WIDEBAND (<=8 kHz) at every
-// rate, so Opus was never DROPPING the band; it was under-ALLOCATING bits to it.
-// Airtime cost is +0.09 percentage points of channel time per satellite (packet
-// RATE is unchanged at 50 pps; only payload grows, 150 -> 320 B), against
-// measured AP utilisation of 41-49% — noise. Server seam verified at the larger
-// payload before flashing: uplink_loss_protection.py decodes 100/100 frames plus
-// both PLC and FEC concealment lanes; worst-case frame 274 B vs the 1276 B
-// OPUS_BUFFER_SIZE.
+// rate, so Opus was never DROPPING the band; it was under-ALLOCATING bits to
+// it. Airtime cost is +0.09 percentage points of channel time per satellite
+// (packet RATE is unchanged at 50 pps; only payload grows, 150 -> 320 B),
+// against measured AP utilisation of 41-49% — noise. Server seam verified at
+// the larger payload before flashing: uplink_loss_protection.py decodes 100/100
+// frames plus both PLC and FEC concealment lanes; worst-case frame 274 B vs the
+// 1276 B OPUS_BUFFER_SIZE.
 //
 // DELIBERATELY UNCHANGED, each against an explicit proposal to change it:
 //   COMPLEXITY stays 0. Raising it to 5 measured WORSE on this audio for 2.4x
