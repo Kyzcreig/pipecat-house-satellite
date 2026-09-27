@@ -43,7 +43,8 @@ static int tests_run = 0;
 
 static void test_dc_gain_is_exactly_unity(void) {
   int32_t sum = 0;
-  for (unsigned i = 0; i < DECIM_COMP_TAPS; i++) sum += kDecimCompTaps[i];
+  for (unsigned i = 0; i < DECIM_COMP_TAPS; i++)
+    sum += kDecimCompTaps[i];
   assert(sum == 16384); /* Q14 unity: no level shift */
 }
 
@@ -75,7 +76,8 @@ static void test_accumulator_cannot_overflow(void) {
 /* Boxcar-of-3 magnitude at 48 kHz evaluated at the 16 kHz-lane frequency f. */
 static double boxcar3_db(double f) {
   double x = PI * f / 48000.0;
-  if (f == 0.0) return 0.0;
+  if (f == 0.0)
+    return 0.0;
   return 20.0 * log10(fabs(sin(3 * x) / (3 * sin(x))));
 }
 
@@ -94,7 +96,8 @@ static double measure_gain_db(double f) {
   int32_t peak = 0;
   for (unsigned i = 1000; i < n; i++) { /* skip the startup transient */
     int32_t v = buf[i] < 0 ? -buf[i] : buf[i];
-    if (v > peak) peak = v;
+    if (v > peak)
+      peak = v;
   }
   return 20.0 * log10((double)peak / amp);
 }
@@ -108,7 +111,8 @@ static void test_cascade_is_flatter_than_the_boxcar(void) {
     double boxcar_alone = fabs(boxcar3_db(f));
     printf("    %5.0f Hz: cascade %+6.2f dB (boxcar alone %+6.2f dB)\n", f,
            cascade, boxcar3_db(f));
-    assert(fabs(cascade) < 0.75); /* design target 0.40 dB + measurement slack */
+    assert(fabs(cascade) <
+           0.75); /* design target 0.40 dB + measurement slack */
     /* And it must be a real improvement, not a wash: */
     assert(fabs(cascade) <= boxcar_alone + 0.05);
   }
@@ -163,7 +167,8 @@ static void test_stereo_channels_do_not_cross_talk(void) {
   int32_t peak = 0;
   for (unsigned i = 10; i < frames; i++) {
     int32_t v = x[2 * i] < 0 ? -x[2 * i] : x[2 * i];
-    if (v > peak) peak = v;
+    if (v > peak)
+      peak = v;
   }
   assert(peak > 12000); /* the L channel really was filtered (and boosted) */
 }
@@ -194,7 +199,8 @@ static void test_stereo_matches_two_mono_runs(void) {
 static void test_output_saturates_never_wraps(void) {
   /* Full-scale square wave: a boost filter overshoots at every edge. */
   static int16_t x[2048];
-  for (unsigned i = 0; i < 2048; i++) x[i] = (i / 8) % 2 ? 32767 : -32768;
+  for (unsigned i = 0; i < 2048; i++)
+    x[i] = (i / 8) % 2 ? 32767 : -32768;
   decim_comp c;
   decim_comp_init(&c);
   decim_comp_run(&c, x, 2048);
@@ -206,7 +212,8 @@ static void test_output_saturates_never_wraps(void) {
    * clamp is exercised by this stimulus, i.e. the test is not vacuous). */
   int pinned = 0;
   for (unsigned i = 0; i < 2048; i++) {
-    if (x[i] == 32767 || x[i] == -32768) pinned = 1;
+    if (x[i] == 32767 || x[i] == -32768)
+      pinned = 1;
   }
   assert(pinned);
 }
@@ -217,7 +224,8 @@ static void test_silence_stays_silent(void) {
   decim_comp c;
   decim_comp_init(&c);
   decim_comp_run(&c, x, 640);
-  for (unsigned i = 0; i < 640; i++) assert(x[i] == 0);
+  for (unsigned i = 0; i < 640; i++)
+    assert(x[i] == 0);
 }
 
 int main(void) {

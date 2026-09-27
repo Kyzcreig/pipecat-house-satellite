@@ -72,7 +72,8 @@ void decim_comp_run(decim_comp *c, int16_t *x, unsigned n);
 /* Filter `n` FRAMES of interleaved stereo in place, using two independent
  * channel states (the dual-stream lane carries two different XVF categories --
  * mixing their histories would cross-talk them). */
-void decim_comp_run_stereo(decim_comp *l, decim_comp *r, int16_t *x, unsigned n);
+void decim_comp_run_stereo(decim_comp *l, decim_comp *r, int16_t *x,
+                           unsigned n);
 
 /* Exposed for the host test: the Q15 taps and their properties. */
 extern const int16_t kDecimCompTaps[DECIM_COMP_TAPS];

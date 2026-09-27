@@ -1874,7 +1874,8 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
       g_decim_comp_last_us = dt;
       g_decim_comp_total_us += dt;
       g_decim_comp_frames++;
-      if (dt > g_decim_comp_max_us) g_decim_comp_max_us = dt;
+      if (dt > g_decim_comp_max_us)
+        g_decim_comp_max_us = dt;
     }
 #endif
 #if PIPECAT_DUAL_STREAM

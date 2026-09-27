@@ -14,16 +14,21 @@
  *   python3 decim_compensator.py 7 7800 1.0
  * Cascade with the 3-tap boxcar: max deviation 0.40 dB over 0-7.9 kHz
  * (boxcar alone: 3.05 dB at 7.5 kHz). Worst-case |acc| growth 1.417x. */
+// tests/host/test_decim_comp_source.py reads the tap row as one line.
+// clang-format off
 const int16_t kDecimCompTaps[DECIM_COMP_TAPS] = {
     -197, 456, -1513, 18892, -1513, 456, -197};
+// clang-format on
 
 void decim_comp_init(decim_comp *c) {
   memset(c->hist, 0, sizeof(c->hist));
 }
 
 static inline int16_t clamp16(int32_t v) {
-  if (v > 32767) return (int16_t)32767;
-  if (v < -32768) return (int16_t)-32768;
+  if (v > 32767)
+    return (int16_t)32767;
+  if (v < -32768)
+    return (int16_t)-32768;
   return (int16_t)v;
 }
 
@@ -57,7 +62,8 @@ void decim_comp_run(decim_comp *c, int16_t *x, unsigned n) {
   }
 }
 
-void decim_comp_run_stereo(decim_comp *l, decim_comp *r, int16_t *x, unsigned n) {
+void decim_comp_run_stereo(decim_comp *l, decim_comp *r, int16_t *x,
+                           unsigned n) {
   for (unsigned i = 0; i < n; i++) {
     x[2 * i] = step(l, x[2 * i]);
     x[2 * i + 1] = step(r, x[2 * i + 1]);
