@@ -13,6 +13,9 @@
  * Expected: fec++ iff oracle[i]==1, plc++ otherwise. Today's firmware logic
  * credits fec for EVERY packet (opus_decode(decode_fec=1) never fails).
  *
+ * Test 1b: an LBRR packet whose FEC decode FAILS falls back to PLC and
+ * counts plc, not fec (forced with frame_size=0 -> OPUS_BAD_ARG).
+ *
  * Test 2: the firmware-side LBRR parser agrees with the oracle on every
  * packet of the stream (and returns 0, never 1, for a CELT-only TOC).
  */
@@ -139,6 +142,31 @@ static void test_gapfill_attribution(void) {
         without);
 }
 
+static void test_failed_fec_decode_falls_back_to_plc(void) {
+  int err = 0, idx = -1;
+  int16_t pcm[FRAME];
+  for (int i = 1; i < g_n && idx < 0; i++)
+    if (g_oracle[i] == 1)
+      idx = i;
+  CHECK(idx > 0, "fixture has no LBRR packet");
+  if (idx < 0)
+    return;
+  OpusDecoder *dec = opus_decoder_create(FS, 1, &err);
+  CHECK(err == OPUS_OK, "decoder create %d", err);
+  for (int j = 0; j < idx - 1; j++) {
+    int d = opus_decode(dec, g_pkt[j], g_len[j], pcm, FRAME, 0);
+    CHECK(d == FRAME, "pkt %d normal decode -> %d", j, d);
+  }
+  volatile uint32_t fec = 0, plc = 0;
+  int n =
+      opus_gapfill_recover_one(dec, g_pkt[idx], g_len[idx], pcm, 0, &fec, &plc);
+  CHECK(n <= 0, "frame_size=0 must fail the decode (got %d)", n);
+  CHECK(fec == 0 && plc == 1,
+        "failed FEC decode must fall back to PLC (fec=%u plc=%u)", fec, plc);
+  printf("failed-fec fallback: pkt=%d fec=%u plc=%u\n", idx, fec, plc);
+  opus_decoder_destroy(dec);
+}
+
 static void test_lbrr_parser_matches_oracle(void) {
   int mismatches = 0;
   for (int i = 0; i < g_n; i++) {
@@ -172,6 +200,7 @@ int main(int argc, char **argv) {
   load(argv[1]);
   printf("vendored %s, %d packets\n", opus_get_version_string(), g_n);
   test_gapfill_attribution();
+  test_failed_fec_decode_falls_back_to_plc();
   test_lbrr_parser_matches_oracle();
   if (g_fail) {
     printf("FAILED (%d checks)\n", g_fail);

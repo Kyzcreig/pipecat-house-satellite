@@ -6,6 +6,7 @@ attribute `g_play_stat_fec`. The attribution lives in opus_gapfill.c (host-
 tested against the vendored esp-libopus by tests/host/run_gapfill_tests.sh);
 media.cpp must call it and must not re-grow a private decode_fec branch.
 """
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,8 +20,10 @@ def test_media_routes_gap_fill_through_opus_gapfill() -> None:
     start = MEDIA.index("void pipecat_audio_decode(")
     end = MEDIA.index("static OpusEncoder *opus_encoder", start)
     body = MEDIA[start:end]
-    assert "opus_gapfill_recover_one(opus_decoder, data, size," in body
-    assert "&g_play_stat_fec, &g_play_stat_plc" in body
+    # clang-format re-wraps call arguments, so compare whitespace-free text.
+    flat = re.sub(r"\s+", "", body)
+    assert "opus_gapfill_recover_one(opus_decoder,data,size," in flat
+    assert "&g_play_stat_fec,&g_play_stat_plc)" in flat
     # No private decode_fec=1 call left in media.cpp: that is the conflation.
     assert "1 /* decode_fec */" not in body
     assert "fec_size" not in body
@@ -41,3 +44,11 @@ def test_playback_stats_field_names_unchanged() -> None:
     # /playback/stats is user-visible and read by transport_conformance_check.py.
     ota = (SRC / "ota.cpp").read_text()
     assert "g_play_stat_plc" in ota and "g_play_stat_fec" in ota
+
+
+if __name__ == "__main__":
+    # CI's host-tests job runs run_*.sh with a bare python3 (no pytest).
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+    print("opus_gapfill source contract: PASS")

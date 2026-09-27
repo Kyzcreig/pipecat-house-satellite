@@ -40,10 +40,14 @@ int opus_gapfill_recover_one(OpusDecoder *dec, const unsigned char *data,
   /* Route on what the packet CARRIES, not on whether opus_decode "succeeded":
    * with decode_fec=1 libopus silently runs PLC for a no-LBRR packet and
    * returns a positive count, so the return value cannot attribute. `== 1`
-   * on purpose — a malformed packet (<0) is not FEC either. */
+   * on purpose — a malformed packet (<0) is not FEC either. If the FEC
+   * decode itself fails, fall back to PLC so the ring still gets a frame. */
   if (opus_gapfill_packet_has_lbrr(data, len) == 1) {
-    (*fec)++;
-    return opus_decode(dec, data, len, pcm, frame_size, 1 /* decode_fec */);
+    int n = opus_decode(dec, data, len, pcm, frame_size, 1 /* decode_fec */);
+    if (n > 0) {
+      (*fec)++;
+      return n;
+    }
   }
   (*plc)++;
   return opus_decode(dec, NULL, 0, pcm, frame_size, 0);

@@ -34,3 +34,4 @@ done
   "$ROOT/tests/host/test_opus_gapfill.c" "$SRC/opus_gapfill.c" "$OUT"/opus_*.o \
   -lm -o "$OUT/test_opus_gapfill"
 "$OUT/test_opus_gapfill" "$FIX"
+python3 "$ROOT/tests/host/test_opus_gapfill_source.py"
