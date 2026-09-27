@@ -1532,6 +1532,7 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 
 // Gap accounting + adaptive prebuffer controller (host-testable pure C —
 // tests/host/test_prebuffer_ctl.c).
+#include "opus_gapfill.h"
 #include "prebuffer_ctl.h"
 #ifndef PIPECAT_ADAPTIVE_PREBUFFER
 #define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
@@ -1752,15 +1753,17 @@ void pipecat_reset_audio_decoder() {
 }
 
 static uint32_t s_pending_gap = 0;  // gaps signaled but not yet filled
-volatile uint32_t g_play_stat_fec =
-    0;  // gaps recovered via in-band FEC (real audio)
+// gaps recovered via in-band FEC (real audio; only when the next packet
+// carries LBRR)
+volatile uint32_t g_play_stat_fec = 0;
 
 void pipecat_audio_decode(uint8_t *data, size_t size) {
   // NULL data = gap signal from the vendored libpeer rtp.c: one RTP packet
   // (20ms opus frame) was lost in transit. Recovery ladder (2026-07-09b):
-  //   1. single gap + FEC-enabled encoder -> decode the redundant copy
-  //      embedded in the NEXT packet (opus in-band FEC): REAL audio.
-  //   2. multi-gap / no next packet -> opus_decode(NULL) PLC synthesis.
+  //   1. single gap + NEXT packet carries LBRR -> decode the redundant copy
+  //      embedded in it (opus in-band FEC): REAL audio.
+  //   2. multi-gap / no next packet / next packet has no LBRR ->
+  //      opus_decode(NULL) PLC synthesis.
   // The server encoder ships fec=1,packet_loss=10 (aiortc monkey-patch in
   // webrtc_server.py) — 94% of measured gap events are single-packet, the
   // exact profile in-band FEC exists for.
@@ -1781,20 +1784,19 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
         push_decoded_to_ring(decoder_buffer, plc_size);
       }
     }
-    int fec_size = opus_decode(opus_decoder, data, size, decoder_buffer,
-                               PCM_SAMPLES_PER_FRAME, 1 /* decode_fec */);
+    // FEC vs PLC is decided by whether THIS packet carries LBRR, not by the
+    // opus_decode return value: with decode_fec=1 libopus runs PLC internally
+    // for a no-LBRR packet and still returns a positive count (measured: 62%
+    // of live downlink packets carry no LBRR — t_5730dda1). The routing +
+    // counter attribution live in opus_gapfill.c so the host test
+    // (tests/host/run_gapfill_tests.sh) exercises the exact code path
+    // against the vendored esp-libopus.
     s_pending_gap = 0;
-    if (fec_size > 0) {
-      g_play_stat_fec++;
-      push_decoded_to_ring(decoder_buffer, fec_size);
-    } else {
-      // Encoder had no FEC data — fall back to PLC for the lost frame.
-      int plc_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
-                                 PCM_SAMPLES_PER_FRAME, 0);
-      g_play_stat_plc++;
-      if (plc_size > 0) {
-        push_decoded_to_ring(decoder_buffer, plc_size);
-      }
+    int fill_size = opus_gapfill_recover_one(
+        opus_decoder, data, size, decoder_buffer, PCM_SAMPLES_PER_FRAME,
+        &g_play_stat_fec, &g_play_stat_plc);
+    if (fill_size > 0) {
+      push_decoded_to_ring(decoder_buffer, fill_size);
     }
   }
 

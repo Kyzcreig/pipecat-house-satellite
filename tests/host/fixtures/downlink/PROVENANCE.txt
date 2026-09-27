@@ -1,0 +1,8 @@
+downlink fixture provenance
+source wav: cmdaudio_room_t0_1788521450_94720b.wav (sha256 bf8263c0c6031c69, 47360 samples @16k mono)
+encoder: PyAV libopus, application=voip fec=1 packet_loss=10, 48k stereo, 96000 bps
+          (= aiortc OpusEncoder + webrtc_server.py import-time patch, the LIVE downlink)
+oracle: libopus libopus 1.6.1 opus_packet_has_lbrr()
+packets: 148 (capped at 400); toc configs [13, 15]
+with_LBRR=58 (39.2%)  without_LBRR=90 (60.8%)
+stream sha256: 2f33baca0c852b911df6ac1445f6c171f5567acb1f908b31b2ab3821433722e1
