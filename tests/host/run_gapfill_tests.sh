@@ -12,6 +12,10 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 if [ ! -f "$OPUS/include/opus.h" ]; then
+  # CI's actions/checkout does not fetch submodules; fetch just this one.
+  git -C "$ROOT" submodule update --init esp32-s3-box-3/components/esp-libopus >&2 || true
+fi
+if [ ! -f "$OPUS/include/opus.h" ]; then
   echo "esp-libopus submodule is empty — run: git submodule update --init --recursive" >&2
   exit 2
 fi
