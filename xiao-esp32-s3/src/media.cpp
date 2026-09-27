@@ -1427,6 +1427,33 @@ static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
   }
 }
 
+// ── 48->16 kHz decimator droop compensation (t_1ce88efe) ──────────────────
+// Build-gated so the flash can be A/B'd against the same image with the knob
+// off, and so a regression is one rebuild away from reverted. Default ON in
+// this lineage; -DPIPECAT_DECIM_COMP=0 restores bit-identical pre-change
+// capture behaviour.
+#ifndef PIPECAT_DECIM_COMP
+#define PIPECAT_DECIM_COMP 1
+#endif
+#if PIPECAT_DECIM_COMP
+#include "decim_comp.h"
+// One state per CHANNEL: the dual-stream lane carries two DIFFERENT XVF
+// categories (cat-7 clean on left, cat-6 suppressed on right, D-41), so a
+// shared history would cross-talk them. The mono build uses _l only.
+static decim_comp s_decim_comp_l;
+static decim_comp s_decim_comp_r;
+#endif
+// Per-frame cost instrumentation. The audio publisher task does ONLY
+// i2s_read + opus_encode + RTP send; anything added here can starve the RTP
+// publisher (that exact failure caused server-side "No audio frame" timeouts
+// and peer churn — see the NOTE at the opus_encode call). These counters make
+// the cost a measured fact on /playback/stats instead of an assumption, and
+// they are compiled in even when the filter is off (they then read zero).
+volatile uint32_t g_decim_comp_last_us = 0;
+volatile uint32_t g_decim_comp_max_us = 0;
+volatile uint32_t g_decim_comp_frames = 0;
+volatile uint64_t g_decim_comp_total_us = 0;
+
 static void fill_bench_tone(int16_t *dst, size_t samples) {
   static uint32_t phase = 0;
   for (size_t i = 0; i < samples; i++) {
@@ -1825,6 +1852,13 @@ void pipecat_init_audio_encoder() {
 #else
   read_buffer = (int16_t *)heap_caps_malloc(PCM_BUFFER_SIZE, MALLOC_CAP_8BIT);
 #endif
+#if PIPECAT_DECIM_COMP
+  // Zero the compensator histories before the first frame. Both are init'd
+  // regardless of build variant so a later mono/dual flip cannot leave stale
+  // state behind.
+  decim_comp_init(&s_decim_comp_l);
+  decim_comp_init(&s_decim_comp_r);
+#endif
   i2s_capture_buffer =
       (int32_t *)heap_caps_malloc(BOARD_FRAME_BYTES, MALLOC_CAP_DMA);
   encoder_output_buffer = (uint8_t *)malloc(OPUS_BUFFER_SIZE);
@@ -1883,6 +1917,28 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
 #else
     stereo_48k_32bit_to_mono_16k(i2s_capture_buffer,
                                  bytes_read / sizeof(int32_t), read_buffer);
+#endif
+#if PIPECAT_DECIM_COMP
+    // Undo the 3-tap boxcar's passband droop (-0.81/-1.89/-3.05 dB at
+    // 4/6/7.5 kHz) at 16 kHz, where it costs a third of the arithmetic it
+    // would cost at 48 kHz and the boxcar's exact 16k/32k anti-imaging nulls
+    // stay structurally intact. See decim_comp.h for why the decimator itself
+    // is NOT replaced. Timed below and reported on /playback/stats.
+    {
+      int64_t t0 = esp_timer_get_time();
+#if PIPECAT_DUAL_STREAM
+      decim_comp_run_stereo(&s_decim_comp_l, &s_decim_comp_r, read_buffer,
+                            PCM_SAMPLES_PER_FRAME);
+#else
+      decim_comp_run(&s_decim_comp_l, read_buffer, PCM_SAMPLES_PER_FRAME);
+#endif
+      uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+      g_decim_comp_last_us = dt;
+      g_decim_comp_total_us += dt;
+      g_decim_comp_frames++;
+      if (dt > g_decim_comp_max_us)
+        g_decim_comp_max_us = dt;
+    }
 #endif
 #if PIPECAT_DUAL_STREAM
     for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME * 2; i++) {
