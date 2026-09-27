@@ -1532,8 +1532,8 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 
 // Gap accounting + adaptive prebuffer controller (host-testable pure C —
 // tests/host/test_prebuffer_ctl.c).
-#include "prebuffer_ctl.h"
 #include "opus_gapfill.h"
+#include "prebuffer_ctl.h"
 #ifndef PIPECAT_ADAPTIVE_PREBUFFER
 #define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
 #endif
@@ -1792,9 +1792,9 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
     // (tests/host/run_gapfill_tests.sh) exercises the exact code path
     // against the vendored esp-libopus.
     s_pending_gap = 0;
-    int fill_size = opus_gapfill_recover_one(opus_decoder, data, size,
-                                             decoder_buffer, PCM_SAMPLES_PER_FRAME,
-                                             &g_play_stat_fec, &g_play_stat_plc);
+    int fill_size = opus_gapfill_recover_one(
+        opus_decoder, data, size, decoder_buffer, PCM_SAMPLES_PER_FRAME,
+        &g_play_stat_fec, &g_play_stat_plc);
     if (fill_size > 0) {
       push_decoded_to_ring(decoder_buffer, fill_size);
     }

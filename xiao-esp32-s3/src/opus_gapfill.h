@@ -19,10 +19,9 @@
 #ifndef OPUS_GAPFILL_H
 #define OPUS_GAPFILL_H
 
+#include <opus.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include <opus.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,7 +36,8 @@ int opus_gapfill_packet_has_lbrr(const unsigned char *packet, int32_t len);
 /* Recover ONE lost frame that immediately preceded `data` (the next packet
  * to arrive). Decodes into `pcm` (frame_size samples of the decoder's channel
  * count) and increments exactly one of *fec / *plc:
- *   - packet carries LBRR  -> opus_decode(data, decode_fec=1): REAL audio, *fec++
+ *   - packet carries LBRR  -> opus_decode(data, decode_fec=1): REAL audio,
+ * *fec++
  *   - otherwise            -> opus_decode(NULL) PLC synthesis,           *plc++
  * Returns the decoded sample count (<=0 on decoder error; counters are still
  * attributed by the LBRR verdict, so a failed FEC decode is not a PLC). */

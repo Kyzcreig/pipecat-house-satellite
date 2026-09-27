@@ -14,17 +14,23 @@ int opus_gapfill_packet_has_lbrr(const unsigned char *packet, int32_t len) {
   int nb_frames = 1;
   int lbrr;
 
-  if (len < 1) return OPUS_BAD_ARG;
+  if (len < 1)
+    return OPUS_BAD_ARG;
   /* TOC config >= 16 (top bit set) is CELT-only: no LBRR ever. */
-  if (packet[0] & 0x80) return 0;
+  if (packet[0] & 0x80)
+    return 0;
   int frame_size = opus_packet_get_samples_per_frame(packet, 48000);
-  if (frame_size > 960) nb_frames = frame_size / 960;
+  if (frame_size > 960)
+    nb_frames = frame_size / 960;
   int stream_channels = opus_packet_get_nb_channels(packet);
   int ret = opus_packet_parse(packet, len, NULL, frames, size, NULL);
-  if (ret <= 0) return ret < 0 ? ret : OPUS_INVALID_PACKET;
-  if (size[0] < 1) return 0; /* empty SILK frame (DTX) carries nothing */
+  if (ret <= 0)
+    return ret < 0 ? ret : OPUS_INVALID_PACKET;
+  if (size[0] < 1)
+    return 0; /* empty SILK frame (DTX) carries nothing */
   lbrr = (frames[0][0] >> (7 - nb_frames)) & 0x1;
-  if (stream_channels == 2) lbrr = lbrr || ((frames[0][0] >> (6 - 2 * nb_frames)) & 0x1);
+  if (stream_channels == 2)
+    lbrr = lbrr || ((frames[0][0] >> (6 - 2 * nb_frames)) & 0x1);
   return lbrr;
 }
 
