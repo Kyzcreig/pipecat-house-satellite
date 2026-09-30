@@ -548,10 +548,17 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     return httpd_resp_sendstr(req, reset_body);
   }
 
-  char body[512] = {0};
-  size_t used = static_cast<size_t>(
-      snprintf(body, sizeof(body), "{\"xvf_version\":\"%s\",\"params\":{",
-               pipecat_xvf3800_version()));
+  // Heap, not the 4 KB httpd task stack (same rule as playback_stats).
+  static constexpr size_t kParamsBodyCapacity = 1024;
+  char *body = static_cast<char *>(calloc(1, kParamsBodyCapacity));
+  if (body == nullptr) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(
+        req, "{\"error\":\"Unable to allocate params response\"}");
+  }
+  size_t used = static_cast<size_t>(snprintf(
+      body, kParamsBodyCapacity, "{\"xvf_version\":\"%s\",\"params\":{",
+      pipecat_xvf3800_version()));
   uint32_t count = 0;
   nvs_handle_t nvs;
   esp_err_t open_ret = nvs_open(DSP_NVS_NAMESPACE, NVS_READONLY, &nvs);
@@ -567,13 +574,15 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
         continue;
       }
       int written = isfinite(value)
-                        ? snprintf(body + used, sizeof(body) - used,
+                        ? snprintf(body + used, kParamsBodyCapacity - used,
                                    "%s\"%s\":%.9g", count ? "," : "", param,
                                    (double)value)
-                        : snprintf(body + used, sizeof(body) - used,
+                        : snprintf(body + used, kParamsBodyCapacity - used,
                                    "%s\"%s\":null", count ? "," : "", param);
-      if (written < 0 || static_cast<size_t>(written) >= sizeof(body) - used) {
+      if (written < 0 ||
+          static_cast<size_t>(written) >= kParamsBodyCapacity - used) {
         nvs_close(nvs);
+        free(body);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req,
                                   "{\"error\":\"params response overflow\"}");
@@ -583,6 +592,7 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     }
     nvs_close(nvs);
   } else if (open_ret != ESP_ERR_NVS_NOT_FOUND) {
+    free(body);
     httpd_resp_set_status(req, "500 Internal Server Error");
     char error_body[96];
     snprintf(error_body, sizeof(error_body),
@@ -591,10 +601,35 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     return httpd_resp_sendstr(req, error_body);
   }
 
-  snprintf(body + used, sizeof(body) - used, "},\"count\":%lu}",
-           (unsigned long)count);
+  // Read-only firmware build identity + unattended-recovery state
+  // (t_9d8fad45): which source commit is live, when it was compiled, and
+  // where the boot guard / network watchdog ladder stands.
+  const esp_app_desc_t *app = esp_app_get_description();
+  int tail =
+      snprintf(body + used, kParamsBodyCapacity - used,
+               "},\"count\":%lu,"
+               "\"build\":{\"git_sha\":\"%s\",\"dirty\":%s,\"version\":\"%s\","
+               "\"built\":\"%s %s\",\"idf\":\"%s\"},"
+               "\"boot_guard\":{\"reset_reason\":\"%s\",\"fault_boots\":%u,"
+               "\"boots_since_poweron\":%u,\"netwdt_restarts\":%u,"
+               "\"net_watchdog_s\":%u,\"uptime_s\":%lld}}",
+               (unsigned long)count, PIPECAT_BUILD_GIT_SHA,
+               PIPECAT_BUILD_GIT_DIRTY ? "true" : "false", app->version,
+               app->date, app->time, app->idf_ver, pipecat_reset_reason_name(),
+               (unsigned)pipecat_boot_fault_count(),
+               (unsigned)pipecat_boots_since_poweron(),
+               (unsigned)pipecat_netwdt_restarts(),
+               (unsigned)pipecat_net_watchdog_deadline_s(),
+               (long long)(esp_timer_get_time() / 1000000LL));
+  if (tail < 0 || static_cast<size_t>(tail) >= kParamsBodyCapacity - used) {
+    free(body);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"params response overflow\"}");
+  }
   httpd_resp_set_type(req, "application/json");
-  return httpd_resp_sendstr(req, body);
+  esp_err_t sent = httpd_resp_sendstr(req, body);
+  free(body);
+  return sent;
 }
 
 // GET /xvf/read?param=<name> — non-mutating typed register read for exact
