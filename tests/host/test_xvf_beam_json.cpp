@@ -10,6 +10,8 @@ static void test_serializes_finite_sample() {
       {0.0f, 1.5f, -2.0f, 3.25f},
       {4.5f, 5.0f},
       {6.0f, 7.0f, 8.0f, 9.0f},
+      0.625f,
+      1.0f,
   };
   char body[384];
 
@@ -17,7 +19,8 @@ static void test_serializes_finite_sample() {
   assert(strcmp(body,
                 "{\"ok\":true,\"azimuth\":[0,1.5,-2,3.25],"
                 "\"selected_azimuth\":[4.5,5],"
-                "\"spenergy\":[6,7,8,9]}") == 0);
+                "\"spenergy\":[6,7,8,9],"
+                "\"rt60_s\":0.625,\"aec_converged\":1}") == 0);
 }
 
 static void test_nonfinite_values_are_json_null() {
@@ -25,13 +28,16 @@ static void test_nonfinite_values_are_json_null() {
   telemetry.azimuth[1] = INFINITY;
   telemetry.selected_azimuth[0] = NAN;
   telemetry.spenergy[3] = -INFINITY;
+  telemetry.rt60_s = NAN;
+  telemetry.aec_converged = NAN;
   char body[384];
 
   assert(pipecat_xvf_beam_json(&telemetry, body, sizeof(body)));
   assert(strcmp(body,
                 "{\"ok\":true,\"azimuth\":[0,null,0,0],"
                 "\"selected_azimuth\":[null,0],"
-                "\"spenergy\":[0,0,0,null]}") == 0);
+                "\"spenergy\":[0,0,0,null],"
+                "\"rt60_s\":null,\"aec_converged\":null}") == 0);
 }
 
 static void test_rejects_short_output_buffer() {

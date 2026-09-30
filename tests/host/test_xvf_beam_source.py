@@ -37,14 +37,14 @@ assert "pipecat_xvf_read_beam" in MAIN_H
 # Every HTTP poll performs all three device reads, independent of LED/assistant phase.
 assert "XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS = 11" in MEDIA
 read_body = function_body(MEDIA, "esp_err_t pipecat_xvf_read_beam(")
-read_tokens = re.sub(r"\(\s+", "(", re.sub(r"\s+", " ", read_body))  # layout-independent
+read_tokens = re.sub(r"\s+", " ", read_body)
 presence_guard = "if (!xvf3800_present || !xvf_beam_telemetry_supported)"
 assert presence_guard in read_tokens
 assert read_tokens.index(presence_guard) < read_tokens.index("xvf_read_floats(")
 required_reads = [
-    "xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4)",
-    "xvf_read_floats(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS, telemetry->selected_azimuth, 2)",
-    "xvf_read_floats(XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4)",
+    "xvf_read_floats( XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES, telemetry->azimuth, 4)",
+    "xvf_read_floats( XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS, telemetry->selected_azimuth, 2)",
+    "xvf_read_floats( XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4)",
 ]
 for read in required_reads:
     assert read in read_tokens
@@ -63,7 +63,7 @@ append_body = function_body(BEAM_JSON, "static bool append_json_float(")
 assert "isfinite(value)" in append_body
 assert '"null%s"' in append_body
 serializer_body = function_body(BEAM_JSON, "bool pipecat_xvf_beam_json(")
-assert serializer_body.count("append_json_float(") == 10
+assert serializer_body.count("append_json_float(") == 12
 handler_body = function_body(OTA, "static esp_err_t xvf_beam_handler(")
 assert "pipecat_xvf_read_beam(&telemetry)" in handler_body
 assert "pipecat_xvf_beam_json(&telemetry, body, sizeof(body))" in handler_body
@@ -71,6 +71,16 @@ assert '"503 Service Unavailable"' in handler_body
 assert r'\"azimuth\"' in serializer_body
 assert r'\"selected_azimuth\"' in serializer_body
 assert r'\"spenergy\"' in serializer_body
+assert r'\"rt60_s\"' in serializer_body
+assert r'\"aec_converged\"' in serializer_body
+assert "float rt60_s;" in BEAM_H
+assert "float aec_converged;" in BEAM_H
+
+# AEC health scalars are best-effort (NaN -> null), never a reason to 503.
+assert "xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_RT60, true, &scalar)" in read_tokens
+assert "xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_AECCONVERGED, false, &scalar)" in read_tokens
+assert "telemetry->rt60_s = NAN;" in read_tokens
+assert "telemetry->aec_converged = NAN;" in read_tokens
 
 server_body = function_body(OTA, "void pipecat_init_ota_server()")
 assert '.uri = "/xvf/beam"' in server_body

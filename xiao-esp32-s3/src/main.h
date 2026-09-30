@@ -40,6 +40,10 @@ extern esp_err_t pipecat_xvf_tune(const char *param, float value,
 extern esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
                                         bool *readback_valid);
 extern esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry);
+// Read-only XVF diagnostic register by XMOS control name (case-insensitive).
+// No write path, no NVS. ESP_ERR_NOT_FOUND = not a diag register.
+extern esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
+                                       size_t max_values, size_t *count);
 extern bool pipecat_xvf_param_persistent(const char *param);
 extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);
