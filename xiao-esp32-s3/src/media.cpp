@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
@@ -105,6 +106,15 @@ static constexpr uint8_t XVF_CMD_AEC_ASROUTONOFF = 35;
 static constexpr uint8_t XVF_CMD_AEC_FIXEDBEAMSONOFF = 37;
 static constexpr uint8_t XVF_CMD_AEC_AZIMUTH_VALUES = 75;
 static constexpr uint8_t XVF_CMD_AEC_SPENERGY_VALUES = 80;
+// Read-only AEC diagnostics (XMOS XVF3800 control map, RESID 33).
+static constexpr uint8_t XVF_CMD_AEC_AECPATHCHANGE = 0;
+static constexpr uint8_t XVF_CMD_AEC_AECCONVERGED = 3;
+static constexpr uint8_t XVF_CMD_AEC_RT60 = 9;
+static constexpr uint8_t XVF_CMD_AEC_NUM_MICS = 71;
+static constexpr uint8_t XVF_CMD_AEC_NUM_FARENDS = 72;
+static constexpr uint8_t XVF_CMD_AEC_CURRENT_IDLE_TIME = 77;
+static constexpr uint8_t XVF_CMD_AEC_MIN_IDLE_TIME = 78;
+static constexpr uint8_t XVF_CMD_AEC_FILTER_LENGTH = 93;
 
 // --- LED ring + mute (GPO servicer), ported from ESPHome respeaker_xvf3800 ---
 // The 12-LED ring and the mute GPIO are driven by the XVF3800 (XMOS) chip over
@@ -150,6 +160,9 @@ static constexpr uint8_t XVF_LED_COUNT = 12;
 
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIC_GAIN = 0;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_REF_GAIN = 1;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_CURRENT_IDLE_TIME = 2;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_MIN_IDLE_TIME = 3;
+static constexpr uint8_t XVF_CMD_AUDIO_MGR_MAX_CONTROL_TIME = 5;
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS = 11;
 #if PIPECAT_DUAL_STREAM
 static constexpr uint8_t XVF_CMD_AUDIO_MGR_OP_UPSAMPLE = 14;
@@ -658,6 +671,19 @@ esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry) {
       telemetry->selected_azimuth, 2);
   esp_err_t spenergy_ret = xvf_read_floats(
       XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES, telemetry->spenergy, 4);
+  // AEC health scalars are best-effort: a failed read is JSON null, never a
+  // 503, so the long-standing 4/2/4 beam contract cannot regress on them.
+  telemetry->rt60_s = NAN;
+  telemetry->aec_converged = NAN;
+  float scalar = 0.0f;
+  if (xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_RT60, true, &scalar) ==
+      ESP_OK) {
+    telemetry->rt60_s = scalar;
+  }
+  if (xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_AECCONVERGED, false,
+                      &scalar) == ESP_OK) {
+    telemetry->aec_converged = scalar;
+  }
   if (azimuth_ret != ESP_OK) {
     return azimuth_ret;
   }
@@ -665,6 +691,94 @@ esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry) {
     return selected_ret;
   }
   return spenergy_ret;
+}
+
+// READ-ONLY diagnostic registers, served by GET /xvf/read when the name is not
+// a tune param. This table has no write path, no NVS key and no boot replay:
+// pipecat_xvf_read_diag() only ever issues xvf_read_* transactions. Names are
+// the XMOS control-map names (matched case-insensitively). Source of truth:
+// Obsidian "XVF3800 - Complete Device Reference" control rows (all RO rows).
+enum class DiagType : uint8_t { FLOAT, INT32, UINT32 };
+
+struct DiagEntry {
+  const char *name;
+  uint8_t resid;
+  uint8_t cmd;
+  DiagType type;
+  uint8_t count;
+};
+
+static const DiagEntry kDiagEntries[] = {
+    {"AEC_AECPATHCHANGE", XVF_RESID_AEC, XVF_CMD_AEC_AECPATHCHANGE,
+     DiagType::INT32, 1},
+    {"AEC_AECCONVERGED", XVF_RESID_AEC, XVF_CMD_AEC_AECCONVERGED,
+     DiagType::INT32, 1},
+    {"AEC_RT60", XVF_RESID_AEC, XVF_CMD_AEC_RT60, DiagType::FLOAT, 1},
+    {"AEC_NUM_MICS", XVF_RESID_AEC, XVF_CMD_AEC_NUM_MICS, DiagType::INT32, 1},
+    {"AEC_NUM_FARENDS", XVF_RESID_AEC, XVF_CMD_AEC_NUM_FARENDS,
+     DiagType::INT32, 1},
+    {"AEC_AZIMUTH_VALUES", XVF_RESID_AEC, XVF_CMD_AEC_AZIMUTH_VALUES,
+     DiagType::FLOAT, 4},
+    {"AEC_CURRENT_IDLE_TIME", XVF_RESID_AEC, XVF_CMD_AEC_CURRENT_IDLE_TIME,
+     DiagType::UINT32, 1},
+    {"AEC_MIN_IDLE_TIME", XVF_RESID_AEC, XVF_CMD_AEC_MIN_IDLE_TIME,
+     DiagType::UINT32, 1},
+    {"AEC_SPENERGY_VALUES", XVF_RESID_AEC, XVF_CMD_AEC_SPENERGY_VALUES,
+     DiagType::FLOAT, 4},
+    {"SPECIAL_CMD_AEC_FILTER_LENGTH", XVF_RESID_AEC, XVF_CMD_AEC_FILTER_LENGTH,
+     DiagType::INT32, 1},
+    {"AUDIO_MGR_CURRENT_IDLE_TIME", XVF_RESID_AUDIO_MGR,
+     XVF_CMD_AUDIO_MGR_CURRENT_IDLE_TIME, DiagType::INT32, 1},
+    {"AUDIO_MGR_MIN_IDLE_TIME", XVF_RESID_AUDIO_MGR,
+     XVF_CMD_AUDIO_MGR_MIN_IDLE_TIME, DiagType::INT32, 1},
+    {"MAX_CONTROL_TIME", XVF_RESID_AUDIO_MGR,
+     XVF_CMD_AUDIO_MGR_MAX_CONTROL_TIME, DiagType::INT32, 1},
+    {"AUDIO_MGR_SELECTED_AZIMUTHS", XVF_RESID_AUDIO_MGR,
+     XVF_CMD_AUDIO_MGR_SELECTED_AZIMUTHS, DiagType::FLOAT, 2},
+};
+
+esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
+                                size_t max_values, size_t *count) {
+  if (param == nullptr || values == nullptr || count == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *count = 0;
+  const DiagEntry *entry = nullptr;
+  for (const auto &candidate : kDiagEntries) {
+    if (strcasecmp(param, candidate.name) == 0) {
+      entry = &candidate;
+      break;
+    }
+  }
+  if (entry == nullptr) {
+    return ESP_ERR_NOT_FOUND;
+  }
+  if (entry->count > max_values) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  if (!xvf3800_present) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  esp_err_t ret = ESP_OK;
+  if (entry->type == DiagType::FLOAT) {
+    ret = xvf_read_floats(entry->resid, entry->cmd, values, entry->count);
+  } else {
+    uint8_t payload[sizeof(uint32_t)] = {};
+    if (entry->count != 1) {
+      return ESP_ERR_INVALID_SIZE;
+    }
+    ret = xvf_read_bytes(entry->resid, entry->cmd, payload, sizeof(payload));
+    if (ret == ESP_OK) {
+      uint32_t bits = load_le32(payload);
+      values[0] = entry->type == DiagType::UINT32
+                      ? static_cast<float>(bits)
+                      : static_cast<float>(static_cast<int32_t>(bits));
+    }
+  }
+  if (ret == ESP_OK) {
+    *count = entry->count;
+  }
+  return ret;
 }
 
 static int azimuth_to_led(float radians) {

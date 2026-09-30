@@ -63,7 +63,7 @@ append_body = function_body(BEAM_JSON, "static bool append_json_float(")
 assert "isfinite(value)" in append_body
 assert '"null%s"' in append_body
 serializer_body = function_body(BEAM_JSON, "bool pipecat_xvf_beam_json(")
-assert serializer_body.count("append_json_float(") == 10
+assert serializer_body.count("append_json_float(") == 12
 handler_body = function_body(OTA, "static esp_err_t xvf_beam_handler(")
 assert "pipecat_xvf_read_beam(&telemetry)" in handler_body
 assert "pipecat_xvf_beam_json(&telemetry, body, sizeof(body))" in handler_body
@@ -71,6 +71,16 @@ assert '"503 Service Unavailable"' in handler_body
 assert r'\"azimuth\"' in serializer_body
 assert r'\"selected_azimuth\"' in serializer_body
 assert r'\"spenergy\"' in serializer_body
+assert r'\"rt60_s\"' in serializer_body
+assert r'\"aec_converged\"' in serializer_body
+assert "float rt60_s;" in BEAM_H
+assert "float aec_converged;" in BEAM_H
+
+# AEC health scalars are best-effort (NaN -> null), never a reason to 503.
+assert "xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_RT60, true, &scalar)" in read_tokens
+assert "xvf_read_scalar(XVF_RESID_AEC, XVF_CMD_AEC_AECCONVERGED, false, &scalar)" in read_tokens
+assert "telemetry->rt60_s = NAN;" in read_tokens
+assert "telemetry->aec_converged = NAN;" in read_tokens
 
 server_body = function_body(OTA, "void pipecat_init_ota_server()")
 assert '.uri = "/xvf/beam"' in server_body

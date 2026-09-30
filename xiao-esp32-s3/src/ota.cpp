@@ -612,7 +612,7 @@ static esp_err_t xvf_read_handler(httpd_req_t *req) {
   bool readback_valid = false;
   esp_err_t ret =
       pipecat_xvf_read_param(param, &readback, &readback_valid);
-  char body[160];
+  char body[256];
   if (ret == ESP_OK) {
     if (readback_valid) {
       snprintf(body, sizeof(body),
@@ -624,6 +624,38 @@ static esp_err_t xvf_read_handler(httpd_req_t *req) {
     }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, body);
+  }
+  if (ret == ESP_ERR_NOT_FOUND) {
+    // Not a tune param: try the READ-ONLY diagnostic register table.
+    float values[4] = {};
+    size_t count = 0;
+    ret = pipecat_xvf_read_diag(param, values, 4, &count);
+    if (ret == ESP_OK) {
+      int used = snprintf(body, sizeof(body),
+                          "{\"ok\":true,\"param\":\"%s\",\"readonly\":true,"
+                          "\"readback\":%s",
+                          param, count > 1 ? "[" : "");
+      for (size_t i = 0; i < count && used > 0 &&
+                         static_cast<size_t>(used) < sizeof(body);
+           i++) {
+        const char *sep = i + 1 < count ? "," : "";
+        used += isfinite(values[i])
+                    ? snprintf(body + used, sizeof(body) - used, "%.9g%s",
+                               (double)values[i], sep)
+                    : snprintf(body + used, sizeof(body) - used, "null%s", sep);
+      }
+      if (used > 0 && static_cast<size_t>(used) < sizeof(body)) {
+        used += snprintf(body + used, sizeof(body) - used, "%s}",
+                         count > 1 ? "]" : "");
+      }
+      if (used <= 0 || static_cast<size_t>(used) >= sizeof(body)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req,
+                                  "{\"error\":\"read response overflow\"}");
+      }
+      httpd_resp_set_type(req, "application/json");
+      return httpd_resp_sendstr(req, body);
+    }
   }
   if (ret == ESP_ERR_NOT_FOUND) {
     httpd_resp_set_status(req, "404 Not Found");
