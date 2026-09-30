@@ -62,9 +62,18 @@ const char *pipecat_reset_reason_name() {
     default: return "unknown";
   }
 }
-uint32_t pipecat_boot_fault_count() { return s_boot_fault_count; }
-uint32_t pipecat_boots_since_poweron() { return s_boot_guard.total_boots; }
-uint32_t pipecat_net_watchdog_deadline_s() { return s_net_deadline_ms / 1000; }
+uint32_t pipecat_boot_fault_count() {
+  return s_boot_fault_count;
+}
+uint32_t pipecat_boots_since_poweron() {
+  return s_boot_guard.total_boots;
+}
+uint32_t pipecat_netwdt_restarts() {
+  return s_boot_guard.netwdt_restarts;
+}
+uint32_t pipecat_net_watchdog_deadline_s() {
+  return s_net_deadline_ms / 1000;
+}
 
 // Network watchdog. Armed BEFORE any blocking init so it also covers a stuck
 // Wi-Fi join or a wedged peripheral init -- the stock reconnect watchdog only
