@@ -81,6 +81,9 @@ static constexpr uint8_t XVF3800_ADDR = 0x2C;
 static constexpr uint8_t XVF_RESID_DFU_CONTROLLER = 240;
 static constexpr uint8_t XVF_CMD_DFU_GETVERSION = 88;
 static constexpr uint8_t XVF_READ_BIT = 0x80;
+// Largest read payload: SPECIAL_CMD_AEC_FILTER_COEFFS is 15 floats = 60 bytes
+// (+1 status byte on the wire). Was 31 before t_c1bfa4f6.
+static constexpr size_t XVF_READ_MAX_PAYLOAD = 60;
 
 static constexpr uint8_t XVF_RESID_PP = 17;
 static constexpr uint8_t XVF_RESID_AEC = 33;
@@ -284,13 +287,13 @@ static esp_err_t xvf_read_bytes(uint8_t resid, uint8_t cmd, uint8_t *out,
   if (xvf3800 == nullptr) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (out_len > 31) {
+  if (out_len > XVF_READ_MAX_PAYLOAD) {
     return ESP_ERR_INVALID_SIZE;
   }
 
   uint8_t req[3] = {resid, static_cast<uint8_t>(cmd | XVF_READ_BIT),
                     static_cast<uint8_t>(out_len + 1)};
-  uint8_t resp[32] = {};
+  uint8_t resp[XVF_READ_MAX_PAYLOAD + 1] = {};
   // ESP-IDF 5.5 serializes master operations with the I2C bus semaphore, so
   // this transaction is safe from both the HTTP and LED tasks.
   for (int attempt = 0; attempt < XVF_CONTROL_RETRIES; attempt++) {
@@ -779,6 +782,53 @@ esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
     *count = entry->count;
   }
   return ret;
+}
+
+// AEC filter-coefficient read (t_c1bfa4f6). Sequence + rationale live in
+// xvf_aec_filter.h. The ONLY writes are the XMOS read-sequence selectors
+// (FAR_MIC_INDEX, COEFF_START_OFFSET) and the ABORT reset; no coefficient,
+// tune param or NVS key is ever written.
+static int aec_filter_write_i32(void *, uint8_t cmd, const int32_t *values,
+                                size_t count) {
+  uint8_t payload[2 * sizeof(int32_t)] = {};
+  if (count == 0 || count > 2) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < count; i++) {
+    store_le32(&payload[i * sizeof(int32_t)], static_cast<uint32_t>(values[i]));
+  }
+  return xvf_write_bytes(XVF_RESID_AEC, cmd, payload, count * sizeof(int32_t));
+}
+
+static int aec_filter_read_bytes(void *, uint8_t cmd, uint8_t *out,
+                                 size_t len) {
+  return xvf_read_bytes(XVF_RESID_AEC, cmd, out, len);
+}
+
+static int64_t aec_filter_now_us(void *) { return esp_timer_get_time(); }
+
+static void aec_filter_yield(void *) { vTaskDelay(1); }
+
+esp_err_t pipecat_xvf_read_aec_filter(int32_t far, int32_t mic, float *out,
+                                      size_t out_capacity,
+                                      XvfAecFilterResult *result) {
+  if (out == nullptr || result == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!xvf3800_present) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  static const XvfAecFilterOps ops = {nullptr, aec_filter_write_i32,
+                                      aec_filter_read_bytes, aec_filter_now_us,
+                                      aec_filter_yield};
+  *result = xvf_aec_filter_read(&ops, far, mic, out, out_capacity,
+                                PIPECAT_XVF_AEC_FILTER_BUDGET_US);
+  ESP_LOGI(LOG_TAG,
+           "XVF AEC filter read far=%ld mic=%ld: %s len=%lu pages=%lu%s",
+           (long)far, (long)mic, xvf_aec_filter_status_name(result->status),
+           (unsigned long)result->length, (unsigned long)result->pages,
+           result->aborted ? " (aborted)" : "");
+  return ESP_OK;
 }
 
 static int azimuth_to_led(float radians) {
