@@ -34,6 +34,7 @@ PERSISTENT_PARAMS = {
     "min_nn",
     "min_ns",
     "dac_atten",
+    "hpf_onoff",
 }
 table_start = MEDIA.index("static const TuneEntry kTuneEntries[]")
 table_end = MEDIA.index("\n};", table_start)
@@ -66,6 +67,26 @@ assert re.search(
     r'TuneTarget::XVF_FLOAT,\s*true,\s*true,\s*0\.0f,\s*2\.0f,\s*1\.0f,\s*false\}',
     table,
 )
+assert "XVF_CMD_AEC_HPFONOFF = 1" in MEDIA
+assert re.search(
+    r'\{"hpf_onoff",\s*XVF_RESID_AEC,\s*XVF_CMD_AEC_HPFONOFF,\s*'
+    r"TuneTarget::XVF_INT32,\s*true,\s*true,\s*0\.0f,\s*4\.0f,\s*2\.0f,\s*false\}",
+    table,
+)
+# Boot ordering for hpf_onoff: the baked profile write (value 2) runs inside
+# pipecat_init_audio_capture() -> init_i2c_and_codec() -> configure_xvf3800_
+# dsp_profile(). main.cpp orders pipecat_replay_xvf_params() AFTER that call
+# (asserted below), so a persisted corner overlays the bake rather than being
+# silently overridden on every boot.
+profile_body = function_body(MEDIA, "static void configure_xvf3800_dsp_profile()")
+assert "xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2)" in re.sub(
+    r"\s+", " ", profile_body
+)
+i2c_body = function_body(MEDIA, "static void init_i2c_and_codec()")
+assert "configure_xvf3800_dsp_profile();" in i2c_body
+capture_body = function_body(MEDIA, "void pipecat_init_audio_capture()")
+assert "init_i2c_and_codec();" in capture_body
+
 assert "1.0e-8f" in MEDIA  # PP_AGCDESIREDLEVEL documented floor
 assert "1000.0f" in MEDIA  # ASROUTGAIN / PP_AGCMAXGAIN documented ceiling
 tune_body = function_body(MEDIA, "esp_err_t pipecat_xvf_tune(")

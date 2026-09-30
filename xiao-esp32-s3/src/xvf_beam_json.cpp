@@ -54,8 +54,14 @@ bool pipecat_xvf_beam_json(const PipecatXvfBeamTelemetry *telemetry, char *body,
   fit =
       append_json_float(body, body_size, &used, telemetry->spenergy[2], ",") &&
       fit;
-  fit =
-      append_json_float(body, body_size, &used, telemetry->spenergy[3], "]}") &&
-      fit;
+  fit = append_json_float(body, body_size, &used, telemetry->spenergy[3],
+                          "],\"rt60_s\":") &&
+        fit;
+  fit = append_json_float(body, body_size, &used, telemetry->rt60_s,
+                          ",\"aec_converged\":") &&
+        fit;
+  fit = append_json_float(body, body_size, &used, telemetry->aec_converged,
+                          "}") &&
+        fit;
   return fit;
 }
