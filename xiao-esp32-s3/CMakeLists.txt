@@ -122,13 +122,39 @@ if(NOT "$ENV{PIPECAT_MIC_GAIN}" STREQUAL "")
   add_compile_definitions(PIPECAT_MIC_GAIN=$ENV{PIPECAT_MIC_GAIN})
 endif()
 
+# Firmware build identity (t_9d8fad45): the full source commit + dirty flag,
+# baked at configure time and reported on GET /xvf/params so "which firmware is
+# live" is a device fact. PIPECAT_BUILD_GIT_SHA overrides (CI/archive rebuilds).
+# git -C works in linked worktrees; no git at all yields "unknown", never a guess.
+set(PIPECAT_BUILD_GIT_SHA_VALUE "$ENV{PIPECAT_BUILD_GIT_SHA}")
+set(PIPECAT_BUILD_GIT_DIRTY_VALUE 0)
+if("${PIPECAT_BUILD_GIT_SHA_VALUE}" STREQUAL "")
+  execute_process(
+    COMMAND git -C "${CMAKE_SOURCE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE PIPECAT_BUILD_GIT_SHA_VALUE
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _pipecat_git_rc)
+  if(NOT _pipecat_git_rc EQUAL 0 OR "${PIPECAT_BUILD_GIT_SHA_VALUE}" STREQUAL "")
+    set(PIPECAT_BUILD_GIT_SHA_VALUE "unknown")
+  else()
+    execute_process(
+      COMMAND git -C "${CMAKE_SOURCE_DIR}" status --porcelain --untracked-files=no
+      OUTPUT_VARIABLE _pipecat_git_status
+      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT "${_pipecat_git_status}" STREQUAL "")
+      set(PIPECAT_BUILD_GIT_DIRTY_VALUE 1)
+    endif()
+  endif()
+endif()
+message(STATUS "pipecat build identity: ${PIPECAT_BUILD_GIT_SHA_VALUE} dirty=${PIPECAT_BUILD_GIT_DIRTY_VALUE}")
+
 foreach(secret_var
     WIFI_SSID_VALUE
     WIFI_PASSWORD_VALUE
     PIPECAT_SMALLWEBRTC_URL_VALUE
     PIPECAT_SATELLITE_ID_VALUE
     PIPECAT_MDNS_HOSTNAME_VALUE
-    PIPECAT_MDNS_INSTANCE_VALUE)
+    PIPECAT_MDNS_INSTANCE_VALUE
+    PIPECAT_BUILD_GIT_SHA_VALUE)
   string(REPLACE "\\" "\\\\" ${secret_var} "${${secret_var}}")
   string(REPLACE "\"" "\\\"" ${secret_var} "${${secret_var}}")
 endforeach()
