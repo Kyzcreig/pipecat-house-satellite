@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include "pipecat_build_config.h"
+#include "xvf_aec_filter.h"
 #include "xvf_beam_json.h"
 
 #define LOG_TAG "pipecat"
@@ -44,6 +45,13 @@ extern esp_err_t pipecat_xvf_read_beam(PipecatXvfBeamTelemetry *telemetry);
 // No write path, no NVS. ESP_ERR_NOT_FOUND = not a diag register.
 extern esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
                                        size_t max_values, size_t *count);
+// AEC filter coefficients for one (far, mic) pair (t_c1bfa4f6). Returns
+// ESP_OK when the sequence ran; result->status says whether it succeeded.
+// ESP_ERR_NOT_SUPPORTED = no XVF3800. See xvf_aec_filter.h.
+#define PIPECAT_XVF_AEC_FILTER_BUDGET_US (5 * 1000 * 1000)
+extern esp_err_t pipecat_xvf_read_aec_filter(int32_t far, int32_t mic,
+                                             float *out, size_t out_capacity,
+                                             XvfAecFilterResult *result);
 extern bool pipecat_xvf_param_persistent(const char *param);
 extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);

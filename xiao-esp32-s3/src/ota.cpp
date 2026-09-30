@@ -6,6 +6,7 @@
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -737,6 +738,103 @@ static esp_err_t xvf_beam_handler(httpd_req_t *req) {
   return httpd_resp_sendstr(req, body);
 }
 
+// GET /xvf/aec_filter?mic=N[&far=0] — AEC filter coefficients for one
+// (far, mic) pair (t_c1bfa4f6), as raw little-endian float32, the exact byte
+// format of `xvf_host --get-aec-filter` <file>.f<far>.m<mic>, so XMOS
+// `xvf_tools.py read_aec_filter` computes the peak/mean dB criterion from it.
+// One pair per request keeps each read bounded (~205 pages, 5 s budget); the
+// reader yields per page and never bypasses the AEC. No state persists.
+static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
+  char query[48] = {0};
+  char mic_arg[8] = {0};
+  char far_arg[8] = {0};
+  char body[160];
+  httpd_resp_set_type(req, "application/json");
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "mic", mic_arg, sizeof(mic_arg)) != ESP_OK) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return httpd_resp_sendstr(req, "{\"error\":\"need ?mic=<n>[&far=<n>]\"}");
+  }
+  if (httpd_query_key_value(query, "far", far_arg, sizeof(far_arg)) != ESP_OK) {
+    strcpy(far_arg, "0");
+  }
+  char *mic_end = nullptr;
+  char *far_end = nullptr;
+  long mic = strtol(mic_arg, &mic_end, 10);
+  long far = strtol(far_arg, &far_end, 10);
+  if (mic_end == mic_arg || *mic_end != '\0' || far_end == far_arg ||
+      *far_end != '\0') {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return httpd_resp_sendstr(req, "{\"error\":\"mic/far must be integers\"}");
+  }
+
+  float *coeffs = static_cast<float *>(
+      heap_caps_malloc(XVF_AEC_FILTER_MAX_COEFFS * sizeof(float),
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (coeffs == nullptr) {
+    coeffs =
+        static_cast<float *>(malloc(XVF_AEC_FILTER_MAX_COEFFS * sizeof(float)));
+  }
+  if (coeffs == nullptr) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+  }
+
+  XvfAecFilterResult result = {};
+  int64_t started_us = esp_timer_get_time();
+  esp_err_t ret = pipecat_xvf_read_aec_filter(
+      static_cast<int32_t>(far), static_cast<int32_t>(mic), coeffs,
+      XVF_AEC_FILTER_MAX_COEFFS, &result);
+  long read_ms = static_cast<long>((esp_timer_get_time() - started_us) / 1000);
+  if (ret != ESP_OK) {
+    free(coeffs);
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    snprintf(body, sizeof(body), "{\"error\":\"aec filter read: %s\"}",
+             esp_err_to_name(ret));
+    return httpd_resp_sendstr(req, body);
+  }
+  if (result.status != XvfAecFilterStatus::OK) {
+    free(coeffs);
+    const char *status_line = "502 Bad Gateway";
+    if (result.status == XvfAecFilterStatus::BAD_INDEX) {
+      status_line = "400 Bad Request";
+    } else if (result.status == XvfAecFilterStatus::TIMEOUT) {
+      status_line = "504 Gateway Timeout";
+    }
+    httpd_resp_set_status(req, status_line);
+    snprintf(body, sizeof(body),
+             "{\"ok\":false,\"status\":\"%s\",\"io_error\":\"%s\","
+             "\"num_mics\":%ld,\"num_farends\":%ld,\"pages\":%lu,"
+             "\"aborted\":%s,\"read_ms\":%ld}",
+             xvf_aec_filter_status_name(result.status),
+             result.io_error ? esp_err_to_name(result.io_error) : "",
+             (long)result.num_mics, (long)result.num_farends,
+             (unsigned long)result.pages, result.aborted ? "true" : "false",
+             read_ms);
+    return httpd_resp_sendstr(req, body);
+  }
+
+  // httpd keeps header pointers until the response is sent.
+  char hdr_length[12];
+  char hdr_far[12];
+  char hdr_mic[12];
+  char hdr_read_ms[12];
+  snprintf(hdr_length, sizeof(hdr_length), "%lu", (unsigned long)result.length);
+  snprintf(hdr_far, sizeof(hdr_far), "%ld", far);
+  snprintf(hdr_mic, sizeof(hdr_mic), "%ld", mic);
+  snprintf(hdr_read_ms, sizeof(hdr_read_ms), "%ld", read_ms);
+  httpd_resp_set_type(req, "application/octet-stream");
+  httpd_resp_set_hdr(req, "X-AEC-Filter-Length", hdr_length);
+  httpd_resp_set_hdr(req, "X-AEC-Far", hdr_far);
+  httpd_resp_set_hdr(req, "X-AEC-Mic", hdr_mic);
+  httpd_resp_set_hdr(req, "X-AEC-Read-Ms", hdr_read_ms);
+  // ESP32-S3 is little-endian: the float array is already the file format.
+  esp_err_t sent = httpd_resp_send(req, reinterpret_cast<const char *>(coeffs),
+                                   result.length * sizeof(float));
+  free(coeffs);
+  return sent;
+}
+
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
 // Crackle triage: underruns>0 during crackle = delivery timing (raise
 // prebuffer_ms); clean counters during crackle = look below the ring
@@ -914,7 +1012,7 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 9;
+  config.max_uri_handlers = 10;
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -963,6 +1061,12 @@ void pipecat_init_ota_server() {
       .handler = xvf_beam_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t aec_filter_uri = {
+      .uri = "/xvf/aec_filter",
+      .method = HTTP_GET,
+      .handler = xvf_aec_filter_handler,
+      .user_ctx = NULL,
+  };
   httpd_uri_t stats_uri = {
       .uri = "/playback/stats",
       .method = HTTP_GET,
@@ -982,6 +1086,7 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &read_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &beam_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &aec_filter_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
