@@ -86,8 +86,12 @@ int fake_read(void *ctx, uint8_t cmd, uint8_t *out, size_t len) {
   return 0;
 }
 
-int64_t fake_now(void *ctx) { return static_cast<FakeXvf *>(ctx)->clock_us; }
-void fake_yield(void *ctx) { static_cast<FakeXvf *>(ctx)->yields++; }
+int64_t fake_now(void *ctx) {
+  return static_cast<FakeXvf *>(ctx)->clock_us;
+}
+void fake_yield(void *ctx) {
+  static_cast<FakeXvf *>(ctx)->yields++;
+}
 
 XvfAecFilterOps ops_for(FakeXvf *x) {
   return XvfAecFilterOps{x, fake_write, fake_read, fake_now, fake_yield};

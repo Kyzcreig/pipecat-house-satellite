@@ -740,14 +740,11 @@ static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
   char body[160];
   httpd_resp_set_type(req, "application/json");
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
-      httpd_query_key_value(query, "mic", mic_arg, sizeof(mic_arg)) !=
-          ESP_OK) {
+      httpd_query_key_value(query, "mic", mic_arg, sizeof(mic_arg)) != ESP_OK) {
     httpd_resp_set_status(req, "400 Bad Request");
-    return httpd_resp_sendstr(req,
-                              "{\"error\":\"need ?mic=<n>[&far=<n>]\"}");
+    return httpd_resp_sendstr(req, "{\"error\":\"need ?mic=<n>[&far=<n>]\"}");
   }
-  if (httpd_query_key_value(query, "far", far_arg, sizeof(far_arg)) !=
-      ESP_OK) {
+  if (httpd_query_key_value(query, "far", far_arg, sizeof(far_arg)) != ESP_OK) {
     strcpy(far_arg, "0");
   }
   char *mic_end = nullptr;
@@ -760,12 +757,12 @@ static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "{\"error\":\"mic/far must be integers\"}");
   }
 
-  float *coeffs = static_cast<float *>(heap_caps_malloc(
-      XVF_AEC_FILTER_MAX_COEFFS * sizeof(float),
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  float *coeffs = static_cast<float *>(
+      heap_caps_malloc(XVF_AEC_FILTER_MAX_COEFFS * sizeof(float),
+                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (coeffs == nullptr) {
-    coeffs = static_cast<float *>(
-        malloc(XVF_AEC_FILTER_MAX_COEFFS * sizeof(float)));
+    coeffs =
+        static_cast<float *>(malloc(XVF_AEC_FILTER_MAX_COEFFS * sizeof(float)));
   }
   if (coeffs == nullptr) {
     httpd_resp_set_status(req, "500 Internal Server Error");
@@ -811,8 +808,7 @@ static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
   char hdr_far[12];
   char hdr_mic[12];
   char hdr_read_ms[12];
-  snprintf(hdr_length, sizeof(hdr_length), "%lu",
-           (unsigned long)result.length);
+  snprintf(hdr_length, sizeof(hdr_length), "%lu", (unsigned long)result.length);
   snprintf(hdr_far, sizeof(hdr_far), "%ld", far);
   snprintf(hdr_mic, sizeof(hdr_mic), "%ld", mic);
   snprintf(hdr_read_ms, sizeof(hdr_read_ms), "%ld", read_ms);

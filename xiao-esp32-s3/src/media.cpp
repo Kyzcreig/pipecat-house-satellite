@@ -805,9 +805,13 @@ static int aec_filter_read_bytes(void *, uint8_t cmd, uint8_t *out,
   return xvf_read_bytes(XVF_RESID_AEC, cmd, out, len);
 }
 
-static int64_t aec_filter_now_us(void *) { return esp_timer_get_time(); }
+static int64_t aec_filter_now_us(void *) {
+  return esp_timer_get_time();
+}
 
-static void aec_filter_yield(void *) { vTaskDelay(1); }
+static void aec_filter_yield(void *) {
+  vTaskDelay(1);
+}
 
 esp_err_t pipecat_xvf_read_aec_filter(int32_t far, int32_t mic, float *out,
                                       size_t out_capacity,

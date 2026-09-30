@@ -8,9 +8,9 @@
 //
 // Sequence is the one in XMOS host_xvf_control src/special_commands/filters.cpp
 // (get_one_filter / get_or_set_full_buffer), RESID 33:
-//   read  AEC_NUM_MICS (71), AEC_NUM_FARENDS (72), SPECIAL_CMD_AEC_FILTER_LENGTH (93)
-//   write SPECIAL_CMD_AEC_FAR_MIC_INDEX (90) = {far, mic}
-//   for offset in 0, 15, 30, ... < length:
+//   read  AEC_NUM_MICS (71), AEC_NUM_FARENDS (72),
+//   SPECIAL_CMD_AEC_FILTER_LENGTH (93) write SPECIAL_CMD_AEC_FAR_MIC_INDEX (90)
+//   = {far, mic} for offset in 0, 15, 30, ... < length:
 //     write SPECIAL_CMD_AEC_FILTER_COEFF_START_OFFSET (91) = offset
 //     read  SPECIAL_CMD_AEC_FILTER_COEFFS (92) -> 15 floats
 // On any failure after the sequence starts, AEC_FILTER_CMD_ABORT (94) is
@@ -35,8 +35,7 @@ static constexpr size_t XVF_AEC_FILTER_MAX_COEFFS = 4096;
 struct XvfAecFilterOps {
   void *ctx;
   // Write `count` little-endian int32 values to RESID 33 / cmd. 0 = ok.
-  int (*write_i32)(void *ctx, uint8_t cmd, const int32_t *values,
-                   size_t count);
+  int (*write_i32)(void *ctx, uint8_t cmd, const int32_t *values, size_t count);
   // Read `len` payload bytes from RESID 33 / cmd. 0 = ok.
   int (*read_bytes)(void *ctx, uint8_t cmd, uint8_t *out, size_t len);
   int64_t (*now_us)(void *ctx);
