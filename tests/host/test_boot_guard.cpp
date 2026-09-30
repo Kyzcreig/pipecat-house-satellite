@@ -31,14 +31,15 @@ static void test_garbage_rtc_after_non_poweron_reset_is_reinitialised() {
 static void test_fault_reboots_are_never_faster_than_one_per_minute() {
   PipecatBootGuardState s = garbage();
   pipecat_boot_guard_on_boot(&s, PipecatResetKind::kPowerOn);
-  const uint32_t expect[] = {60000, 120000, 240000, 480000, 900000, 900000,
-                             900000};
+  const uint32_t expect[] = {60000,  120000, 240000, 480000,
+                             900000, 900000, 900000};
   for (uint32_t e : expect) {
     assert(pipecat_boot_guard_on_boot(&s, PipecatResetKind::kFault));
     assert(pipecat_boot_guard_hold_ms(&s) == e);
     assert(pipecat_boot_guard_hold_ms(&s) >= 60000);
   }
-  for (int i = 0; i < 40; i++) pipecat_boot_guard_on_boot(&s, PipecatResetKind::kFault);
+  for (int i = 0; i < 40; i++)
+    pipecat_boot_guard_on_boot(&s, PipecatResetKind::kFault);
   assert(s.fault_boots == kPipecatBootGuardCountCap);  // saturates, no wrap
   assert(pipecat_boot_guard_hold_ms(&s) == 900000);
 }
@@ -88,19 +89,23 @@ static void test_netwdt_flag_is_consumed_once() {
 static void test_net_watchdog_fires_at_deadline_and_resets_on_health() {
   PipecatNetWatchdog w;
   const uint32_t d = 600000;
-  for (uint32_t t = 0; t < d - 1000; t += 1000) assert(!w.update(false, 1000, d));
+  for (uint32_t t = 0; t < d - 1000; t += 1000)
+    assert(!w.update(false, 1000, d));
   assert(w.update(false, 1000, d));  // exactly 10 min unhealthy
 
   PipecatNetWatchdog w2;
-  for (int i = 0; i < 599; i++) assert(!w2.update(false, 1000, d));
+  for (int i = 0; i < 599; i++)
+    assert(!w2.update(false, 1000, d));
   assert(!w2.update(true, 1000, d));  // one healthy tick clears it
-  for (int i = 0; i < 599; i++) assert(!w2.update(false, 1000, d));
+  for (int i = 0; i < 599; i++)
+    assert(!w2.update(false, 1000, d));
   assert(w2.update(false, 1000, d));
 }
 
 static void test_wifi_backoff_never_gives_up_and_caps_at_30s() {
   const uint32_t expect[] = {1000, 2000, 4000, 8000, 16000, 30000, 30000};
-  for (uint32_t i = 0; i < 7; i++) assert(pipecat_wifi_backoff_ms(i) == expect[i]);
+  for (uint32_t i = 0; i < 7; i++)
+    assert(pipecat_wifi_backoff_ms(i) == expect[i]);
   assert(pipecat_wifi_backoff_ms(1000000) == 30000);
   assert(pipecat_wifi_backoff_ms(UINT32_MAX) == 30000);
 }

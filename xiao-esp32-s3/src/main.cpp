@@ -47,19 +47,32 @@ static PipecatResetKind pipecat_classify_reset(esp_reset_reason_t r) {
 
 const char *pipecat_reset_reason_name() {
   switch (s_reset_reason) {
-    case ESP_RST_POWERON: return "poweron";
-    case ESP_RST_EXT: return "ext";
-    case ESP_RST_SW: return "sw";
-    case ESP_RST_PANIC: return "panic";
-    case ESP_RST_INT_WDT: return "int_wdt";
-    case ESP_RST_TASK_WDT: return "task_wdt";
-    case ESP_RST_WDT: return "wdt";
-    case ESP_RST_DEEPSLEEP: return "deepsleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    case ESP_RST_SDIO: return "sdio";
-    case ESP_RST_USB: return "usb";
-    case ESP_RST_JTAG: return "jtag";
-    default: return "unknown";
+    case ESP_RST_POWERON:
+      return "poweron";
+    case ESP_RST_EXT:
+      return "ext";
+    case ESP_RST_SW:
+      return "sw";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+      return "int_wdt";
+    case ESP_RST_TASK_WDT:
+      return "task_wdt";
+    case ESP_RST_WDT:
+      return "wdt";
+    case ESP_RST_DEEPSLEEP:
+      return "deepsleep";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SDIO:
+      return "sdio";
+    case ESP_RST_USB:
+      return "usb";
+    case ESP_RST_JTAG:
+      return "jtag";
+    default:
+      return "unknown";
   }
 }
 uint32_t pipecat_boot_fault_count() {
@@ -83,7 +96,8 @@ static void pipecat_net_watchdog_cb(void *arg) {
   const bool healthy = pipecat_wifi_connected() && pipecat_webrtc_connected &&
                        pipecat_webrtc_server_heartbeat_fresh() &&
                        pipecat_xvf3800_present();
-  if (healthy) pipecat_boot_guard_on_healthy(&s_boot_guard);
+  if (healthy)
+    pipecat_boot_guard_on_healthy(&s_boot_guard);
   if (s_net_watchdog.update(healthy, NET_WATCHDOG_PERIOD_MS,
                             s_net_deadline_ms)) {
     ESP_LOGE(LOG_TAG,

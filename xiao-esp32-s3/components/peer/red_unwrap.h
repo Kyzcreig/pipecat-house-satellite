@@ -16,8 +16,8 @@
  * degrades to yesterday's behavior, never breaks the happy path.
  *
  * RFC 2198 payload layout (redundant headers first, primary data last):
- *   redundant block header (4 bytes): |F=1|block PT(7)|ts offset(14)|length(10)|
- *   final/primary header   (1 byte):  |F=0|block PT(7)|
+ *   redundant block header (4 bytes): |F=1|block PT(7)|ts
+ * offset(14)|length(10)| final/primary header   (1 byte):  |F=0|block PT(7)|
  */
 #ifndef RED_UNWRAP_H_
 #define RED_UNWRAP_H_
@@ -36,19 +36,20 @@ extern "C" {
 /* The server sends N-2; allow headroom for a future N-3 without a reflash. */
 #define RED_MAX_BLOCKS 4
 
-/* Cap matches the existing PLC burst cap in rtp.c (>16 = resync, not conceal). */
+/* Cap matches the existing PLC burst cap in rtp.c (>16 = resync, not conceal).
+ */
 #define RED_MAX_GAP 16
 
 typedef struct RedBlock {
   uint16_t ts_offset; /* RTP timestamp units BEFORE the primary (14-bit) */
   uint16_t length;    /* block length in bytes (10-bit) */
-  const uint8_t* data;
+  const uint8_t *data;
 } RedBlock;
 
 typedef struct RedParsed {
   int block_count; /* redundant blocks only (primary excluded) */
   RedBlock blocks[RED_MAX_BLOCKS];
-  const uint8_t* primary;
+  const uint8_t *primary;
   size_t primary_size;
 } RedParsed;
 
@@ -57,8 +58,8 @@ typedef struct RedParsed {
  * (truncated header, wrong block PT, lengths exceeding the payload, more than
  * RED_MAX_BLOCKS, empty primary). On -1 the caller falls back to primary-only.
  */
-int red_unwrap(const uint8_t* payload, size_t size, uint8_t expected_pt,
-               RedParsed* out);
+int red_unwrap(const uint8_t *payload, size_t size, uint8_t expected_pt,
+               RedParsed *out);
 
 /* Recovery plan for a detected seq gap of `gap` missing packets (oldest
  * first). actions[i] is the plan for missing frame i (i=0 -> oldest):
@@ -69,7 +70,7 @@ int red_unwrap(const uint8_t* payload, size_t size, uint8_t expected_pt,
  * 960 for 20ms opus @48k). Returns the action count (== min(gap, RED_MAX_GAP)),
  * or 0 if gap <= 0.
  */
-int red_recover_plan(const RedParsed* parsed, int gap, uint32_t ts_step,
+int red_recover_plan(const RedParsed *parsed, int gap, uint32_t ts_step,
                      int8_t actions[RED_MAX_GAP]);
 
 #ifdef __cplusplus

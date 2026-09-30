@@ -2,20 +2,24 @@ name: Build
 on:
   push:
     branches:
-      - master
+      - main
   pull_request:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        target: [esp32s3, linux]
-
+    # The flashed satellite firmware is xiao-esp32-s3 (esp32s3, IDF 5.5.4 per
+    # dependencies.lock). The upstream job ran idf.py at the repo root, which
+    # has no CMakeLists.txt, so it could never pass.
+    # Production images are built with PlatformIO's framework-espidf 5.5.4,
+    # which comments "-Wall" "-Werror" "-Wextra" out of tools/cmake/build.cmake.
+    # Stock espressif/idf:v5.5.4 keeps them and fails ota.cpp on a -Wrestrict
+    # false positive (run 36253100920). Apply the same edit so CI compiles
+    # exactly what gets flashed.
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         submodules: 'recursive'
 
@@ -25,10 +29,14 @@ jobs:
     - name: ASR routing lint (OP_L must carry clean ASR beam cat-7 + ASROUTONOFF=1)
       run: python3 scripts/asr_routing_lint.py
 
-    - name: Build
+    - name: Build xiao-esp32-s3 (production dual-stream config)
       run: |
-        docker run -v $PWD:/project -w /project -u 0 \
-        -e HOME=/tmp -e WIFI_SSID=A -e WIFI_PASSWORD=B -e OPENAI_API_KEY=X \
-        espressif/idf:latest \
-        /bin/bash -c 'idf.py --preview set-target ${{ matrix.target }} && idf.py build'
+        docker run -v $PWD:/project -w /project/xiao-esp32-s3 -u 0 \
+        -e HOME=/tmp -e WIFI_SSID=A -e WIFI_PASSWORD=B \
+        -e PIPECAT_SMALLWEBRTC_URL=http://ci.invalid:7860/api/offer \
+        -e PIPECAT_DUAL_STREAM=1 \
+        espressif/idf:v5.5.4 \
+        /bin/bash -c 'sed -i -E "s/^( *)(\"-Wall\"|\"-Werror\"|\"-Wextra\")$/\1# \2/" $IDF_PATH/tools/cmake/build.cmake && \
+          test $(grep -cE "^ *# \"-(Wall|Werror|Wextra)\"$" $IDF_PATH/tools/cmake/build.cmake) -eq 3 && \
+          idf.py set-target esp32s3 && idf.py build'
       shell: bash

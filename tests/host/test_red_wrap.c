@@ -6,14 +6,14 @@
 #include "../../xiao-esp32-s3/components/peer/red_wrap.h"
 
 static uint16_t block_offset(const uint8_t *header) {
-  uint32_t value = ((uint32_t)header[1] << 16) |
-                   ((uint32_t)header[2] << 8) | header[3];
+  uint32_t value =
+      ((uint32_t)header[1] << 16) | ((uint32_t)header[2] << 8) | header[3];
   return (uint16_t)(value >> 10);
 }
 
 static uint16_t block_length(const uint8_t *header) {
-  uint32_t value = ((uint32_t)header[1] << 16) |
-                   ((uint32_t)header[2] << 8) | header[3];
+  uint32_t value =
+      ((uint32_t)header[1] << 16) | ((uint32_t)header[2] << 8) | header[3];
   return (uint16_t)(value & 0x3ff);
 }
 
@@ -56,7 +56,8 @@ int main(void) {
   uint8_t large[1000];
   memset(large, 0x7a, sizeof(large));
   red_wrap_init(&state, 111, 4);
-  assert(red_wrap_packet(&state, large, sizeof(large), 0, out, sizeof(out)) == 1001);
+  assert(red_wrap_packet(&state, large, sizeof(large), 0, out, sizeof(out)) ==
+         1001);
   size = red_wrap_packet(&state, p4, sizeof(p4), 960, out, 16);
   assert(size == 2);
   assert(out[0] == 111 && out[1] == p4[0]);

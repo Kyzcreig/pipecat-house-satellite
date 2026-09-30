@@ -1,5 +1,4 @@
 #include <peer.h>
-
 #include <stddef.h>
 
 #include "esp_err.h"
@@ -60,8 +59,7 @@ extern bool pipecat_xvf_param_default(const char *param, float *value);
 // Params that own their persistence outside the xvf_dsp namespace
 // (led_brightness). true = handled, *ret is the NVS result.
 extern bool pipecat_xvf_param_self_persist(const char *param,
-                                           float applied_value,
-                                           esp_err_t *ret);
+                                           float applied_value, esp_err_t *ret);
 // Live LED ring master brightness 0..255 (runtime, NVS-persisted).
 extern uint8_t pipecat_led_brightness();
 extern void pipecat_replay_xvf_params();
@@ -109,11 +107,12 @@ enum PipecatLedPhase {
 };
 extern "C" void pipecat_led_set_phase(int phase);
 
-extern void pipecat_init_rtvi(PeerConnection *peer_connection, rtvi_callbacks_t *callbacks);
+extern void pipecat_init_rtvi(PeerConnection *peer_connection,
+                              rtvi_callbacks_t *callbacks);
 extern void pipecat_rtvi_send_client_ready();
-extern bool pipecat_rtvi_handle_heartbeat(const char* msg, uint16_t sid);
+extern bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid);
 extern void pipecat_rtvi_send_pending_heartbeat();
-extern void pipecat_rtvi_handle_message(const char* msg);
+extern void pipecat_rtvi_handle_message(const char *msg);
 
 // Screen
 extern void pipecat_init_screen();

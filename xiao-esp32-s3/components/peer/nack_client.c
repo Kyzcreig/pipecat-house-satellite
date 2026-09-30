@@ -10,8 +10,8 @@ static uint32_t effect_epoch(uint32_t now_ms) {
   return now_ms / NACK_EFFECT_BUCKET_MS;
 }
 
-static NackEffectBucket* effect_bucket(NackClient* c, uint32_t epoch) {
-  NackEffectBucket* bucket = &c->effect[epoch % NACK_EFFECT_BUCKETS];
+static NackEffectBucket *effect_bucket(NackClient *c, uint32_t epoch) {
+  NackEffectBucket *bucket = &c->effect[epoch % NACK_EFFECT_BUCKETS];
   if (!bucket->valid || bucket->epoch != epoch) {
     memset(bucket, 0, sizeof(*bucket));
     bucket->epoch = epoch;
@@ -20,12 +20,12 @@ static NackEffectBucket* effect_bucket(NackClient* c, uint32_t epoch) {
   return bucket;
 }
 
-void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
+void nack_client_note_packet_progress(NackClient *c, uint32_t now_ms,
                                       uint32_t packets_received) {
   if (c == NULL) {
     return;
   }
-  NackEffectBucket* bucket = effect_bucket(c, effect_epoch(now_ms));
+  NackEffectBucket *bucket = effect_bucket(c, effect_epoch(now_ms));
   if (!bucket->packets_sampled) {
     bucket->packets_first = packets_received;
     bucket->packets_sampled = 1;
@@ -38,7 +38,7 @@ void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
         packet_delta <= NACK_OUTAGE_MAX_PACKET_DELTA) {
       bucket->outage = 1;
       uint32_t previous_epoch = effect_epoch(c->last_packet_sample_ms);
-      NackEffectBucket* previous =
+      NackEffectBucket *previous =
           &c->effect[previous_epoch % NACK_EFFECT_BUCKETS];
       if (previous->valid && previous->epoch == previous_epoch) {
         previous->outage = 1;
@@ -50,14 +50,14 @@ void nack_client_note_packet_progress(NackClient* c, uint32_t now_ms,
   c->packet_progress_valid = 1;
 }
 
-void nack_client_init(NackClient* c) {
+void nack_client_init(NackClient *c) {
   if (c == NULL) {
     return;
   }
   memset(c, 0, sizeof(*c));
 }
 
-int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
+int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t *out_seqs,
                          int max_out) {
   if (out_seqs == NULL || max_out <= 0) {
     return 0;
@@ -68,7 +68,8 @@ int nack_client_plan_gap(uint16_t first_missing, int gap, uint16_t* out_seqs,
   }
   int count = gap;
   if (count > NACK_MAX_SEQS) {
-    count = NACK_MAX_SEQS; /* resend-amplification cap (spec review blocker 3) */
+    count =
+        NACK_MAX_SEQS; /* resend-amplification cap (spec review blocker 3) */
   }
   if (count > max_out) {
     count = max_out;
@@ -84,8 +85,8 @@ int nack_client_accepts_reliability(uint32_t reliability_parameter) {
   return reliability_parameter <= NACK_RTX_MAX_RETRANSMITS;
 }
 
-int nack_parse_rtx_frame(const uint8_t* frame, size_t frame_len, uint16_t* seq,
-                         const uint8_t** payload, size_t* payload_len) {
+int nack_parse_rtx_frame(const uint8_t *frame, size_t frame_len, uint16_t *seq,
+                         const uint8_t **payload, size_t *payload_len) {
   if (frame == NULL || seq == NULL || payload == NULL || payload_len == NULL ||
       frame_len < RTX_FRAME_HEADER_SIZE) {
     return 0;
@@ -102,7 +103,7 @@ int nack_parse_rtx_frame(const uint8_t* frame, size_t frame_len, uint16_t* seq,
 }
 
 /* Find the pending slot holding `seq` (armed OR expired), or -1. */
-static int find_slot(const NackClient* c, uint16_t seq) {
+static int find_slot(const NackClient *c, uint16_t seq) {
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
     if (c->pending[i].active != NACK_SLOT_FREE && c->pending[i].seq == seq) {
       return i;
@@ -112,7 +113,7 @@ static int find_slot(const NackClient* c, uint16_t seq) {
 }
 
 /* First free slot, else oldest EXPIRED. Never evict an armed sequence. */
-static int alloc_slot(const NackClient* c) {
+static int alloc_slot(const NackClient *c) {
   int oldest_expired = -1;
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
     if (c->pending[i].active == NACK_SLOT_FREE) {
@@ -127,7 +128,7 @@ static int alloc_slot(const NackClient* c) {
   return oldest_expired;
 }
 
-int nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms) {
+int nack_client_arm(NackClient *c, uint16_t seq, uint32_t now_ms) {
   if (c == NULL) {
     return 0;
   }
@@ -142,7 +143,7 @@ int nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms) {
   c->pending[slot].deadline_ms = now_ms + NACK_WAIT_MS;
   c->pending[slot].sent_bucket_epoch = effect_epoch(now_ms);
   c->pending[slot].active = NACK_SLOT_ARMED;
-  NackEffectBucket* bucket = effect_bucket(c, effect_epoch(now_ms));
+  NackEffectBucket *bucket = effect_bucket(c, effect_epoch(now_ms));
   if (bucket->sent < UINT16_MAX) {
     bucket->sent++;
   }
@@ -150,7 +151,7 @@ int nack_client_arm(NackClient* c, uint16_t seq, uint32_t now_ms) {
   return 1;
 }
 
-NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
+NackTakeResult nack_client_take(NackClient *c, uint16_t seq, uint32_t now_ms) {
   if (c == NULL) {
     return NACK_TAKE_UNKNOWN;
   }
@@ -173,7 +174,7 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
   /* Signed compare so wrap of the 32-bit ms clock is handled correctly. */
   if (was == NACK_SLOT_ARMED &&
       (int32_t)(now_ms - c->pending[slot].deadline_ms) <= 0) {
-    NackEffectBucket* bucket =
+    NackEffectBucket *bucket =
         effect_bucket(c, c->pending[slot].sent_bucket_epoch);
     if (bucket->recovered < UINT16_MAX) {
       bucket->recovered++;
@@ -187,7 +188,7 @@ NackTakeResult nack_client_take(NackClient* c, uint16_t seq, uint32_t now_ms) {
   return NACK_TAKE_LATE;
 }
 
-int nack_client_sweep(NackClient* c, uint32_t now_ms) {
+int nack_client_sweep(NackClient *c, uint32_t now_ms) {
   if (c == NULL) {
     return 0;
   }
@@ -195,7 +196,8 @@ int nack_client_sweep(NackClient* c, uint32_t now_ms) {
   for (int i = 0; i < NACK_PENDING_SLOTS; i++) {
     if (c->pending[i].active == NACK_SLOT_ARMED &&
         (int32_t)(now_ms - c->pending[i].deadline_ms) > 0) {
-      c->pending[i].active = NACK_SLOT_EXPIRED; /* keep for RTT; freed on take/reuse */
+      c->pending[i].active =
+          NACK_SLOT_EXPIRED; /* keep for RTT; freed on take/reuse */
       c->nack_late++;
       expired++;
     }
@@ -203,7 +205,7 @@ int nack_client_sweep(NackClient* c, uint32_t now_ms) {
   return expired;
 }
 
-int nack_client_should_dark(NackClient* c, uint32_t now_ms) {
+int nack_client_should_dark(NackClient *c, uint32_t now_ms) {
   if (c == NULL) {
     return 0;
   }
@@ -226,7 +228,7 @@ int nack_client_should_dark(NackClient* c, uint32_t now_ms) {
   uint32_t sent = 0;
   uint32_t recovered = 0;
   for (int i = 0; i < NACK_EFFECT_BUCKETS; i++) {
-    NackEffectBucket* bucket = &c->effect[i];
+    NackEffectBucket *bucket = &c->effect[i];
     if (!bucket->valid ||
         (uint32_t)(now_epoch - bucket->epoch) >= NACK_EFFECT_BUCKETS) {
       continue;

@@ -1,3 +1,5 @@
+#include "peer_connection.h"
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,7 +8,6 @@
 #include "agent.h"
 #include "config.h"
 #include "dtls_srtp.h"
-#include "peer_connection.h"
 #include "ports.h"
 #include "rtcp.h"
 #include "rtp.h"
@@ -28,10 +29,12 @@ struct PeerConnection {
 
   char sdp[CONFIG_SDP_BUFFER_SIZE];
 
-  void (*onicecandidate)(char* sdp, void* user_data);
-  void (*oniceconnectionstatechange)(PeerConnectionState state, void* user_data);
-  void (*on_connected)(void* userdata);
-  void (*on_receiver_packet_loss)(float fraction_loss, uint32_t total_loss, void* user_data);
+  void (*onicecandidate)(char *sdp, void *user_data);
+  void (*oniceconnectionstatechange)(PeerConnectionState state,
+                                     void *user_data);
+  void (*on_connected)(void *userdata);
+  void (*on_receiver_packet_loss)(float fraction_loss, uint32_t total_loss,
+                                  void *user_data);
 
   uint8_t temp_buf[CONFIG_MTU];
   uint8_t agent_buf[CONFIG_MTU];
@@ -47,24 +50,27 @@ struct PeerConnection {
   uint32_t remote_vssrc;
 };
 
-static void peer_connection_outgoing_rtp_packet(uint8_t* data, size_t size, void* user_data) {
-  PeerConnection* pc = (PeerConnection*)user_data;
-  dtls_srtp_encrypt_rtp_packet(&pc->dtls_srtp, data, (int*)&size);
+static void peer_connection_outgoing_rtp_packet(uint8_t *data, size_t size,
+                                                void *user_data) {
+  PeerConnection *pc = (PeerConnection *)user_data;
+  dtls_srtp_encrypt_rtp_packet(&pc->dtls_srtp, data, (int *)&size);
   agent_send(&pc->agent, data, size);
 }
 
-static int peer_connection_dtls_srtp_recv(void* ctx, unsigned char* buf, size_t len) {
+static int peer_connection_dtls_srtp_recv(void *ctx, unsigned char *buf,
+                                          size_t len) {
   int recv_max = 0;
   int ret = -1;
-  DtlsSrtp* dtls_srtp = (DtlsSrtp*)ctx;
-  PeerConnection* pc = (PeerConnection*)dtls_srtp->user_data;
+  DtlsSrtp *dtls_srtp = (DtlsSrtp *)ctx;
+  PeerConnection *pc = (PeerConnection *)dtls_srtp->user_data;
 
   if (pc->agent_ret > 0 && pc->agent_ret <= len) {
     memcpy(buf, pc->agent_buf, pc->agent_ret);
     return pc->agent_ret;
   }
 
-  while (recv_max < CONFIG_TLS_READ_TIMEOUT && pc->state == PEER_CONNECTION_CONNECTED) {
+  while (recv_max < CONFIG_TLS_READ_TIMEOUT &&
+         pc->state == PEER_CONNECTION_CONNECTED) {
     ret = agent_recv(&pc->agent, buf, len);
 
     if (ret > 0) {
@@ -76,20 +82,22 @@ static int peer_connection_dtls_srtp_recv(void* ctx, unsigned char* buf, size_t 
   return ret;
 }
 
-static int peer_connection_dtls_srtp_send(void* ctx, const uint8_t* buf, size_t len) {
-  DtlsSrtp* dtls_srtp = (DtlsSrtp*)ctx;
-  PeerConnection* pc = (PeerConnection*)dtls_srtp->user_data;
+static int peer_connection_dtls_srtp_send(void *ctx, const uint8_t *buf,
+                                          size_t len) {
+  DtlsSrtp *dtls_srtp = (DtlsSrtp *)ctx;
+  PeerConnection *pc = (PeerConnection *)dtls_srtp->user_data;
 
   // LOGD("send %.4x %.4x, %ld", *(uint16_t*)buf, *(uint16_t*)(buf + 2), len);
   return agent_send(&pc->agent, buf, len);
 }
 
-static void peer_connection_incoming_rtcp(PeerConnection* pc, uint8_t* buf, size_t len) {
-  RtcpHeader* rtcp_header;
+static void peer_connection_incoming_rtcp(PeerConnection *pc, uint8_t *buf,
+                                          size_t len) {
+  RtcpHeader *rtcp_header;
   size_t pos = 0;
 
   while (pos < len) {
-    rtcp_header = (RtcpHeader*)(buf + pos);
+    rtcp_header = (RtcpHeader *)(buf + pos);
 
     switch (rtcp_header->type) {
       case RTCP_RR:
@@ -123,7 +131,7 @@ static void peer_connection_incoming_rtcp(PeerConnection* pc, uint8_t* buf, size
   }
 }
 
-const char* peer_connection_state_to_string(PeerConnectionState state) {
+const char *peer_connection_state_to_string(PeerConnectionState state) {
   switch (state) {
     case PEER_CONNECTION_NEW:
       return "new";
@@ -144,16 +152,16 @@ const char* peer_connection_state_to_string(PeerConnectionState state) {
   }
 }
 
-PeerConnectionState peer_connection_get_state(PeerConnection* pc) {
+PeerConnectionState peer_connection_get_state(PeerConnection *pc) {
   return pc->state;
 }
 
-void* peer_connection_get_sctp(PeerConnection* pc) {
+void *peer_connection_get_sctp(PeerConnection *pc) {
   return &pc->sctp;
 }
 
-PeerConnection* peer_connection_create(PeerConfiguration* config) {
-  PeerConnection* pc = calloc(1, sizeof(PeerConnection));
+PeerConnection *peer_connection_create(PeerConfiguration *config) {
+  PeerConnection *pc = calloc(1, sizeof(PeerConnection));
   if (!pc) {
     return NULL;
   }
@@ -166,7 +174,7 @@ PeerConnection* peer_connection_create(PeerConfiguration* config) {
 
   if (pc->config.audio_codec) {
     rtp_encoder_init(&pc->artp_encoder, pc->config.audio_codec,
-                     peer_connection_outgoing_rtp_packet, (void*)pc);
+                     peer_connection_outgoing_rtp_packet, (void *)pc);
 
     rtp_decoder_init(&pc->artp_decoder, pc->config.audio_codec,
                      pc->config.onaudiotrack, pc->config.user_data);
@@ -174,7 +182,7 @@ PeerConnection* peer_connection_create(PeerConfiguration* config) {
 
   if (pc->config.video_codec) {
     rtp_encoder_init(&pc->vrtp_encoder, pc->config.video_codec,
-                     peer_connection_outgoing_rtp_packet, (void*)pc);
+                     peer_connection_outgoing_rtp_packet, (void *)pc);
 
     rtp_decoder_init(&pc->vrtp_decoder, pc->config.video_codec,
                      pc->config.onvideotrack, pc->config.user_data);
@@ -183,7 +191,7 @@ PeerConnection* peer_connection_create(PeerConfiguration* config) {
   return pc;
 }
 
-void peer_connection_destroy(PeerConnection* pc) {
+void peer_connection_destroy(PeerConnection *pc) {
   if (pc) {
     sctp_destroy_association(&pc->sctp);
     dtls_srtp_deinit(&pc->dtls_srtp);
@@ -193,11 +201,12 @@ void peer_connection_destroy(PeerConnection* pc) {
   }
 }
 
-void peer_connection_close(PeerConnection* pc) {
+void peer_connection_close(PeerConnection *pc) {
   pc->state = PEER_CONNECTION_CLOSED;
 }
 
-int peer_connection_send_audio(PeerConnection* pc, const uint8_t* buf, size_t len) {
+int peer_connection_send_audio(PeerConnection *pc, const uint8_t *buf,
+                               size_t len) {
   if (pc->state != PEER_CONNECTION_COMPLETED) {
     // LOGE("dtls_srtp not connected");
     return -1;
@@ -205,7 +214,8 @@ int peer_connection_send_audio(PeerConnection* pc, const uint8_t* buf, size_t le
   return rtp_encoder_encode(&pc->artp_encoder, buf, len);
 }
 
-int peer_connection_send_video(PeerConnection* pc, const uint8_t* buf, size_t len) {
+int peer_connection_send_video(PeerConnection *pc, const uint8_t *buf,
+                               size_t len) {
   if (pc->state != PEER_CONNECTION_COMPLETED) {
     // LOGE("dtls_srtp not connected");
     return -1;
@@ -213,11 +223,13 @@ int peer_connection_send_video(PeerConnection* pc, const uint8_t* buf, size_t le
   return rtp_encoder_encode(&pc->vrtp_encoder, buf, len);
 }
 
-int peer_connection_datachannel_send(PeerConnection* pc, char* message, size_t len) {
+int peer_connection_datachannel_send(PeerConnection *pc, char *message,
+                                     size_t len) {
   return peer_connection_datachannel_send_sid(pc, message, len, 0);
 }
 
-int peer_connection_datachannel_send_sid(PeerConnection* pc, char* message, size_t len, uint16_t sid) {
+int peer_connection_datachannel_send_sid(PeerConnection *pc, char *message,
+                                         size_t len, uint16_t sid) {
   if (!sctp_is_connected(&pc->sctp)) {
     LOGE("sctp not connected");
     return -1;
@@ -228,11 +240,18 @@ int peer_connection_datachannel_send_sid(PeerConnection* pc, char* message, size
     return sctp_outgoing_data(&pc->sctp, message, len, PPID_BINARY, sid);
 }
 
-int peer_connection_create_datachannel(PeerConnection* pc, DecpChannelType channel_type, uint16_t priority, uint32_t reliability_parameter, char* label, char* protocol) {
-  return peer_connection_create_datachannel_sid(pc, channel_type, priority, reliability_parameter, label, protocol, 0);
+int peer_connection_create_datachannel(PeerConnection *pc,
+                                       DecpChannelType channel_type,
+                                       uint16_t priority,
+                                       uint32_t reliability_parameter,
+                                       char *label, char *protocol) {
+  return peer_connection_create_datachannel_sid(
+      pc, channel_type, priority, reliability_parameter, label, protocol, 0);
 }
 
-int peer_connection_create_datachannel_sid(PeerConnection* pc, DecpChannelType channel_type, uint16_t priority, uint32_t reliability_parameter, char* label, char* protocol, uint16_t sid) {
+int peer_connection_create_datachannel_sid(
+    PeerConnection *pc, DecpChannelType channel_type, uint16_t priority,
+    uint32_t reliability_parameter, char *label, char *protocol, uint16_t sid) {
   int rtrn = -1;
 
   if (!sctp_is_connected(&pc->sctp)) {
@@ -262,7 +281,7 @@ int peer_connection_create_datachannel_sid(PeerConnection* pc, DecpChannelType c
   uint32_t reliability_big_endian = htonl(reliability_parameter);
   uint16_t label_length = htons(strlen(label));
   uint16_t protocol_length = htons(strlen(protocol));
-  char* msg = calloc(1, msg_size);
+  char *msg = calloc(1, msg_size);
   if (!msg) {
     return rtrn;
   }
@@ -281,11 +300,11 @@ int peer_connection_create_datachannel_sid(PeerConnection* pc, DecpChannelType c
   return rtrn;
 }
 
-static char* peer_connection_dtls_role_setup_value(DtlsSrtpRole d) {
+static char *peer_connection_dtls_role_setup_value(DtlsSrtpRole d) {
   return d == DTLS_SRTP_ROLE_SERVER ? "a=setup:passive" : "a=setup:active";
 }
 
-int peer_connection_loop(PeerConnection* pc) {
+int peer_connection_loop(PeerConnection *pc) {
   uint32_t ssrc = 0;
   memset(pc->agent_buf, 0, sizeof(pc->agent_buf));
   pc->agent_ret = -1;
@@ -317,26 +336,30 @@ int peer_connection_loop(PeerConnection* pc) {
       }
       break;
     case PEER_CONNECTION_COMPLETED:
-      if ((pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf, sizeof(pc->agent_buf))) > 0) {
+      if ((pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf,
+                                      sizeof(pc->agent_buf))) > 0) {
         LOGD("agent_recv %d", pc->agent_ret);
 
         if (rtcp_probe(pc->agent_buf, pc->agent_ret)) {
           LOGD("Got RTCP packet");
-          dtls_srtp_decrypt_rtcp_packet(&pc->dtls_srtp, pc->agent_buf, &pc->agent_ret);
+          dtls_srtp_decrypt_rtcp_packet(&pc->dtls_srtp, pc->agent_buf,
+                                        &pc->agent_ret);
           peer_connection_incoming_rtcp(pc, pc->agent_buf, pc->agent_ret);
 
         } else if (dtls_srtp_probe(pc->agent_buf)) {
-          int ret = dtls_srtp_read(&pc->dtls_srtp, pc->temp_buf, sizeof(pc->temp_buf));
+          int ret = dtls_srtp_read(&pc->dtls_srtp, pc->temp_buf,
+                                   sizeof(pc->temp_buf));
           LOGD("Got DTLS data %d", ret);
 
           if (ret > 0) {
-            sctp_incoming_data(&pc->sctp, (char*)pc->temp_buf, ret);
+            sctp_incoming_data(&pc->sctp, (char *)pc->temp_buf, ret);
           }
 
         } else if (rtp_packet_validate(pc->agent_buf, pc->agent_ret)) {
           LOGD("Got RTP packet");
 
-          dtls_srtp_decrypt_rtp_packet(&pc->dtls_srtp, pc->agent_buf, &pc->agent_ret);
+          dtls_srtp_decrypt_rtp_packet(&pc->dtls_srtp, pc->agent_buf,
+                                       &pc->agent_ret);
 
           ssrc = rtp_get_ssrc(pc->agent_buf);
           if (ssrc == pc->remote_assrc) {
@@ -350,7 +373,9 @@ int peer_connection_loop(PeerConnection* pc) {
         }
       }
 
-      if (CONFIG_KEEPALIVE_TIMEOUT > 0 && (ports_get_epoch_time() - pc->agent.binding_request_time) > CONFIG_KEEPALIVE_TIMEOUT) {
+      if (CONFIG_KEEPALIVE_TIMEOUT > 0 &&
+          (ports_get_epoch_time() - pc->agent.binding_request_time) >
+              CONFIG_KEEPALIVE_TIMEOUT) {
         LOGI("binding request timeout");
         STATE_CHANGED(pc, PEER_CONNECTION_CLOSED);
       }
@@ -369,15 +394,16 @@ int peer_connection_loop(PeerConnection* pc) {
   return 0;
 }
 
-void peer_connection_set_remote_description(PeerConnection* pc, const char* sdp, SdpType type) {
-  char* start = (char*)sdp;
-  char* line = NULL;
+void peer_connection_set_remote_description(PeerConnection *pc, const char *sdp,
+                                            SdpType type) {
+  char *start = (char *)sdp;
+  char *line = NULL;
   char buf[256];
-  char* val_start = NULL;
-  uint32_t* ssrc = NULL;
+  char *val_start = NULL;
+  uint32_t *ssrc = NULL;
   DtlsSrtpRole role = DTLS_SRTP_ROLE_SERVER;
   int is_update = 0;
-  Agent* agent = &pc->agent;
+  Agent *agent = &pc->agent;
 
   while ((line = strstr(start, "\r\n"))) {
     line = strstr(start, "\r\n");
@@ -388,17 +414,17 @@ void peer_connection_set_remote_description(PeerConnection* pc, const char* sdp,
       role = DTLS_SRTP_ROLE_CLIENT;
     }
 
-    if (strncmp(buf, "a=fingerprint:sha-256 ", strlen("a=fingerprint:sha-256 ")) == 0) {
-      const char* fingerprint = buf + strlen("a=fingerprint:sha-256 ");
-      memset(pc->dtls_srtp.remote_fingerprint, 0,
-             DTLS_SRTP_FINGERPRINT_LENGTH);
+    if (strncmp(buf, "a=fingerprint:sha-256 ",
+                strlen("a=fingerprint:sha-256 ")) == 0) {
+      const char *fingerprint = buf + strlen("a=fingerprint:sha-256 ");
+      memset(pc->dtls_srtp.remote_fingerprint, 0, DTLS_SRTP_FINGERPRINT_LENGTH);
       strncpy(pc->dtls_srtp.remote_fingerprint, fingerprint,
               DTLS_SRTP_FINGERPRINT_LENGTH - 1);
     }
 
-    if (strstr(buf, "a=ice-ufrag") &&
-        strlen(agent->remote_ufrag) != 0 &&
-        (strncmp(buf + strlen("a=ice-ufrag:"), agent->remote_ufrag, strlen(agent->remote_ufrag)) == 0)) {
+    if (strstr(buf, "a=ice-ufrag") && strlen(agent->remote_ufrag) != 0 &&
+        (strncmp(buf + strlen("a=ice-ufrag:"), agent->remote_ufrag,
+                 strlen(agent->remote_ufrag)) == 0)) {
       is_update = 1;
     }
 
@@ -420,15 +446,16 @@ void peer_connection_set_remote_description(PeerConnection* pc, const char* sdp,
     return;
   }
 
-  agent_set_remote_description(&pc->agent, (char*)sdp);
+  agent_set_remote_description(&pc->agent, (char *)sdp);
   if (type == SDP_TYPE_ANSWER) {
     agent_update_candidate_pairs(&pc->agent);
     STATE_CHANGED(pc, PEER_CONNECTION_CHECKING);
   }
 }
 
-static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_type) {
-  char* description = (char*)pc->temp_buf;
+static const char *peer_connection_create_sdp(PeerConnection *pc,
+                                              SdpType sdp_type) {
+  char *description = (char *)pc->temp_buf;
 
   memset(pc->temp_buf, 0, sizeof(pc->temp_buf));
   DtlsSrtpRole role = DTLS_SRTP_ROLE_SERVER;
@@ -456,15 +483,14 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
 
   memset(pc->sdp, 0, sizeof(pc->sdp));
   // TODO: check if we have video or audio codecs
-  sdp_create(pc->sdp,
-             pc->config.video_codec != CODEC_NONE,
-             pc->config.audio_codec != CODEC_NONE,
-             pc->config.datachannel);
+  sdp_create(pc->sdp, pc->config.video_codec != CODEC_NONE,
+             pc->config.audio_codec != CODEC_NONE, pc->config.datachannel);
 
   agent_create_ice_credential(&pc->agent);
   sdp_append(pc->sdp, "a=ice-ufrag:%s", pc->agent.local_ufrag);
   sdp_append(pc->sdp, "a=ice-pwd:%s", pc->agent.local_upwd);
-  sdp_append(pc->sdp, "a=fingerprint:sha-256 %s", pc->dtls_srtp.local_fingerprint);
+  sdp_append(pc->sdp, "a=fingerprint:sha-256 %s",
+             pc->dtls_srtp.local_fingerprint);
   sdp_append(pc->sdp, peer_connection_dtls_role_setup_value(role));
 
   if (pc->config.video_codec == CODEC_H264) {
@@ -481,12 +507,13 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
     case CODEC_OPUS:
       // VENDORED PATCH (2026-07-11): offer RED (RFC 2198) alongside opus so
       // the audio downlink can carry redundancy (audio-resilience ladder
-      // Phase 3; pipecat-house-voice docs/SPEC-red-rfc2198-burst-redundancy.md).
-      // Inline replacement for the submodule's sdp_append_opus() — same lines
-      // plus PT 63 on the m-line, its rtpmap, and the fmtp mapping RED->opus.
-      // The downlink server sender and uplink firmware sender are independently
-      // gated. Uplink mic audio uses PT 63 only when PIPECAT_UPLINK_RED=1 and
-      // the server's aiortc receive patch is already active.
+      // Phase 3; pipecat-house-voice
+      // docs/SPEC-red-rfc2198-burst-redundancy.md). Inline replacement for the
+      // submodule's sdp_append_opus() — same lines plus PT 63 on the m-line,
+      // its rtpmap, and the fmtp mapping RED->opus. The downlink server sender
+      // and uplink firmware sender are independently gated. Uplink mic audio
+      // uses PT 63 only when PIPECAT_UPLINK_RED=1 and the server's aiortc
+      // receive patch is already active.
       sdp_append(pc->sdp, "m=audio 9 UDP/TLS/RTP/SAVP 111 63");
       sdp_append(pc->sdp, "c=IN IP4 0.0.0.0");
       sdp_append(pc->sdp, "a=rtpmap:111 opus/48000/2");
@@ -508,10 +535,14 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
   pc->b_local_description_created = 1;
 
   agent_gather_candidate(&pc->agent, NULL, NULL, NULL);  // host address
-  for (int i = 0; i < sizeof(pc->config.ice_servers) / sizeof(pc->config.ice_servers[0]); ++i) {
+  for (int i = 0;
+       i < sizeof(pc->config.ice_servers) / sizeof(pc->config.ice_servers[0]);
+       ++i) {
     if (pc->config.ice_servers[i].urls) {
       LOGI("ice server: %s", pc->config.ice_servers[i].urls);
-      agent_gather_candidate(&pc->agent, pc->config.ice_servers[i].urls, pc->config.ice_servers[i].username, pc->config.ice_servers[i].credential);
+      agent_gather_candidate(&pc->agent, pc->config.ice_servers[i].urls,
+                             pc->config.ice_servers[i].username,
+                             pc->config.ice_servers[i].credential);
     }
   }
 
@@ -525,18 +556,18 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
   return pc->sdp;
 }
 
-const char* peer_connection_create_offer(PeerConnection* pc) {
+const char *peer_connection_create_offer(PeerConnection *pc) {
   return peer_connection_create_sdp(pc, SDP_TYPE_OFFER);
 }
 
-const char* peer_connection_create_answer(PeerConnection* pc) {
-  const char* sdp = peer_connection_create_sdp(pc, SDP_TYPE_ANSWER);
+const char *peer_connection_create_answer(PeerConnection *pc) {
+  const char *sdp = peer_connection_create_sdp(pc, SDP_TYPE_ANSWER);
   agent_update_candidate_pairs(&pc->agent);
   STATE_CHANGED(pc, PEER_CONNECTION_CHECKING);
   return sdp;
 }
 
-int peer_connection_send_rtcp_pil(PeerConnection* pc, uint32_t ssrc) {
+int peer_connection_send_rtcp_pil(PeerConnection *pc, uint32_t ssrc) {
   int ret = -1;
   uint8_t plibuf[128];
   rtcp_get_pli(plibuf, 12, ssrc);
@@ -544,34 +575,42 @@ int peer_connection_send_rtcp_pil(PeerConnection* pc, uint32_t ssrc) {
   // TODO: encrypt rtcp packet
   // guint size = 12;
   // dtls_transport_encrypt_rctp_packet(pc->dtls_transport, plibuf, &size);
-  // ret = nice_agent_send(pc->nice_agent, pc->stream_id, pc->component_id, size, (gchar*)plibuf);
+  // ret = nice_agent_send(pc->nice_agent, pc->stream_id, pc->component_id,
+  // size, (gchar*)plibuf);
 
   return ret;
 }
 
 // callbacks
-void peer_connection_on_connected(PeerConnection* pc, void (*on_connected)(void* userdata)) {
+void peer_connection_on_connected(PeerConnection *pc,
+                                  void (*on_connected)(void *userdata)) {
   pc->on_connected = on_connected;
 }
 
-void peer_connection_on_receiver_packet_loss(PeerConnection* pc,
-                                             void (*on_receiver_packet_loss)(float fraction_loss, uint32_t total_loss, void* userdata)) {
+void peer_connection_on_receiver_packet_loss(
+    PeerConnection *pc,
+    void (*on_receiver_packet_loss)(float fraction_loss, uint32_t total_loss,
+                                    void *userdata)) {
   pc->on_receiver_packet_loss = on_receiver_packet_loss;
 }
 
-void peer_connection_onicecandidate(PeerConnection* pc, void (*onicecandidate)(char* sdp, void* userdata)) {
+void peer_connection_onicecandidate(PeerConnection *pc,
+                                    void (*onicecandidate)(char *sdp,
+                                                           void *userdata)) {
   pc->onicecandidate = onicecandidate;
 }
 
-void peer_connection_oniceconnectionstatechange(PeerConnection* pc,
-                                                void (*oniceconnectionstatechange)(PeerConnectionState state, void* userdata)) {
+void peer_connection_oniceconnectionstatechange(
+    PeerConnection *pc,
+    void (*oniceconnectionstatechange)(PeerConnectionState state,
+                                       void *userdata)) {
   pc->oniceconnectionstatechange = oniceconnectionstatechange;
 }
 
-void peer_connection_ondatachannel(PeerConnection* pc,
-                                   void (*onmessage)(char* msg, size_t len, void* userdata, uint16_t sid),
-                                   void (*onopen)(void* userdata),
-                                   void (*onclose)(void* userdata)) {
+void peer_connection_ondatachannel(
+    PeerConnection *pc,
+    void (*onmessage)(char *msg, size_t len, void *userdata, uint16_t sid),
+    void (*onopen)(void *userdata), void (*onclose)(void *userdata)) {
   if (pc) {
     sctp_onopen(&pc->sctp, onopen);
     sctp_onclose(&pc->sctp, onclose);
@@ -579,9 +618,11 @@ void peer_connection_ondatachannel(PeerConnection* pc,
   }
 }
 
-int peer_connection_lookup_sid(PeerConnection* pc, const char* label, uint16_t* sid) {
+int peer_connection_lookup_sid(PeerConnection *pc, const char *label,
+                               uint16_t *sid) {
   for (int i = 0; i < pc->sctp.stream_count; i++) {
-    if (strncmp(pc->sctp.stream_table[i].label, label, sizeof(pc->sctp.stream_table[i].label)) == 0) {
+    if (strncmp(pc->sctp.stream_table[i].label, label,
+                sizeof(pc->sctp.stream_table[i].label)) == 0) {
       *sid = pc->sctp.stream_table[i].sid;
       return 0;
     }
@@ -590,15 +631,15 @@ int peer_connection_lookup_sid(PeerConnection* pc, const char* label, uint16_t* 
 }
 
 #ifdef PIPECAT_NACK
-int peer_connection_lookup_datachannel(PeerConnection* pc, const char* label,
-                                       uint16_t* sid, uint8_t* channel_type,
-                                       uint32_t* reliability_parameter) {
+int peer_connection_lookup_datachannel(PeerConnection *pc, const char *label,
+                                       uint16_t *sid, uint8_t *channel_type,
+                                       uint32_t *reliability_parameter) {
   if (pc == NULL || label == NULL || sid == NULL || channel_type == NULL ||
       reliability_parameter == NULL) {
     return -1;
   }
   for (int i = 0; i < pc->sctp.stream_count; i++) {
-    SctpStreamEntry* stream = &pc->sctp.stream_table[i];
+    SctpStreamEntry *stream = &pc->sctp.stream_table[i];
     if (strncmp(stream->label, label, sizeof(stream->label)) == 0) {
       *sid = stream->sid;
       *channel_type = stream->channel_type;
@@ -610,7 +651,7 @@ int peer_connection_lookup_datachannel(PeerConnection* pc, const char* label,
 }
 #endif
 
-char* peer_connection_lookup_sid_label(PeerConnection* pc, uint16_t sid) {
+char *peer_connection_lookup_sid_label(PeerConnection *pc, uint16_t sid) {
   for (int i = 0; i < pc->sctp.stream_count; i++) {
     if (pc->sctp.stream_table[i].sid == sid) {
       return pc->sctp.stream_table[i].label;
@@ -619,9 +660,11 @@ char* peer_connection_lookup_sid_label(PeerConnection* pc, uint16_t sid) {
   return NULL;  // Not found
 }
 
-int peer_connection_add_ice_candidate(PeerConnection* pc, char* candidate) {
-  Agent* agent = &pc->agent;
-  if (ice_candidate_from_description(&agent->remote_candidates[agent->remote_candidates_count], candidate, candidate + strlen(candidate)) != 0) {
+int peer_connection_add_ice_candidate(PeerConnection *pc, char *candidate) {
+  Agent *agent = &pc->agent;
+  if (ice_candidate_from_description(
+          &agent->remote_candidates[agent->remote_candidates_count], candidate,
+          candidate + strlen(candidate)) != 0) {
     return -1;
   }
   LOGD("Add candidate: %s", candidate);

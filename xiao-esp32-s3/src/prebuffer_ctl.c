@@ -86,7 +86,9 @@ uint32_t pbc_effective_ms(const prebuffer_ctl *c, uint32_t base_ms) {
     return base_ms; /* dark path: bit-identical to static behavior */
   }
   uint32_t eff = base_ms + c->offset_steps * PBC_STEP_MS;
-  if (eff < PBC_MIN_MS) eff = PBC_MIN_MS;
-  if (eff > PBC_MAX_MS) eff = PBC_MAX_MS;
+  if (eff < PBC_MIN_MS)
+    eff = PBC_MIN_MS;
+  if (eff > PBC_MAX_MS)
+    eff = PBC_MAX_MS;
   return eff;
 }
