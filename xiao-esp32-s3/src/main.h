@@ -56,6 +56,7 @@ extern void pipecat_replay_xvf_params();
 extern const char *pipecat_reset_reason_name();
 extern uint32_t pipecat_boot_fault_count();
 extern uint32_t pipecat_boots_since_poweron();
+extern uint32_t pipecat_netwdt_restarts();
 extern uint32_t pipecat_net_watchdog_deadline_s();
 
 // OTA / mDNS
