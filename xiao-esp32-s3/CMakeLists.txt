@@ -86,8 +86,10 @@ set(PIPECAT_MDNS_INSTANCE_VALUE "$ENV{PIPECAT_MDNS_INSTANCE}")
 set(PIPECAT_AEC_FAR_EXTGAIN_DB_VALUE "$ENV{PIPECAT_AEC_FAR_EXTGAIN_DB}")
 set(PIPECAT_AGC_DESIRED_LEVEL_VALUE "$ENV{PIPECAT_AGC_DESIRED_LEVEL}")
 
+# Unset id -> "scratch". "bench" is a REAL satellite key since 2026-09-30 (the board
+# formerly keyed "theater", t_b5299572); an unconfigured build must not impersonate it.
 if("${PIPECAT_SATELLITE_ID_VALUE}" STREQUAL "")
-  set(PIPECAT_SATELLITE_ID_VALUE "bench")
+  set(PIPECAT_SATELLITE_ID_VALUE "scratch")
 endif()
 
 if("${PIPECAT_MDNS_HOSTNAME_VALUE}" STREQUAL "")

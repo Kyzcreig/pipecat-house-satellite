@@ -18,7 +18,7 @@ sync with the clanker-e2e skill's identity map. VERIFY on physical moves.
 
 Usage:
     python3 scripts/device_identity.py                 # identify connected board
-    python3 scripts/device_identity.py --assert theater  # exit 1 unless it's theater
+    python3 scripts/device_identity.py --assert bench  # exit 1 unless it's bench (ex-theater)
     python3 scripts/device_identity.py --port /dev/cu.usbmodem4101
 """
 from __future__ import annotations
@@ -33,7 +33,8 @@ from glob import glob
 # room -> lowercase MAC (colon-separated). Ground-truthed 2026-07-05.
 # VERIFY after any physical relocation; mirror in the clanker-e2e skill.
 REGISTRY: dict[str, str] = {
-    "theater": "1c:db:d4:74:64:84",
+    # "bench" = the board formerly keyed "theater" (renamed 2026-09-30, t_b5299572).
+    "bench": "1c:db:d4:74:64:84",
     "kitchen": "dc:b4:d9:38:a6:cc",
 }
 
@@ -104,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     label = room or "UNKNOWN (not in registry)"
     print(f"device-identity: {port} MAC={mac} -> room={label}")
 
+    if args.assert_room == "theater":  # t_b5299572 one-week alias
+        print("device-identity: DEPRECATED room 'theater' -> 'bench'", file=sys.stderr)
+        args.assert_room = "bench"
     if args.assert_room:
         if room is None:
             print(f"device-identity: ASSERT FAIL — board {mac} is not in the registry; "

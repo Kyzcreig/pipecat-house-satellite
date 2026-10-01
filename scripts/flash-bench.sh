@@ -11,7 +11,8 @@ export PATH="$USER_HOME/.platformio/tools/tool-cmake/bin:$USER_HOME/.platformio/
 export WIFI_SSID="${WIFI_SSID:-Wi-Fight this Feeling}"
 export PIPECAT_SMALLWEBRTC_URL="${PIPECAT_SMALLWEBRTC_URL:-http://192.168.1.78:7860/api/offer}"
 export PIPECAT_BENCH_SEND_TONE="${PIPECAT_BENCH_SEND_TONE:-1}"
-export PIPECAT_SATELLITE_ID="${PIPECAT_SATELLITE_ID:-bench}"
+# Default "scratch": "bench" is the real .97 satellite key since 2026-09-30 (t_b5299572).
+export PIPECAT_SATELLITE_ID="${PIPECAT_SATELLITE_ID:-scratch}"
 export PIPECAT_MDNS_HOSTNAME="${PIPECAT_MDNS_HOSTNAME:-${PIPECAT_SATELLITE_ID}-xvf3800}"
 export PIPECAT_MDNS_INSTANCE="${PIPECAT_MDNS_INSTANCE:-${PIPECAT_SATELLITE_ID} XVF3800 Voice Satellite}"
 export PIPECAT_AEC_FAR_EXTGAIN_DB="${PIPECAT_AEC_FAR_EXTGAIN_DB:-0.0f}"
@@ -53,13 +54,15 @@ fi
 
 # --- Device-identity preflight (guards the 2026-07-05 mix-up) -----------------
 # If this invocation FLASHES, resolve the connected board's MAC->room and refuse
-# to proceed if it isn't the room we mean. Set FLASH_ASSERT_ROOM=theater|kitchen
+# to proceed if it isn't the room we mean. Set FLASH_ASSERT_ROOM=bench|kitchen
 # (or it auto-derives from PIPECAT_SATELLITE_ID when that names a known room).
 # Bypass for a genuinely new/unknown board with FLASH_ASSERT_ROOM=skip.
 _want_room="${FLASH_ASSERT_ROOM:-}"
 if [[ -z "$_want_room" ]]; then
   case "${PIPECAT_SATELLITE_ID:-}" in
-    theater|kitchen) _want_room="$PIPECAT_SATELLITE_ID" ;;
+    bench|kitchen) _want_room="$PIPECAT_SATELLITE_ID" ;;
+    theater) echo "flash-bench: DEPRECATED satellite id 'theater' -> 'bench' (t_b5299572)" >&2
+             export PIPECAT_SATELLITE_ID=bench; _want_room=bench ;;
   esac
 fi
 if [[ "$*" == *flash* && -n "$_want_room" && "$_want_room" != "skip" ]]; then
