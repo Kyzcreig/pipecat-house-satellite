@@ -110,6 +110,28 @@ static void test_wifi_backoff_never_gives_up_and_caps_at_30s() {
   assert(pipecat_wifi_backoff_ms(UINT32_MAX) == 30000);
 }
 
+static void test_total_boots_counts_past_fault_cap_while_fault_boots_saturates() {
+  // t_f7fd9a8f: total_boots shared the 16 cap, so boots_since_poweron froze.
+  PipecatBootGuardState s = garbage();
+  pipecat_boot_guard_on_boot(&s, PipecatResetKind::kPowerOn);
+  for (int i = 0; i < 40; i++) pipecat_boot_guard_on_boot(&s, PipecatResetKind::kFault);
+  assert(s.total_boots == 41);
+  assert(s.total_boots > kPipecatBootGuardCountCap);
+  assert(s.fault_boots == kPipecatBootGuardCountCap);
+  assert(pipecat_boot_guard_hold_ms(&s) == 900000);
+  for (int i = 0; i < 20; i++) pipecat_boot_guard_on_boot(&s, PipecatResetKind::kSoftware);
+  assert(s.total_boots == 61);
+  // Saturates at UINT32_MAX instead of wrapping to 0.
+  s.total_boots = UINT32_MAX - 1;
+  pipecat_boot_guard_on_boot(&s, PipecatResetKind::kSoftware);
+  assert(s.total_boots == UINT32_MAX);
+  pipecat_boot_guard_on_boot(&s, PipecatResetKind::kSoftware);
+  assert(s.total_boots == UINT32_MAX);
+  // A cold power-on still restarts the count.
+  pipecat_boot_guard_on_boot(&s, PipecatResetKind::kPowerOn);
+  assert(s.total_boots == 1);
+}
+
 int main() {
   test_cold_power_on_never_holds_and_uses_base_deadline();
   test_garbage_rtc_after_non_poweron_reset_is_reinitialised();
@@ -120,6 +142,7 @@ int main() {
   test_netwdt_flag_is_consumed_once();
   test_net_watchdog_fires_at_deadline_and_resets_on_health();
   test_wifi_backoff_never_gives_up_and_caps_at_30s();
+  test_total_boots_counts_past_fault_cap_while_fault_boots_saturates();
   puts("boot guard host tests: PASS");
   return 0;
 }

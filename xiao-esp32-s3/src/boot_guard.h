@@ -28,6 +28,10 @@ static constexpr uint32_t kPipecatNetWatchdogCapMs = 60u * 60u * 1000u;
 static constexpr uint32_t kPipecatFaultHoldBaseMs = 60u * 1000u;
 static constexpr uint32_t kPipecatFaultHoldCapMs = 15u * 60u * 1000u;
 static constexpr uint32_t kPipecatBootGuardCountCap = 16u;
+// total_boots is a diagnostic counter (/xvf/params boots_since_poweron), not
+// a backoff input: it must keep counting past the fault-ladder cap so reboot
+// deltas stay visible (t_f7fd9a8f). Saturate only at the type's max.
+static constexpr uint32_t kPipecatTotalBootsCap = UINT32_MAX;
 
 enum class PipecatResetKind : uint8_t {
   kPowerOn,   // cold boot: RTC memory is garbage, counters restart
@@ -48,6 +52,10 @@ static inline uint32_t pipecat_boot_guard_sat_inc(uint32_t v) {
   return v < kPipecatBootGuardCountCap ? v + 1 : v;
 }
 
+static inline uint32_t pipecat_boot_guard_total_inc(uint32_t v) {
+  return v < kPipecatTotalBootsCap ? v + 1 : v;
+}
+
 // Call exactly once per boot, before any init. Returns true if this boot
 // followed a fault (for logging).
 static inline bool pipecat_boot_guard_on_boot(PipecatBootGuardState *s,
@@ -60,7 +68,7 @@ static inline bool pipecat_boot_guard_on_boot(PipecatBootGuardState *s,
     s->netwdt_pending = 0;
     s->total_boots = 0;
   }
-  s->total_boots = pipecat_boot_guard_sat_inc(s->total_boots);
+  s->total_boots = pipecat_boot_guard_total_inc(s->total_boots);
   const bool netwdt = kind == PipecatResetKind::kSoftware && s->netwdt_pending;
   s->netwdt_pending = 0;
   if (kind == PipecatResetKind::kFault || netwdt) {
