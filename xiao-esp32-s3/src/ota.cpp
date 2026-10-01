@@ -444,9 +444,13 @@ void pipecat_init_mdns() {
       {"fw", "pipecat-house-satellite"},
       {"role", "xvf3800"},
   };
-  ESP_ERROR_CHECK(mdns_service_add(
-      PIPECAT_MDNS_INSTANCE, "_http", "_tcp", OTA_HTTP_PORT, service_txt,
-      sizeof(service_txt) / sizeof(service_txt[0])));
+  // ESP_ERROR_CHECK stringifies its argument into the image; this layout keeps
+  // that string (and so the image) identical to the live 5e6717e build.
+  // clang-format off
+  ESP_ERROR_CHECK(mdns_service_add(PIPECAT_MDNS_INSTANCE, "_http", "_tcp",
+                                   OTA_HTTP_PORT, service_txt,
+                                   sizeof(service_txt) / sizeof(service_txt[0])));
+  // clang-format on
   g_mdns_started = true;
   ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)", PIPECAT_MDNS_HOSTNAME,
            PIPECAT_MDNS_INSTANCE);
@@ -738,6 +742,7 @@ static esp_err_t xvf_beam_handler(httpd_req_t *req) {
   return httpd_resp_sendstr(req, body);
 }
 
+#if PIPECAT_XVF_AEC_FILTER
 // GET /xvf/aec_filter?mic=N[&far=0] — AEC filter coefficients for one
 // (far, mic) pair (t_c1bfa4f6), as raw little-endian float32, the exact byte
 // format of `xvf_host --get-aec-filter` <file>.f<far>.m<mic>, so XMOS
@@ -834,6 +839,7 @@ static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
   free(coeffs);
   return sent;
 }
+#endif  // PIPECAT_XVF_AEC_FILTER
 
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
 // Crackle triage: underruns>0 during crackle = delivery timing (raise
@@ -858,16 +864,27 @@ extern volatile uint32_t g_play_prebuffer_steps;
 // Decimator droop compensator (t_1ce88efe) cost accounting. This filter runs
 // ON the audio publisher task, which the RTP publisher shares; the "No audio
 // frame" peer-churn scar came from exactly that task being starved. These are
-// the numbers that make the cost a fact instead of an assumption. Compiled in
-// even when PIPECAT_DECIM_COMP=0 (they then read zero, and decim_comp reports
-// 0 so a reader can tell "off" from "on but free").
-#ifndef PIPECAT_DECIM_COMP
-#define PIPECAT_DECIM_COMP 1
-#endif
+// the numbers that make the cost a fact instead of an assumption. Only with
+// PIPECAT_DECIM_COMP=1 (t_4f8fe707: built, never flashed, needs its own card);
+// the default /playback/stats body is the live one, without decim_comp_*
+// fields.
+#if PIPECAT_DECIM_COMP
 extern volatile uint32_t g_decim_comp_last_us;
 extern volatile uint32_t g_decim_comp_max_us;
 extern volatile uint32_t g_decim_comp_frames;
 extern volatile uint64_t g_decim_comp_total_us;
+#define DECIM_COMP_STATS_FMT                             \
+  "\"decim_comp\":%u,\"decim_comp_last_us\":%lu,"        \
+  "\"decim_comp_max_us\":%lu,\"decim_comp_frames\":%lu," \
+  "\"decim_comp_total_us\":%llu,"
+#define DECIM_COMP_STATS_ARGS                                                 \
+  , (unsigned)PIPECAT_DECIM_COMP, (unsigned long)g_decim_comp_last_us,        \
+      (unsigned long)g_decim_comp_max_us, (unsigned long)g_decim_comp_frames, \
+      (unsigned long long)g_decim_comp_total_us
+#else
+#define DECIM_COMP_STATS_FMT ""
+#define DECIM_COMP_STATS_ARGS
+#endif
 // From vendored components/peer/rtp.c — splits reordering from true loss.
 extern "C" {
 extern volatile uint32_t g_rtp_late_drops;
@@ -944,7 +961,11 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
     }
   }
   constexpr size_t kRttSamplesCapacity = 800;
+#if PIPECAT_DECIM_COMP
   constexpr size_t kBodyCapacity = 2400;  // +decim_comp_* fields (t_1ce88efe)
+#else
+  constexpr size_t kBodyCapacity = 2200;
+#endif
   char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -970,11 +991,8 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       "\"dcep_ack_rx_sid0\":%lu,\"dcep_ack_rx_sid2\":%lu,"
       "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
       "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
-      "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%lu,"
-      "\"decim_comp\":%u,\"decim_comp_last_us\":%lu,"
-      "\"decim_comp_max_us\":%lu,\"decim_comp_frames\":%lu,"
-      "\"decim_comp_total_us\":%llu,"
-      "\"led_brightness\":%u}",
+      "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%"
+      "lu," DECIM_COMP_STATS_FMT "\"led_brightness\":%u}",
       (unsigned long)g_play_stat_frames, (unsigned long)g_play_stat_write_fail,
       (unsigned long)g_play_stat_underruns, (unsigned long)g_play_stat_plc,
       (unsigned long)g_play_stat_fec, (unsigned long)g_rtp_late_drops,
@@ -997,10 +1015,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       (unsigned long)g_play_stat_gap_resumes,
       (unsigned long)(g_play_prebuffer_samples / 16),
       (unsigned long)g_play_prebuffer_effective_ms,
-      (unsigned long)g_play_prebuffer_steps, (unsigned)PIPECAT_DECIM_COMP,
-      (unsigned long)g_decim_comp_last_us, (unsigned long)g_decim_comp_max_us,
-      (unsigned long)g_decim_comp_frames,
-      (unsigned long long)g_decim_comp_total_us,
+      (unsigned long)g_play_prebuffer_steps DECIM_COMP_STATS_ARGS,
       (unsigned)pipecat_led_brightness());
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
@@ -1012,7 +1027,11 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
+#if PIPECAT_XVF_AEC_FILTER
   config.max_uri_handlers = 10;
+#else
+  config.max_uri_handlers = 9;
+#endif
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1061,12 +1080,14 @@ void pipecat_init_ota_server() {
       .handler = xvf_beam_handler,
       .user_ctx = NULL,
   };
+#if PIPECAT_XVF_AEC_FILTER
   httpd_uri_t aec_filter_uri = {
       .uri = "/xvf/aec_filter",
       .method = HTTP_GET,
       .handler = xvf_aec_filter_handler,
       .user_ctx = NULL,
   };
+#endif
   httpd_uri_t stats_uri = {
       .uri = "/playback/stats",
       .method = HTTP_GET,
@@ -1086,7 +1107,9 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &read_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &beam_uri));
+#if PIPECAT_XVF_AEC_FILTER
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &aec_filter_uri));
+#endif
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);

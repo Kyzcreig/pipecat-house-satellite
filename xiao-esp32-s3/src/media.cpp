@@ -59,7 +59,15 @@
 //     healed EVERY uplink gap observed in ~48 h. Those bits are not idle; they
 //     are why the 0.004% gap rate is inaudible. All gains above are measured
 //     WITH FEC on, so none of them are financed by dropping it.
+//
+// t_4f8fe707: 64k/lane is built, never flashed, needs its own card. Default
+// build keeps the live 30k/lane; PIPECAT_UPLINK_64K=1 builds the measured 64k
+// arm.
+#if PIPECAT_UPLINK_64K
 #define OPUS_ENCODER_BITRATE 64000
+#else
+#define OPUS_ENCODER_BITRATE 30000
+#endif
 #define OPUS_ENCODER_COMPLEXITY 0
 #define OPUS_EXPECTED_PACKET_LOSS_PCT 10
 
@@ -138,8 +146,13 @@ static constexpr uint8_t XVF_RESID_DFU_CONTROLLER = 240;
 static constexpr uint8_t XVF_CMD_DFU_GETVERSION = 88;
 static constexpr uint8_t XVF_READ_BIT = 0x80;
 // Largest read payload: SPECIAL_CMD_AEC_FILTER_COEFFS is 15 floats = 60 bytes
-// (+1 status byte on the wire). Was 31 before t_c1bfa4f6.
+// (+1 status byte on the wire). Was 31 before t_c1bfa4f6, and stays 31 while
+// PIPECAT_XVF_AEC_FILTER is off (built, never flashed, needs its own card).
+#if PIPECAT_XVF_AEC_FILTER
 static constexpr size_t XVF_READ_MAX_PAYLOAD = 60;
+#else
+static constexpr size_t XVF_READ_MAX_PAYLOAD = 31;
+#endif
 
 static constexpr uint8_t XVF_RESID_PP = 17;
 static constexpr uint8_t XVF_RESID_AEC = 33;
@@ -845,6 +858,7 @@ esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
   return ret;
 }
 
+#if PIPECAT_XVF_AEC_FILTER
 // AEC filter-coefficient read (t_c1bfa4f6). Sequence + rationale live in
 // xvf_aec_filter.h. The ONLY writes are the XMOS read-sequence selectors
 // (FAR_MIC_INDEX, COEFF_START_OFFSET) and the ABORT reset; no coefficient,
@@ -895,6 +909,7 @@ esp_err_t pipecat_xvf_read_aec_filter(int32_t far, int32_t mic, float *out,
            result->aborted ? " (aborted)" : "");
   return ESP_OK;
 }
+#endif  // PIPECAT_XVF_AEC_FILTER
 
 static int azimuth_to_led(float radians) {
   float degrees = radians * 180.0f / PI_F;
@@ -1604,12 +1619,10 @@ static void stereo_48k_32bit_to_mono_16k(int32_t *src, size_t src_frames,
 
 // ── 48->16 kHz decimator droop compensation (t_1ce88efe) ──────────────────
 // Build-gated so the flash can be A/B'd against the same image with the knob
-// off, and so a regression is one rebuild away from reverted. Default ON in
-// this lineage; -DPIPECAT_DECIM_COMP=0 restores bit-identical pre-change
-// capture behaviour.
-#ifndef PIPECAT_DECIM_COMP
-#define PIPECAT_DECIM_COMP 1
-#endif
+// off, and so a regression is one rebuild away from reverted. DEFAULT OFF
+// (t_4f8fe707: built, never flashed, needs its own card); PIPECAT_DECIM_COMP=1
+// builds it. Off = the live capture path, counters and /playback/stats body
+// included.
 #if PIPECAT_DECIM_COMP
 #include "decim_comp.h"
 // One state per CHANNEL: the dual-stream lane carries two DIFFERENT XVF
@@ -1622,12 +1635,13 @@ static decim_comp s_decim_comp_r;
 // i2s_read + opus_encode + RTP send; anything added here can starve the RTP
 // publisher (that exact failure caused server-side "No audio frame" timeouts
 // and peer churn — see the NOTE at the opus_encode call). These counters make
-// the cost a measured fact on /playback/stats instead of an assumption, and
-// they are compiled in even when the filter is off (they then read zero).
+// the cost a measured fact on /playback/stats instead of an assumption.
+#if PIPECAT_DECIM_COMP
 volatile uint32_t g_decim_comp_last_us = 0;
 volatile uint32_t g_decim_comp_max_us = 0;
 volatile uint32_t g_decim_comp_frames = 0;
 volatile uint64_t g_decim_comp_total_us = 0;
+#endif
 
 static void fill_bench_tone(int16_t *dst, size_t samples) {
   static uint32_t phase = 0;
@@ -1707,7 +1721,9 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 
 // Gap accounting + adaptive prebuffer controller (host-testable pure C —
 // tests/host/test_prebuffer_ctl.c).
+#if PIPECAT_FEC_LBRR
 #include "opus_gapfill.h"
+#endif
 #include "prebuffer_ctl.h"
 #ifndef PIPECAT_ADAPTIVE_PREBUFFER
 #define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
@@ -1965,7 +1981,10 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
     // of live downlink packets carry no LBRR — t_5730dda1). The routing +
     // counter attribution live in opus_gapfill.c so the host test
     // (tests/host/run_gapfill_tests.sh) exercises the exact code path
-    // against the vendored esp-libopus.
+    // against the vendored esp-libopus. PIPECAT_FEC_LBRR=1 only: it is
+    // built, never flashed, needs its own card (t_4f8fe707); the default is the
+    // live path below.
+#if PIPECAT_FEC_LBRR
     s_pending_gap = 0;
     int fill_size = opus_gapfill_recover_one(
         opus_decoder, data, size, decoder_buffer, PCM_SAMPLES_PER_FRAME,
@@ -1973,6 +1992,23 @@ void pipecat_audio_decode(uint8_t *data, size_t size) {
     if (fill_size > 0) {
       push_decoded_to_ring(decoder_buffer, fill_size);
     }
+#else
+    int fec_size = opus_decode(opus_decoder, data, size, decoder_buffer,
+                               PCM_SAMPLES_PER_FRAME, 1 /* decode_fec */);
+    s_pending_gap = 0;
+    if (fec_size > 0) {
+      g_play_stat_fec++;
+      push_decoded_to_ring(decoder_buffer, fec_size);
+    } else {
+      // Encoder had no FEC data — fall back to PLC for the lost frame.
+      int plc_size = opus_decode(opus_decoder, NULL, 0, decoder_buffer,
+                                 PCM_SAMPLES_PER_FRAME, 0);
+      g_play_stat_plc++;
+      if (plc_size > 0) {
+        push_decoded_to_ring(decoder_buffer, plc_size);
+      }
+    }
+#endif
   }
 
   int decoded_size = opus_decode(opus_decoder, data, size, decoder_buffer,
@@ -2016,12 +2052,14 @@ void pipecat_init_audio_encoder() {
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(OPUS_UPLINK_FEC_ENABLE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_PACKET_LOSS_PERC(OPUS_UPLINK_PLP));
+#if PIPECAT_UPLINK_64K || !PIPECAT_UPLINK_INBAND_FEC
   ESP_LOGI(LOG_TAG,
            "uplink opus: bitrate=%d/lane complexity=%d inband_fec=%d plp=%d "
            "(mode=%s)",
            OPUS_ENCODER_BITRATE, OPUS_ENCODER_COMPLEXITY,
            OPUS_UPLINK_FEC_ENABLE, OPUS_UPLINK_PLP,
            OPUS_UPLINK_FEC_ENABLE ? "SILK-locked" : "CELT-eligible");
+#endif
 
 #if PIPECAT_DUAL_STREAM
   read_buffer =

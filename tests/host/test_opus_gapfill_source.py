@@ -14,19 +14,29 @@ SRC = ROOT / "xiao-esp32-s3/src"
 MEDIA = (SRC / "media.cpp").read_text()
 GAPFILL = (SRC / "opus_gapfill.c").read_text()
 CMAKE = (SRC / "CMakeLists.txt").read_text()
+CONFIG = (SRC / "pipecat_build_config.h.in").read_text()
 
 
 def test_media_routes_gap_fill_through_opus_gapfill() -> None:
     start = MEDIA.index("void pipecat_audio_decode(")
     end = MEDIA.index("static OpusEncoder *opus_encoder", start)
     body = MEDIA[start:end]
+    # The fix is the PIPECAT_FEC_LBRR=1 arm. The #else arm is the live
+    # (never-replaced) path, kept so a default build is the live image
+    # (t_4f8fe707); the conflation must not leak into the fix arm.
+    arm_start = body.index("#if PIPECAT_FEC_LBRR\n")
+    arm = body[arm_start : body.index("#else", arm_start)]
     # clang-format re-wraps call arguments, so compare whitespace-free text.
-    flat = re.sub(r"\s+", "", body)
+    flat = re.sub(r"\s+", "", arm)
     assert "opus_gapfill_recover_one(opus_decoder,data,size," in flat
     assert "&g_play_stat_fec,&g_play_stat_plc)" in flat
-    # No private decode_fec=1 call left in media.cpp: that is the conflation.
-    assert "1 /* decode_fec */" not in body
-    assert "fec_size" not in body
+    # No private decode_fec=1 call in the fix arm: that is the conflation.
+    assert "1 /* decode_fec */" not in arm
+    assert "fec_size" not in arm
+
+
+def test_fix_is_built_never_flashed_default_off() -> None:
+    assert "#ifndef PIPECAT_FEC_LBRR\n#define PIPECAT_FEC_LBRR 0" in CONFIG
 
 
 def test_gapfill_attributes_on_lbrr_not_return_value() -> None:
