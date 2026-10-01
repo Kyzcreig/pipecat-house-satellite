@@ -42,6 +42,16 @@ if("$ENV{PIPECAT_UPLINK_INBAND_FEC}" STREQUAL "0")
   add_compile_definitions(PIPECAT_UPLINK_INBAND_FEC=0)
 endif()
 
+# Merged-but-never-flashed features (t_4f8fe707): DEFAULT OFF so a build from
+# main reproduces the live firmware. Defaults live in pipecat_build_config.h.in;
+# src/CMakeLists.txt drops their sources when off. Each needs its own card.
+foreach(_pipecat_flag PIPECAT_UPLINK_64K PIPECAT_DECIM_COMP PIPECAT_FEC_LBRR
+                      PIPECAT_XVF_AEC_FILTER)
+  if("$ENV{${_pipecat_flag}}" STREQUAL "1")
+    add_compile_definitions(${_pipecat_flag}=1)
+  endif()
+endforeach()
+
 # Phase 6 adaptive prebuffer (NetEQ-lite): grow the playback prebuffer
 # 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
 # in a rolling window; decay back one step after a quiet period. DARK by

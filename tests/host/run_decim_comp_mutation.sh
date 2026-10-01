@@ -8,9 +8,10 @@ MEDIA=xiao-esp32-s3/src/media.cpp
 CMAKE=xiao-esp32-s3/src/CMakeLists.txt
 COMP=xiao-esp32-s3/src/decim_comp.c
 OTA=xiao-esp32-s3/src/ota.cpp
+CFG=xiao-esp32-s3/src/pipecat_build_config.h.in
 BK="$(mktemp -d)"
-cp "$MEDIA" "$BK/media" ; cp "$CMAKE" "$BK/cmake" ; cp "$COMP" "$BK/comp" ; cp "$OTA" "$BK/ota"
-restore() { cp "$BK/media" "$MEDIA"; cp "$BK/cmake" "$CMAKE"; cp "$BK/comp" "$COMP"; cp "$BK/ota" "$OTA"; }
+cp "$MEDIA" "$BK/media" ; cp "$CMAKE" "$BK/cmake" ; cp "$COMP" "$BK/comp" ; cp "$OTA" "$BK/ota" ; cp "$CFG" "$BK/cfg"
+restore() { cp "$BK/media" "$MEDIA"; cp "$BK/cmake" "$CMAKE"; cp "$BK/comp" "$COMP"; cp "$BK/ota" "$OTA"; cp "$BK/cfg" "$CFG"; }
 trap 'restore; rm -rf "$BK"' EXIT
 
 fails=0
@@ -32,7 +33,7 @@ perl -0pi -e 's/      decim_comp_run\(&s_decim_comp_l/      \/\/ decim_comp_run(
 check "mono capture path no longer calls the compensator"
 
 # 3. not compiled in at all
-perl -0pi -e 's/"decim_comp\.c" //' "$CMAKE"
+perl -0pi -e 's/"decim_comp\.c"//' "$CMAKE"
 check "decim_comp.c dropped from the component SRCS"
 
 # 4. state never initialised (stale history across a reconnect)
@@ -52,7 +53,7 @@ perl -0pi -e 's/\\"decim_comp_max_us\\":%lu,//' "$OTA"
 check "per-frame cost no longer reported on /playback/stats"
 
 # 8. build gate removed (no one-rebuild revert)
-perl -0pi -e 's/#define PIPECAT_DECIM_COMP 1/#define PIPECAT_DECIM_COMP_X 1/' "$MEDIA"
+perl -0pi -e 's/#define PIPECAT_DECIM_COMP 0/#define PIPECAT_DECIM_COMP_X 0/' "$CFG"
 check "build gate renamed away"
 
 echo

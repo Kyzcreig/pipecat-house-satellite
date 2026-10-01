@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MEDIA = (ROOT / "xiao-esp32-s3/src/media.cpp").read_text()
 OTA = (ROOT / "xiao-esp32-s3/src/ota.cpp").read_text()
 CMAKE = (ROOT / "xiao-esp32-s3/src/CMakeLists.txt").read_text()
+CONFIG = (ROOT / "xiao-esp32-s3/src/pipecat_build_config.h.in").read_text()
 COMP_C = (ROOT / "xiao-esp32-s3/src/decim_comp.c").read_text()
 
 
@@ -50,10 +51,11 @@ def test_state_is_initialised_before_the_first_frame() -> None:
     assert end > start
 
 
-def test_build_gate_exists_and_defaults_on() -> None:
-    """One rebuild must be able to restore bit-identical pre-change capture."""
-    assert "#ifndef PIPECAT_DECIM_COMP" in MEDIA
-    assert "#define PIPECAT_DECIM_COMP 1" in MEDIA
+def test_build_gate_exists_and_defaults_off() -> None:
+    """Never flashed (t_4f8fe707): default OFF so a build from main is the live
+    image; PIPECAT_DECIM_COMP=1 at configure time turns it on."""
+    assert "#ifndef PIPECAT_DECIM_COMP\n#define PIPECAT_DECIM_COMP 0" in CONFIG
+    assert "#define PIPECAT_DECIM_COMP 1" not in MEDIA + OTA
     assert "#if PIPECAT_DECIM_COMP" in MEDIA
 
 
