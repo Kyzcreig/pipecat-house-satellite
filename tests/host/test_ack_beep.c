@@ -42,7 +42,8 @@ static int16_t *load(const char *path, uint32_t *n) {
   long len = ftell(f);
   fseek(f, 0, SEEK_SET);
   int16_t *buf = (int16_t *)malloc((size_t)len);
-  if (fread(buf, 1, (size_t)len, f) != (size_t)len) exit(2);
+  if (fread(buf, 1, (size_t)len, f) != (size_t)len)
+    exit(2);
   fclose(f);
   *n = (uint32_t)(len / 2);
   return buf;
@@ -168,8 +169,10 @@ static void test_marker_with_wrong_tone_is_missed(void) {
   uint32_t fade = (uint32_t)(n * 0.15);
   for (uint32_t i = 0; i < n; i++) {
     double amp = 0.35;
-    if (i < fade) amp *= (double)i / fade;
-    else if (i > n - fade) amp *= (double)(n - i) / fade;
+    if (i < fade)
+      amp *= (double)i / fade;
+    else if (i > n - fade)
+      amp *= (double)(n - i) / fade;
     sine[i] = (int16_t)(amp * 32767 * sin(2 * M_PI * 880.0 * i / 16000.0));
   }
   ack_beep_marker m = chime_marker("wb-sine");
@@ -201,7 +204,8 @@ static void test_chime_ending_the_stream_is_padded_and_played(void) {
   ack_beep_arm(&s, &m, 0);
   uint32_t now = feed_frames(&s, chime + 160, chime_n - 160, 10, 1.0f);
   assert(s.played == 0 || s.played == 1);
-  for (uint32_t t = now; t < now + 400; t += 5) ack_beep_tick(&s, t);
+  for (uint32_t t = now; t < now + 400; t += 5)
+    ack_beep_tick(&s, t);
   assert(s.played == 1);
 }
 
@@ -246,9 +250,10 @@ static void test_chime_older_than_lookback_is_not_matched(void) {
 
 static void test_invalid_markers_are_rejected_and_never_count(void) {
   ack_beep_marker bad[6];
-  bad[0] = chime_marker("");          /* no id */
-  bad[1] = chime_marker("wb-flat");   /* flat envelope */
-  for (int i = 0; i < 10; i++) bad[1].env[i] = 1000.0f;
+  bad[0] = chime_marker("");        /* no id */
+  bad[1] = chime_marker("wb-flat"); /* flat envelope */
+  for (int i = 0; i < 10; i++)
+    bad[1].env[i] = 1000.0f;
   bad[2] = chime_marker("wb-nontonal");
   bad[2].tonal = 0.05f;
   bad[3] = chime_marker("wb-short");
