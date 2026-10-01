@@ -971,8 +971,8 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   // kAckBeepCapacity scratch after the body.
   constexpr size_t kAckBeepCapacity = 400;
   constexpr size_t kBodyTotal = kBodyCapacity + kAckBeepCapacity;
-  char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyTotal +
-                                 kAckBeepCapacity);
+  char *scratch =
+      (char *)malloc(kRttSamplesCapacity + kBodyTotal + kAckBeepCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                "Unable to allocate playback stats response");

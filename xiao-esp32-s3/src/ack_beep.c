@@ -67,7 +67,8 @@ static float pearson(const float *x, const float *y, int n) {
     sxx += dx * dx;
     syy += dy * dy;
   }
-  if (sxx <= 0.0 || syy <= 0.0) return 0.0f;
+  if (sxx <= 0.0 || syy <= 0.0)
+    return 0.0f;
   return (float)(sxy / sqrt(sxx * syy));
 }
 
@@ -108,7 +109,8 @@ static void score_available(ack_beep_state *s, uint32_t now_ms) {
     s->fen[s->fcount] = energy;
     s->ftone[s->fcount] = tonal;
     s->fcount++;
-    if (s->fcount < n) continue;
+    if (s->fcount < n)
+      continue;
 
     float corr = pearson(s->frms, s->m.env, n);
     double en = 0.0, wt = 0.0;
@@ -116,13 +118,16 @@ static void score_available(ack_beep_state *s, uint32_t now_ms) {
     for (int i = 0; i < n; i++) {
       en += s->fen[i];
       wt += (double)s->fen[i] * s->ftone[i];
-      if (s->frms[i] > peak) peak = s->frms[i];
+      if (s->frms[i] > peak)
+        peak = s->frms[i];
     }
     float wtonal = en > 0.0 ? (float)(wt / en) : 0.0f;
     int32_t cm = (int32_t)lroundf(corr * 1000.0f);
-    if (cm > s->best_corr_milli) s->best_corr_milli = cm;
+    if (cm > s->best_corr_milli)
+      s->best_corr_milli = cm;
     if (corr >= ACK_BEEP_MIN_CORR &&
-        wtonal >= ACK_BEEP_TONAL_FRAC * s->m.tonal && peak >= ACK_BEEP_MIN_RMS) {
+        wtonal >= ACK_BEEP_TONAL_FRAC * s->m.tonal &&
+        peak >= ACK_BEEP_MIN_RMS) {
       resolve_played(s, corr, wtonal, now_ms);
       return;
     }
@@ -146,30 +151,41 @@ void ack_beep_get_telemetry(const ack_beep_state *s, ack_beep_telemetry *t) {
 
 /* ids are echoed verbatim into JSON: allow only [A-Za-z0-9._-] */
 static int id_valid(const char *id) {
-  if (id[0] == '\0') return 0;
+  if (id[0] == '\0')
+    return 0;
   for (const char *p = id; *p; p++) {
     char ch = *p;
     int ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
              (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
-    if (!ok) return 0;
+    if (!ok)
+      return 0;
   }
   return 1;
 }
 
 static int marker_valid(const ack_beep_marker *m) {
-  if (memchr(m->id, '\0', ACK_BEEP_ID_LEN) == NULL) return 0;
-  if (!id_valid(m->id)) return 0;
-  if (m->env_len < ACK_BEEP_MIN_ENV || m->env_len > ACK_BEEP_MAX_ENV) return 0;
-  if (m->nfreqs < 1 || m->nfreqs > ACK_BEEP_MAX_FREQS) return 0;
+  if (memchr(m->id, '\0', ACK_BEEP_ID_LEN) == NULL)
+    return 0;
+  if (!id_valid(m->id))
+    return 0;
+  if (m->env_len < ACK_BEEP_MIN_ENV || m->env_len > ACK_BEEP_MAX_ENV)
+    return 0;
+  if (m->nfreqs < 1 || m->nfreqs > ACK_BEEP_MAX_FREQS)
+    return 0;
   for (int k = 0; k < m->nfreqs; k++) {
-    if (!(m->freqs[k] > 50.0f && m->freqs[k] < 7900.0f)) return 0;
+    if (!(m->freqs[k] > 50.0f && m->freqs[k] < 7900.0f))
+      return 0;
   }
-  if (!(m->tonal >= ACK_BEEP_MIN_REF_TONAL && m->tonal <= 1.5f)) return 0;
+  if (!(m->tonal >= ACK_BEEP_MIN_REF_TONAL && m->tonal <= 1.5f))
+    return 0;
   float lo = m->env[0], hi = m->env[0];
   for (int i = 0; i < m->env_len; i++) {
-    if (!(m->env[i] >= 0.0f) || m->env[i] > 40000.0f) return 0;
-    if (m->env[i] < lo) lo = m->env[i];
-    if (m->env[i] > hi) hi = m->env[i];
+    if (!(m->env[i] >= 0.0f) || m->env[i] > 40000.0f)
+      return 0;
+    if (m->env[i] < lo)
+      lo = m->env[i];
+    if (m->env[i] > hi)
+      hi = m->env[i];
   }
   return hi > lo; /* a flat envelope has no shape to correlate */
 }
@@ -192,7 +208,8 @@ ack_beep_arm_result ack_beep_arm(ack_beep_state *s, const ack_beep_marker *m,
   s->fcount = 0;
   s->best_corr_milli = -1000;
   uint32_t from = oldest(s);
-  if (s->consumed > from) from = s->consumed;
+  if (s->consumed > from)
+    from = s->consumed;
   s->scan_from = from;
   score_available(s, now_ms); /* audio may have beaten the marker */
   return ACK_BEEP_ARMED;
@@ -206,7 +223,8 @@ static void check_timeout(ack_beep_state *s, uint32_t now_ms) {
 
 void ack_beep_feed(ack_beep_state *s, const int16_t *pcm, uint32_t n,
                    uint32_t now_ms) {
-  for (uint32_t i = 0; i < n; i++) append(s, pcm[i]);
+  for (uint32_t i = 0; i < n; i++)
+    append(s, pcm[i]);
   s->last_feed_ms = now_ms;
   s->pad_ms = 0;
   if (s->armed) {
@@ -216,13 +234,15 @@ void ack_beep_feed(ack_beep_state *s, const int16_t *pcm, uint32_t n,
 }
 
 void ack_beep_tick(ack_beep_state *s, uint32_t now_ms) {
-  if (!s->armed) return;
+  if (!s->armed)
+    return;
   uint32_t idle = now_ms - s->last_feed_ms;
   if (idle >= ACK_BEEP_IDLE_PAD_MS) {
     uint32_t cap_ms = (uint32_t)s->m.env_len * 20u;
     uint32_t want = idle < cap_ms ? idle : cap_ms;
     while (s->pad_ms + 20u <= want) {
-      for (uint32_t i = 0; i < ACK_BEEP_BLOCK; i++) append(s, 0);
+      for (uint32_t i = 0; i < ACK_BEEP_BLOCK; i++)
+        append(s, 0);
       s->pad_ms += 20u;
     }
     score_available(s, now_ms);

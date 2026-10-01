@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ack_beep.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
@@ -14,9 +15,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "ack_beep.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "main.h"
 #include "nvs.h"
 
@@ -1808,7 +1808,8 @@ static uint32_t ack_beep_now_ms() {
 }
 
 extern "C" void pipecat_ack_beep_arm(const ack_beep_marker *m) {
-  if (s_ack_beep_lock == nullptr) return;
+  if (s_ack_beep_lock == nullptr)
+    return;
   xSemaphoreTake(s_ack_beep_lock, portMAX_DELAY);
   ack_beep_arm_result r = ack_beep_arm(&s_ack_beep, m, ack_beep_now_ms());
   xSemaphoreGive(s_ack_beep_lock);
@@ -1817,7 +1818,8 @@ extern "C" void pipecat_ack_beep_arm(const ack_beep_marker *m) {
 }
 
 extern "C" bool pipecat_ack_beep_snapshot(ack_beep_telemetry *out) {
-  if (s_ack_beep_lock == nullptr) return false;
+  if (s_ack_beep_lock == nullptr)
+    return false;
   xSemaphoreTake(s_ack_beep_lock, portMAX_DELAY);
   ack_beep_get_telemetry(&s_ack_beep, out);
   xSemaphoreGive(s_ack_beep_lock);
@@ -1825,7 +1827,8 @@ extern "C" bool pipecat_ack_beep_snapshot(ack_beep_telemetry *out) {
 }
 
 static void ack_beep_played_frame(const int16_t *pcm, uint32_t n) {
-  if (s_ack_beep_lock == nullptr) return;
+  if (s_ack_beep_lock == nullptr)
+    return;
   xSemaphoreTake(s_ack_beep_lock, portMAX_DELAY);
   uint32_t played_before = s_ack_beep.played;
   ack_beep_feed(&s_ack_beep, pcm, n, ack_beep_now_ms());
@@ -1842,7 +1845,8 @@ static void ack_beep_played_frame(const int16_t *pcm, uint32_t n) {
 }
 
 static void ack_beep_idle_tick() {
-  if (s_ack_beep_lock == nullptr || !s_ack_beep.armed) return;
+  if (s_ack_beep_lock == nullptr || !s_ack_beep.armed)
+    return;
   xSemaphoreTake(s_ack_beep_lock, portMAX_DELAY);
   ack_beep_tick(&s_ack_beep, ack_beep_now_ms());
   xSemaphoreGive(s_ack_beep_lock);

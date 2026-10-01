@@ -59,9 +59,9 @@ typedef struct {
   /* caller-owned history of played samples (ring) */
   int16_t *hist;
   uint32_t hist_cap;
-  uint32_t pos;        /* total samples fed (absolute index) */
+  uint32_t pos; /* total samples fed (absolute index) */
   uint32_t last_feed_ms;
-  uint32_t pad_ms;     /* idle time already converted to zero padding */
+  uint32_t pad_ms; /* idle time already converted to zero padding */
 
   /* pending request */
   int armed;
@@ -81,11 +81,11 @@ typedef struct {
   uint32_t rejected;
   uint32_t superseded;
   char last_id[ACK_BEEP_ID_LEN];
-  uint32_t last_ms;          /* uptime ms of the last PLAYED match */
-  int32_t last_corr_milli;   /* corr * 1000 of the last PLAYED match */
-  int32_t last_tonal_milli;  /* window tonal * 1000 of the last PLAYED match */
+  uint32_t last_ms;         /* uptime ms of the last PLAYED match */
+  int32_t last_corr_milli;  /* corr * 1000 of the last PLAYED match */
+  int32_t last_tonal_milli; /* window tonal * 1000 of the last PLAYED match */
   char last_missed_id[ACK_BEEP_ID_LEN];
-  int32_t best_corr_milli;   /* best corr seen for the pending/last marker */
+  int32_t best_corr_milli; /* best corr seen for the pending/last marker */
 } ack_beep_state;
 
 /* Compact read-only copy for /playback/stats (fits the httpd task stack). */
