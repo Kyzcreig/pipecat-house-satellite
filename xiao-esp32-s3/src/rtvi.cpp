@@ -176,6 +176,43 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
       cJSON *j_t = cJSON_GetObjectItem(j_data, "t");
       if (j_t == NULL || j_t->valuestring == NULL)
         break;
+      if (hash(j_t->valuestring) == hash("ack_beep")) {
+        // Wake-ACK beep REQUEST + fingerprint (t_69ffa409). The beep PCM
+        // follows on the audio track; ack_beep.c decides whether it PLAYED.
+        ack_beep_marker m;
+        memset(&m, 0, sizeof(m));
+        cJSON *j_id = cJSON_GetObjectItem(j_data, "id");
+        cJSON *j_env = cJSON_GetObjectItem(j_data, "env");
+        cJSON *j_freqs = cJSON_GetObjectItem(j_data, "freqs");
+        cJSON *j_tonal = cJSON_GetObjectItem(j_data, "tonal");
+        if (cJSON_IsString(j_id) && j_id->valuestring != NULL) {
+          snprintf(m.id, sizeof(m.id), "%s", j_id->valuestring);
+        }
+        if (cJSON_IsArray(j_env)) {
+          int n = cJSON_GetArraySize(j_env);
+          // Oversized arrays are left at env_len=0 so the marker is rejected.
+          if (n <= ACK_BEEP_MAX_ENV) {
+            for (int i = 0; i < n; i++) {
+              cJSON *v = cJSON_GetArrayItem(j_env, i);
+              m.env[i] = cJSON_IsNumber(v) ? (float)v->valuedouble : -1.0f;
+            }
+            m.env_len = n;
+          }
+        }
+        if (cJSON_IsArray(j_freqs)) {
+          int n = cJSON_GetArraySize(j_freqs);
+          if (n <= ACK_BEEP_MAX_FREQS) {
+            for (int i = 0; i < n; i++) {
+              cJSON *v = cJSON_GetArrayItem(j_freqs, i);
+              m.freqs[i] = cJSON_IsNumber(v) ? (float)v->valuedouble : 0.0f;
+            }
+            m.nfreqs = n;
+          }
+        }
+        m.tonal = cJSON_IsNumber(j_tonal) ? (float)j_tonal->valuedouble : 0.0f;
+        pipecat_ack_beep_arm(&m);
+        break;
+      }
       if (hash(j_t->valuestring) == hash("led")) {
         cJSON *j_phase = cJSON_GetObjectItem(j_data, "phase");
         if (j_phase == NULL || j_phase->valuestring == NULL)

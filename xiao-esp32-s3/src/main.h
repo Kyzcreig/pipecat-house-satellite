@@ -114,6 +114,11 @@ extern bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid);
 extern void pipecat_rtvi_send_pending_heartbeat();
 extern void pipecat_rtvi_handle_message(const char *msg);
 
+// Wake-ACK beep playback telemetry (media.cpp + ack_beep.c, t_69ffa409).
+#include "ack_beep.h"
+extern "C" void pipecat_ack_beep_arm(const ack_beep_marker *m);
+extern "C" bool pipecat_ack_beep_snapshot(ack_beep_telemetry *out);
+
 // Screen
 extern void pipecat_init_screen();
 extern void pipecat_screen_system_log(const char *text);
