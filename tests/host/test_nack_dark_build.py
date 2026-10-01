@@ -9,7 +9,7 @@ NACK_GATE = 'if("$ENV{PIPECAT_NACK}" STREQUAL "1")'
 
 
 def test_dark_build_manifest_excludes_nack_client_source() -> None:
-    """A default/theater build must not compile the retired NACK client."""
+    """A default/bench build must not compile the retired NACK client."""
     gate_start = PEER_CMAKE.index(NACK_GATE)
     gate_end = PEER_CMAKE.index("endif()", gate_start)
     assert '"nack_client.c"' not in PEER_CMAKE[:gate_start]
