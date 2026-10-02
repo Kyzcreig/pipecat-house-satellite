@@ -252,6 +252,64 @@ static void test_adaptive_effective_at_default_base_80(void) {
   assert(pbc_effective_ms(&c, 80) == 160); /* clamped */
 }
 
+/* ── I2S DMA lead (t_a57274a4) ───────────────────────────────────────────── */
+
+static void test_dma_lead_zero_before_first_write(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  assert(pbc_dma_lead_ms(&c, 0) == 0);
+  assert(pbc_dma_lead_ms(&c, 123456) == 0);
+}
+
+static void test_dma_lead_accumulates_and_drains_in_real_time(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  pbc_on_frame_written(&c, 1000, 20);
+  pbc_on_frame_written(&c, 1001, 20);
+  assert(pbc_dma_lead_ms(&c, 1001) == 39); /* 1040 - 1001 */
+  assert(pbc_dma_lead_ms(&c, 1030) == 10);
+  assert(pbc_dma_lead_ms(&c, 1040) == 0);
+  assert(pbc_dma_lead_ms(&c, 1500) == 0); /* never negative */
+}
+
+static void test_dma_lead_reanchors_after_underflow(void) {
+  /* A write after the DMA ran dry starts playing NOW, not at the stale end. */
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  pbc_on_frame_written(&c, 1000, 20);
+  pbc_on_frame_written(&c, 2000, 20);
+  assert(pbc_dma_lead_ms(&c, 2000) == 20);
+}
+
+static void test_dma_lead_paced_writer_never_drains(void) {
+  /* The playback-task policy: write while lead <= cap. A real-time producer
+   * then never sees lead 0 mid-stream, so no false drain/gap_resume. */
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  uint32_t now = 5000;
+  int writes = 0;
+  for (; now < 6000; now++) {
+    if (pbc_dma_lead_ms(&c, now) <= 40) {
+      pbc_on_frame_written(&c, now, 20);
+      writes++;
+    }
+    if (now > 5000) {
+      assert(pbc_dma_lead_ms(&c, now) > 0);
+      assert(pbc_dma_lead_ms(&c, now) <= 60);
+    }
+  }
+  assert(writes == 52); /* 1 s of audio + the 40 ms lead + first frame */
+}
+
+static void test_dma_lead_ms_wraparound(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  pbc_on_frame_written(&c, 0xFFFFFFF0u, 20);
+  assert(pbc_dma_lead_ms(&c, 0xFFFFFFF0u) == 20);
+  assert(pbc_dma_lead_ms(&c, 0x00000002u) == 2);
+  assert(pbc_dma_lead_ms(&c, 0x00000004u) == 0);
+}
+
 int main(void) {
   RUN(test_quick_refill_counts_gap_resume);
   RUN(test_slow_refill_is_end_of_utterance);
@@ -273,6 +331,11 @@ int main(void) {
   RUN(test_adaptive_never_below_floor);
   RUN(test_adaptive_slow_trickle_never_grows);
   RUN(test_adaptive_effective_at_default_base_80);
+  RUN(test_dma_lead_zero_before_first_write);
+  RUN(test_dma_lead_accumulates_and_drains_in_real_time);
+  RUN(test_dma_lead_reanchors_after_underflow);
+  RUN(test_dma_lead_paced_writer_never_drains);
+  RUN(test_dma_lead_ms_wraparound);
   printf("all %d prebuffer_ctl tests passed\n", tests_run);
   return 0;
 }

@@ -92,3 +92,21 @@ uint32_t pbc_effective_ms(const prebuffer_ctl *c, uint32_t base_ms) {
     eff = PBC_MAX_MS;
   return eff;
 }
+
+void pbc_on_frame_written(prebuffer_ctl *c, uint32_t now_ms,
+                          uint32_t frame_ms) {
+  /* DMA empty (or never primed): the frame starts playing now. */
+  if (!c->dma_primed || (int32_t)(c->dma_end_ms - now_ms) < 0) {
+    c->dma_end_ms = now_ms;
+  }
+  c->dma_end_ms += frame_ms;
+  c->dma_primed = 1;
+}
+
+uint32_t pbc_dma_lead_ms(const prebuffer_ctl *c, uint32_t now_ms) {
+  if (!c->dma_primed) {
+    return 0;
+  }
+  int32_t lead = (int32_t)(c->dma_end_ms - now_ms); /* wraparound-safe */
+  return lead > 0 ? (uint32_t)lead : 0u;
+}

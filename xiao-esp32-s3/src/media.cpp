@@ -1734,6 +1734,13 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 #define PIPECAT_GAP_RESUME_MS \
   750  // full-drain -> refill window = mid-speech gap
 #endif
+// Max audio kept queued in the I2S TX DMA (t_a57274a4). The DMA itself holds
+// ~117 ms, so without a cap one write burst emptied the ring into DMA and the
+// prebuffer re-armed every 80 ms (gap_resumes sawtooth, ack chime missed).
+// 40 ms covers the 20 ms frame + task wake jitter; the ring keeps the rest.
+#ifndef PIPECAT_PLAY_DMA_LEAD_MS
+#define PIPECAT_PLAY_DMA_LEAD_MS 40
+#endif
 // Recovery-event inputs to the adaptive controller. g_play_stat_fec is
 // defined further down this file; g_red_recovered lives in the vendored
 // components/peer/rtp.c.
@@ -1897,7 +1904,14 @@ static void pipecat_playback_task(void *arg) {
       }
       prebuffering = false;
     }
+    uint32_t lead_ms = pbc_dma_lead_ms(&pbc, now_ms);
     if (avail < PCM_SAMPLES_PER_FRAME) {
+      if (lead_ms > 0) {
+        // Ring empty but the DMA is still playing earlier frames: not a
+        // drain yet (t_a57274a4). Wait for the next packet or the lead.
+        vTaskDelay(pdMS_TO_TICKS(2));
+        continue;
+      }
       // Ring drained: end of utterance (normal) or a network gap. A partial
       // frame stranded = definite mid-speech gap (counted immediately). A
       // FULL drain is ambiguous — arm the resume window; if new audio
@@ -1909,6 +1923,11 @@ static void pipecat_playback_task(void *arg) {
         pbc_on_full_drain(&pbc, now_ms);
       }
       prebuffering = true;
+      continue;
+    }
+    if (lead_ms > PIPECAT_PLAY_DMA_LEAD_MS) {
+      // Pace to real time: keep the jitter cushion in the ring, not in DMA.
+      vTaskDelay(pdMS_TO_TICKS(lead_ms - PIPECAT_PLAY_DMA_LEAD_MS));
       continue;
     }
     for (size_t i = 0; i < PCM_SAMPLES_PER_FRAME; i++) {
@@ -1929,6 +1948,8 @@ static void pipecat_playback_task(void *arg) {
     g_play_stat_frames++;
     if (ret == ESP_OK) {
       ok++;
+      pbc_on_frame_written(&pbc, (uint32_t)(esp_timer_get_time() / 1000),
+                           PCM_SAMPLES_PER_FRAME / 16);
       ack_beep_played_frame(pop_buf, PCM_SAMPLES_PER_FRAME);
     } else {
       g_play_stat_write_fail++;
