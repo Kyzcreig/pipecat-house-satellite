@@ -71,6 +71,11 @@ typedef struct {
   uint32_t
       last_recovery_total; /* snapshot of the cumulative recovery counter */
   int have_baseline;       /* first pbc_track_recoveries() only snapshots */
+
+  /* I2S DMA lead (t_a57274a4): wall-clock ms at which the audio already
+   * handed to the TX DMA finishes playing. */
+  uint32_t dma_end_ms;
+  int dma_primed; /* 0 until the first frame is written */
 } prebuffer_ctl;
 
 /* Initialize. adaptive: enable NetEQ-lite growth/decay. resume_window_ms: the
@@ -99,6 +104,23 @@ void pbc_track_recoveries(prebuffer_ctl *c, uint32_t cumulative_recoveries,
  * overrides via /playback/stats?prebuffer_ms=N). Adaptive on ->
  * clamp(base + offset_steps*PBC_STEP_MS, PBC_MIN_MS, PBC_MAX_MS). */
 uint32_t pbc_effective_ms(const prebuffer_ctl *c, uint32_t base_ms);
+
+/* I2S DMA lead accounting (t_a57274a4). The TX DMA (12 x 511 frames @48k)
+ * holds ~117 ms, more than the 80 ms prebuffer, so i2s_channel_write never
+ * blocked: every refill burst went straight into DMA, the ring read empty,
+ * the prebuffer re-armed, and playback ran as an 80 ms sawtooth with the DMA
+ * margin at zero (measured: gap_resumes +9 per 400 ms chime, +16 per 1 s
+ * tone; 0 at prebuffer >= 150 ms, where the DMA finally back-pressures).
+ * The playback task now tracks how much audio sits in DMA and (a) writes
+ * only while the lead is <= a small cap, so the ring stays the jitter
+ * buffer, and (b) treats an empty ring as a drain only once the lead is
+ * spent, i.e. when the speaker is actually about to go silent. */
+
+/* A frame of frame_ms was accepted by the DMA at now_ms. */
+void pbc_on_frame_written(prebuffer_ctl *c, uint32_t now_ms, uint32_t frame_ms);
+
+/* ms of already-written audio still to play at now_ms (0 = DMA is empty). */
+uint32_t pbc_dma_lead_ms(const prebuffer_ctl *c, uint32_t now_ms);
 
 #ifdef __cplusplus
 }
