@@ -844,7 +844,7 @@ static esp_err_t xvf_aec_filter_handler(httpd_req_t *req) {
 // GET /playback/stats[?prebuffer_ms=N] — cumulative ring/playback counters.
 // Crackle triage: underruns>0 during crackle = delivery timing (raise
 // prebuffer_ms); clean counters during crackle = look below the ring
-// (XVF/codec registers). prebuffer_ms is volatile (default 100).
+// (XVF/codec registers). prebuffer_ms is volatile (default 120, media.cpp).
 extern volatile uint32_t g_play_stat_frames;
 extern volatile uint32_t g_play_stat_write_fail;
 extern volatile uint32_t g_play_stat_underruns;

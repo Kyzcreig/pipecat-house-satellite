@@ -1750,12 +1750,16 @@ extern volatile uint32_t g_red_recovered;
 }
 
 // Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
-// the experiment needs no rebuild. Default 80ms (2026-07-11 live finding:
-// 40ms cannot cover RED N-2 recovery latency — two 20ms redundant frames
-// arrive up to 40ms late, leaving zero margin; 80ms verified gap-free by
-// Ace's ear). History: 100ms was ESPHome's default; 40ms was the 2026-07-10
-// wake-ack-latency experiment.
-volatile uint32_t g_play_prebuffer_samples = 1280;
+// the experiment needs no rebuild. Default 120ms (t_a57274a4, Apollo
+// 2026-10-02): with DMA-lead pacing, bench soaks gave gap_resumes +25/10 min
+// at 80, +11/~7 min at 120, +3/5 min at 160 (residual wifi jitter); 120 buys
+// margin for +40ms reply onset. History: 80ms (2026-07-11: 40ms cannot cover
+// RED N-2 recovery latency); 100ms was ESPHome's default; 40ms was the
+// 2026-07-10 wake-ack-latency experiment.
+#ifndef PIPECAT_PLAY_PREBUFFER_MS
+#define PIPECAT_PLAY_PREBUFFER_MS 120
+#endif
+volatile uint32_t g_play_prebuffer_samples = PIPECAT_PLAY_PREBUFFER_MS * 16;
 
 // Flash-embedded selftest clip (16k mono s16le, -6dB headroom). Playing it
 // via pipecat_play_selftest_clip() exercises ring->FIR->I2S->DAC->speaker
