@@ -34,3 +34,19 @@ def test_only_accepted_frames_extend_the_lead() -> None:
     ok = task.index("if (ret == ESP_OK) {")
     assert task.index("pbc_on_frame_written(", ok) < task.index("} else {", ok)
     assert task.count("pbc_on_frame_written(") == 1
+
+
+def test_default_prebuffer_is_120_ms() -> None:
+    # Apollo 2026-10-02 (t_a57274a4): default 120 ms (16 samples/ms @16k).
+    assert "#define PIPECAT_PLAY_PREBUFFER_MS 120" in MEDIA
+    assert (
+        "volatile uint32_t g_play_prebuffer_samples = PIPECAT_PLAY_PREBUFFER_MS * 16;"
+        in MEDIA
+    )
+
+
+if __name__ == "__main__":
+    for _name, _fn in sorted(globals().items()):
+        if _name.startswith("test_") and callable(_fn):
+            _fn()
+    print("playback pacing source contract: OK")

@@ -13,3 +13,4 @@ CC="${CC:-cc}"
   "$ROOT/tests/host/test_prebuffer_ctl.c" "$SRC/prebuffer_ctl.c" \
   -o "$OUT/test_prebuffer_ctl"
 "$OUT/test_prebuffer_ctl"
+python3 "$ROOT/tests/host/test_playback_pacing_source.py"
