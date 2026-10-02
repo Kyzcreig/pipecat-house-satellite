@@ -966,7 +966,13 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
 #else
   constexpr size_t kBodyCapacity = 2200;
 #endif
-  char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyCapacity);
+  // Wake-ACK beep fragment (t_69ffa409): the response body grows by
+  // kAckBeepCapacity, and the fragment is formatted into its own
+  // kAckBeepCapacity scratch after the body.
+  constexpr size_t kAckBeepCapacity = 400;
+  constexpr size_t kBodyTotal = kBodyCapacity + kAckBeepCapacity;
+  char *scratch =
+      (char *)malloc(kRttSamplesCapacity + kBodyTotal + kAckBeepCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                "Unable to allocate playback stats response");
@@ -974,8 +980,33 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   char *rtt_samples = scratch;
   char *body = scratch + kRttSamplesCapacity;
   rtp_nack_format_rtt_samples(rtt_samples, kRttSamplesCapacity);
+  // Wake-ACK beep playback telemetry (t_69ffa409). ack_beep_played counts a
+  // hub beep REQUEST (RTVI marker) whose fingerprint matched audio that
+  // i2s_channel_write accepted; an unrequested chime never counts.
+  char *ack_beep_json = body + kBodyTotal;
+  ack_beep_telemetry ab;
+  if (pipecat_ack_beep_snapshot(&ab)) {
+    snprintf(ack_beep_json, kAckBeepCapacity,
+             "\"ack_beep_marks\":%lu,\"ack_beeps_played\":%lu,"
+             "\"ack_beep_missed\":%lu,\"ack_beep_rejected\":%lu,"
+             "\"ack_beep_superseded\":%lu,\"ack_beep_pending\":%d,"
+             "\"ack_beep_last_id\":\"%s\",\"ack_beep_last_ms\":%lu,"
+             "\"ack_beep_last_corr_milli\":%ld,"
+             "\"ack_beep_last_tonal_milli\":%ld,"
+             "\"ack_beep_last_missed_id\":\"%s\","
+             "\"ack_beep_best_corr_milli\":%ld,\"uptime_ms\":%lu",
+             (unsigned long)ab.marks, (unsigned long)ab.played,
+             (unsigned long)ab.missed, (unsigned long)ab.rejected,
+             (unsigned long)ab.superseded, ab.pending, ab.last_id,
+             (unsigned long)ab.last_ms, (long)ab.last_corr_milli,
+             (long)ab.last_tonal_milli, ab.last_missed_id,
+             (long)ab.best_corr_milli,
+             (unsigned long)(esp_timer_get_time() / 1000));
+  } else {
+    snprintf(ack_beep_json, kAckBeepCapacity, "\"ack_beep_marks\":null");
+  }
   snprintf(
-      body, kBodyCapacity,
+      body, kBodyTotal,
       "{\"frames\":%lu,\"write_fail\":%lu,\"underruns\":%lu,\"plc\":%lu,"
       "\"fec\":%lu,\"late_drops\":%lu,\"gap_events\":%lu,"
       "\"packets_received\":%lu,\"red_recovered\":%lu,\"red_dup_drops\":%lu,"
@@ -992,7 +1023,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
       "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
       "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%"
-      "lu," DECIM_COMP_STATS_FMT "\"led_brightness\":%u}",
+      "lu," DECIM_COMP_STATS_FMT "\"led_brightness\":%u,%s}",
       (unsigned long)g_play_stat_frames, (unsigned long)g_play_stat_write_fail,
       (unsigned long)g_play_stat_underruns, (unsigned long)g_play_stat_plc,
       (unsigned long)g_play_stat_fec, (unsigned long)g_rtp_late_drops,
@@ -1016,7 +1047,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       (unsigned long)(g_play_prebuffer_samples / 16),
       (unsigned long)g_play_prebuffer_effective_ms,
       (unsigned long)g_play_prebuffer_steps DECIM_COMP_STATS_ARGS,
-      (unsigned)pipecat_led_brightness());
+      (unsigned)pipecat_led_brightness(), ack_beep_json);
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
   free(scratch);
