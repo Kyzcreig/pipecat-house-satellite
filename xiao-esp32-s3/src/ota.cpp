@@ -318,6 +318,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"mdns_hostname\":\"%s.local\","
            "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
            "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u,"
+           "\"crash_boots\":%u,\"slot_flipped\":%u,"
            "\"audio_stack_free\":%lu,\"uplink_frames\":%lu}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
@@ -325,6 +326,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
            (unsigned)pipecat_boots_since_poweron(),
            (unsigned)pipecat_net_watchdog_deadline_s(),
+           (unsigned)pipecat_crash_boots(), (unsigned)pipecat_slot_flipped(),
            (unsigned long)pipecat_audio_publisher_stack_free(),
            (unsigned long)pipecat_uplink_frames_sent());
 
@@ -642,22 +644,24 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
   // (t_9d8fad45): which source commit is live, when it was compiled, and
   // where the boot guard / network watchdog ladder stands.
   const esp_app_desc_t *app = esp_app_get_description();
-  int tail =
-      snprintf(body + used, kParamsBodyCapacity - used,
-               "},\"count\":%lu,"
-               "\"build\":{\"git_sha\":\"%s\",\"dirty\":%s,\"version\":\"%s\","
-               "\"built\":\"%s %s\",\"idf\":\"%s\"},"
-               "\"boot_guard\":{\"reset_reason\":\"%s\",\"fault_boots\":%u,"
-               "\"boots_since_poweron\":%u,\"netwdt_restarts\":%u,"
-               "\"net_watchdog_s\":%u,\"uptime_s\":%lld}}",
-               (unsigned long)count, PIPECAT_BUILD_GIT_SHA,
-               PIPECAT_BUILD_GIT_DIRTY ? "true" : "false", app->version,
-               app->date, app->time, app->idf_ver, pipecat_reset_reason_name(),
-               (unsigned)pipecat_boot_fault_count(),
-               (unsigned)pipecat_boots_since_poweron(),
-               (unsigned)pipecat_netwdt_restarts(),
-               (unsigned)pipecat_net_watchdog_deadline_s(),
-               (long long)(esp_timer_get_time() / 1000000LL));
+  int tail = snprintf(
+      body + used, kParamsBodyCapacity - used,
+      "},\"count\":%lu,"
+      "\"build\":{\"git_sha\":\"%s\",\"dirty\":%s,\"version\":\"%s\","
+      "\"built\":\"%s %s\",\"idf\":\"%s\"},"
+      "\"boot_guard\":{\"reset_reason\":\"%s\",\"fault_boots\":%u,"
+      "\"boots_since_poweron\":%u,\"netwdt_restarts\":%u,"
+      "\"crash_boots\":%u,\"slot_flipped\":%u,"
+      "\"net_watchdog_s\":%u,\"uptime_s\":%lld}}",
+      (unsigned long)count, PIPECAT_BUILD_GIT_SHA,
+      PIPECAT_BUILD_GIT_DIRTY ? "true" : "false", app->version, app->date,
+      app->time, app->idf_ver, pipecat_reset_reason_name(),
+      (unsigned)pipecat_boot_fault_count(),
+      (unsigned)pipecat_boots_since_poweron(),
+      (unsigned)pipecat_netwdt_restarts(), (unsigned)pipecat_crash_boots(),
+      (unsigned)pipecat_slot_flipped(),
+      (unsigned)pipecat_net_watchdog_deadline_s(),
+      (long long)(esp_timer_get_time() / 1000000LL));
   if (tail < 0 || static_cast<size_t>(tail) >= kParamsBodyCapacity - used) {
     free(body);
     httpd_resp_set_status(req, "500 Internal Server Error");
