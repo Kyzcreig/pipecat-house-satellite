@@ -85,6 +85,8 @@ extern void pipecat_webrtc_loop();
 extern volatile bool pipecat_webrtc_connected;
 extern void pipecat_webrtc_note_server_ping();
 extern bool pipecat_webrtc_server_heartbeat_fresh();
+extern uint32_t pipecat_audio_publisher_stack_free();  // bytes, 0 = no task
+extern uint32_t pipecat_uplink_frames_sent();  // audio_publisher loop count
 extern void pipecat_http_request(char *offer, char *answer);
 
 // RTVI
