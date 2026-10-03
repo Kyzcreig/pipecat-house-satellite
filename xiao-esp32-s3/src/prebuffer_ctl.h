@@ -23,6 +23,17 @@
  *    quiet period with no recoveries, decay back one step at a time. When
  *    disabled, pbc_effective_ms() returns base_ms UNTOUCHED (no clamp) — the
  *    dark path is bit-identical to today's static behavior.
+ *
+ *    ARRIVAL-STALL input (U1d, t_9afd3ebe). Residual gap_resumes on the bench
+ *    come from 150-240 ms (up to 1.5 s) AP-local downlink holds. They are
+ *    recovered by nothing (plc+fec+red stays 0), so the recovery path never
+ *    grows. pbc_track_arrival() watches the downlink last-arrival timestamp:
+ *    an inter-arrival gap > PBC_STALL_MS that ENDS (audio resumes) while
+ *    playback is live, and no later than resume_window_ms after the previous
+ *    packet, is one grow event: +1 step, same bounds, same decay timer as the
+ *    recovery path. An end of utterance never refills, so it never grows; the
+ *    next utterance arrives seconds later (> resume window), so it never
+ *    grows either.
  */
 #ifndef PREBUFFER_CTL_H
 #define PREBUFFER_CTL_H
@@ -49,6 +60,10 @@ extern "C" {
 #ifndef PBC_RATE_THRESHOLD
 #define PBC_RATE_THRESHOLD 5u /* recoveries within window -> grow one step */
 #endif
+#ifndef PBC_STALL_MS
+#define PBC_STALL_MS \
+  100u /* inter-arrival gap that counts as a stall (margin at pb=120) */
+#endif
 #ifndef PBC_DECAY_QUIET_MS
 #define PBC_DECAY_QUIET_MS \
   30000u /* no recoveries for this long -> decay one step */
@@ -71,6 +86,11 @@ typedef struct {
   uint32_t
       last_recovery_total; /* snapshot of the cumulative recovery counter */
   int have_baseline;       /* first pbc_track_recoveries() only snapshots */
+
+  /* arrival-stall input (U1d) */
+  uint32_t last_arrival_ms; /* last downlink arrival stamp seen */
+  int have_arrival;         /* first pbc_track_arrival() only snapshots */
+  uint32_t stalls;          /* cumulative stall events seen (any mode) */
 
   /* I2S DMA lead (t_a57274a4): wall-clock ms at which the audio already
    * handed to the TX DMA finishes playing. */
@@ -98,6 +118,21 @@ int pbc_on_refill(prebuffer_ctl *c, uint32_t now_ms);
  * is off (still tracks the snapshot so a later enable starts clean). */
 void pbc_track_recoveries(prebuffer_ctl *c, uint32_t cumulative_recoveries,
                           uint32_t now_ms);
+
+/* Feed the downlink LAST-ARRIVAL ms stamp (RTP receive path) every loop
+ * iteration. playing: playback is live for the current utterance (not in the
+ * initial prebuffer; a full drain still pending its resume window counts as
+ * live). On a new stamp whose gap from the previous one is in
+ * (PBC_STALL_MS, resume_window_ms] while playing: counts `stalls` and, when
+ * adaptive, grows one step (same bounds as the recovery path) and restarts
+ * the decay quiet timer. Returns 1 iff a stall was counted. Dark: counts only,
+ * offset_steps/transitions/effective never change.
+ *
+ * Sampling: the caller sees only the newest stamp per call, so the measured
+ * gap spans every packet between two calls. With the playback loop's <= ~25 ms
+ * poll at a 20 ms packet cadence that stays well under PBC_STALL_MS. */
+int pbc_track_arrival(prebuffer_ctl *c, uint32_t last_arrival_ms, int playing,
+                      uint32_t now_ms);
 
 /* Effective prebuffer in ms for the given base. Adaptive off -> base
  * unchanged (exactly today's behavior, including out-of-bounds runtime

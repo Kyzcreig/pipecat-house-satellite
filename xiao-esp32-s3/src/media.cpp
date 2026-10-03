@@ -1829,6 +1829,8 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 extern volatile uint32_t g_play_stat_fec;
 extern "C" {
 extern volatile uint32_t g_red_recovered;
+// Downlink last-arrival ms (components/peer/peer_connection.c, U1d).
+extern volatile uint32_t g_rtp_last_arrival_ms;
 }
 
 // Prebuffer depth: runtime-adjustable via /playback/stats?prebuffer_ms=N so
@@ -1968,6 +1970,11 @@ static void pipecat_playback_task(void *arg) {
     // controller; a no-op unless PIPECAT_ADAPTIVE_PREBUFFER=1 was baked in.
     pbc_track_recoveries(
         &pbc, g_play_stat_plc + g_play_stat_fec + g_red_recovered, now_ms);
+    // Arrival-stall input (U1d): a >PBC_STALL_MS downlink hold that ends
+    // while playback is live grows one step. Live = playing, or drained with
+    // the resume window still open. Counts only when adaptive is dark.
+    pbc_track_arrival(&pbc, g_rtp_last_arrival_ms,
+                      !prebuffering || pbc.drain_pending, now_ms);
     uint32_t effective_ms =
         pbc_effective_ms(&pbc, g_play_prebuffer_samples / 16);
     g_play_prebuffer_effective_ms = effective_ms;

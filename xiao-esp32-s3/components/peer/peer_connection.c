@@ -8,11 +8,18 @@
 #include "agent.h"
 #include "config.h"
 #include "dtls_srtp.h"
+#include "esp_timer.h"
 #include "ports.h"
 #include "rtcp.h"
 #include "rtp.h"
 #include "sctp.h"
 #include "sdp.h"
+
+// Downlink audio last-arrival stamp (device ms), written on every audio RTP
+// packet the transport loop services. Unconditional and cheap (one volatile
+// store): the playback task feeds it to prebuffer_ctl's arrival-stall input
+// (U1d, t_9afd3ebe). 0 = no audio packet yet.
+volatile uint32_t g_rtp_last_arrival_ms = 0;
 
 #ifndef PIPECAT_RX_DRAIN_MAX
 #define PIPECAT_RX_DRAIN_MAX 8  // datagrams per loop pass (1 = upstream)
@@ -22,7 +29,6 @@
 #include <sys/select.h>
 
 #include "arrival_trace.h"
-#include "esp_timer.h"
 
 // t_5faf78b4: is another datagram already queued on the agent socket? A set
 // bit on consecutive arrivals means the loop (one datagram per pass, then a
@@ -404,8 +410,9 @@ int peer_connection_loop(PeerConnection *pc) {
 
           ssrc = rtp_get_ssrc(pc->agent_buf);
           if (ssrc == pc->remote_assrc) {
+            g_rtp_last_arrival_ms = (uint32_t)(esp_timer_get_time() / 1000);
 #if PIPECAT_ARRIVAL_TRACE
-            at_push((uint32_t)(esp_timer_get_time() / 1000),
+            at_push(g_rtp_last_arrival_ms,
                     (uint16_t)((pc->agent_buf[2] << 8) | pc->agent_buf[3]),
                     AT_ARR, at_socket_backlogged(&pc->agent));
 #endif

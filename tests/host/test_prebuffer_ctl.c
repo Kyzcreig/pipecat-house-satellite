@@ -18,6 +18,10 @@
  *    (window consumed), ceiling clamp at PBC_MAX_MS, decay one step per
  *    quiet period back to base, floor clamp at PBC_MIN_MS, transitions
  *    counts both directions, slow trickle below threshold never grows.
+ *  - arrival stall (U1d): a >PBC_STALL_MS hold that ends while playing grows
+ *    one step; end of utterance (no refill) and the next utterance do not;
+ *    stall growth decays on the recovery path's quiet timer; dark observes
+ *    only. Mutation check: run_prebuffer_stall_mutation.sh.
  */
 #include <assert.h>
 #include <stdio.h>
@@ -252,6 +256,131 @@ static void test_adaptive_effective_at_default_base_80(void) {
   assert(pbc_effective_ms(&c, 80) == 160); /* clamped */
 }
 
+/* ── arrival-stall input (U1d, t_9afd3ebe) ───────────────────────────────── */
+
+/* Steady 20 ms arrivals from t0 to t1 (inclusive), polled once per packet. */
+static uint32_t feed_steady(prebuffer_ctl *c, uint32_t t0, uint32_t t1,
+                            int playing) {
+  uint32_t t;
+  for (t = t0; t <= t1; t += 20) {
+    pbc_track_arrival(c, t, playing, t);
+  }
+  return t - 20;
+}
+
+static void test_stall_grows_one_step(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_recoveries(&c, 0, 0); /* recovery baseline: plc+fec+red stays 0 */
+  uint32_t t = feed_steady(&c, 1000, 2000, 1);
+  assert(c.offset_steps == 0 && c.stalls == 0); /* 20 ms cadence: no stall */
+  /* 200 ms AP hold (bench .97 Bathroom AP), then audio resumes. */
+  assert(pbc_track_arrival(&c, t + 200, 1, t + 200) == 1);
+  pbc_track_recoveries(&c, 0, t + 200);
+  assert(c.stalls == 1);
+  assert(c.offset_steps == 1);
+  assert(c.transitions == 1);
+  assert(pbc_effective_ms(&c, 120) == 160);
+  /* Burst after the hold (drain-all, PR #25): no further growth. */
+  feed_steady(&c, t + 201, t + 400, 1);
+  assert(c.offset_steps == 1 && c.stalls == 1);
+}
+
+static void test_stall_bounds_and_threshold(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_arrival(&c, 1000, 1, 1000);
+  /* exactly PBC_STALL_MS is not a stall (strictly greater) */
+  assert(pbc_track_arrival(&c, 1000 + PBC_STALL_MS, 1, 1100) == 0);
+  /* stall while live, at the resume-window edge: counted */
+  assert(pbc_track_arrival(&c, 1100 + 750, 1, 1850) == 1);
+  /* stalls beyond the ceiling: offset bounded like the recovery path */
+  uint32_t t = 1850;
+  for (int i = 0; i < 10; i++) {
+    t += 300;
+    pbc_track_arrival(&c, t, 1, t);
+  }
+  assert(c.offset_steps == (PBC_MAX_MS - PBC_MIN_MS) / PBC_STEP_MS);
+  assert(pbc_effective_ms(&c, 120) == PBC_MAX_MS);
+}
+
+static void test_end_of_utterance_does_not_grow(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_recoveries(&c, 0, 0);
+  uint32_t t = feed_steady(&c, 1000, 3000, 1);
+  /* Utterance ends: no new packet, ring drains, nothing refills. The playback
+   * loop keeps polling with the same stamp for seconds. */
+  pbc_on_full_drain(&c, t + 140);
+  for (uint32_t now = t; now < t + 5000; now += 5) {
+    assert(pbc_track_arrival(&c, t, 1, now) == 0);
+    pbc_track_recoveries(&c, 0, now);
+  }
+  /* Next utterance seconds later (beyond the resume window): not a stall. */
+  assert(pbc_track_arrival(&c, t + 5000, 1, t + 5000) == 0);
+  assert(c.stalls == 0 && c.offset_steps == 0 && c.transitions == 0);
+}
+
+static void test_stall_while_not_playing_does_not_grow(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_arrival(&c, 1000, 0, 1000);
+  assert(pbc_track_arrival(&c, 1300, 0, 1300) == 0); /* initial prebuffer */
+  assert(c.stalls == 0 && c.offset_steps == 0);
+}
+
+static void test_first_arrival_only_snapshots(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  /* Stamp 0 at boot, first real packet much later: baseline, not a stall. */
+  assert(pbc_track_arrival(&c, 0, 1, 0) == 0);
+  assert(pbc_track_arrival(&c, 0, 1, 50) == 0);
+  assert(c.stalls == 0);
+}
+
+static void test_stall_decays_like_recovery(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_recoveries(&c, 0, 0);
+  pbc_track_arrival(&c, 1000, 1, 1000);
+  pbc_track_arrival(&c, 1250, 1, 1250); /* stall: +1 */
+  assert(c.offset_steps == 1);
+  /* The stall restarts the quiet timer: no decay just short of it. */
+  pbc_track_recoveries(&c, 0, 1250 + PBC_DECAY_QUIET_MS - 1);
+  assert(c.offset_steps == 1);
+  pbc_track_recoveries(&c, 0, 1250 + PBC_DECAY_QUIET_MS);
+  assert(c.offset_steps == 0);
+  assert(c.transitions == 2);
+  assert(pbc_effective_ms(&c, 120) == 120);
+}
+
+static void test_stall_ms_wraparound(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 1, 0);
+  pbc_track_arrival(&c, 0xFFFFFF00u, 1, 0xFFFFFF00u);
+  assert(pbc_track_arrival(&c, 0x00000040u, 1, 0x40u) == 1); /* 320 ms */
+  assert(c.offset_steps == 1);
+}
+
+static void test_dark_stall_changes_nothing(void) {
+  prebuffer_ctl c;
+  pbc_init(&c, 0, 0);
+  pbc_track_recoveries(&c, 0, 0);
+  pbc_track_arrival(&c, 1000, 1, 1000);
+  uint32_t t = 1000;
+  for (int i = 0; i < 50; i++) {
+    t += 250;
+    pbc_track_arrival(&c, t, 1, t);
+    pbc_track_recoveries(&c, 0, t);
+  }
+  assert(c.stalls == 50); /* observed */
+  assert(c.offset_steps == 0);
+  assert(c.transitions == 0);
+  assert(pbc_effective_ms(&c, 120) == 120);
+  assert(pbc_effective_ms(&c, 20) == 20);     /* no clamp when dark */
+  assert(pbc_effective_ms(&c, 1000) == 1000); /* runtime override untouched */
+}
+
 /* ── I2S DMA lead (t_a57274a4) ───────────────────────────────────────────── */
 
 static void test_dma_lead_zero_before_first_write(void) {
@@ -331,6 +460,14 @@ int main(void) {
   RUN(test_adaptive_never_below_floor);
   RUN(test_adaptive_slow_trickle_never_grows);
   RUN(test_adaptive_effective_at_default_base_80);
+  RUN(test_stall_grows_one_step);
+  RUN(test_stall_bounds_and_threshold);
+  RUN(test_end_of_utterance_does_not_grow);
+  RUN(test_stall_while_not_playing_does_not_grow);
+  RUN(test_first_arrival_only_snapshots);
+  RUN(test_stall_decays_like_recovery);
+  RUN(test_stall_ms_wraparound);
+  RUN(test_dark_stall_changes_nothing);
   RUN(test_dma_lead_zero_before_first_write);
   RUN(test_dma_lead_accumulates_and_drains_in_real_time);
   RUN(test_dma_lead_reanchors_after_underflow);
