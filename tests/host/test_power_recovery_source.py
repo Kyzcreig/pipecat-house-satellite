@@ -50,6 +50,24 @@ assert "esp_timer_start_periodic(" in MAIN
 loop = body[body.index("while (1) {"):]
 assert loop.index("esp_task_wdt_reset();") < loop.index("pipecat_webrtc_loop();")
 
+# Slot fallback (t_cf433ede): decided from RTC state before any init, flips
+# only through esp_ota_set_boot_partition (which verifies the target image),
+# latches the RTC flag BEFORE the restart, and the policy stays in boot_guard.h
+# (main.cpp only reads otadata and acts).
+guard_fn = MAIN[MAIN.index("static void pipecat_boot_guard_start()"):MAIN.index('extern "C" void app_main(void) {')]
+assert guard_fn.index("pipecat_boot_guard_try_slot_flip();") < guard_fn.index("esp_task_wdt_add(nullptr)")
+assert guard_fn.index("pipecat_boot_guard_try_slot_flip();") < guard_fn.index("pipecat_boot_guard_hold_ms(")
+flip_fn = MAIN[MAIN.index("static void pipecat_boot_guard_try_slot_flip()"):MAIN.index("static void pipecat_boot_guard_start()")]
+assert "pipecat_boot_guard_should_flip_slot(" in flip_fn
+assert "esp_ota_set_boot_partition(other)" in flip_fn
+assert flip_fn.index("pipecat_boot_guard_note_slot_flip(&s_boot_guard);") < flip_fn.rindex("esp_restart();")
+assert flip_fn.index("esp_ota_set_boot_partition(other)") < flip_fn.index("pipecat_boot_guard_note_slot_flip(")
+assert "app_elf_sha256" in flip_fn, "same-image guard must compare the app ELF sha"
+assert "esp_ota_mark_app_invalid" not in flip_fn, "fallback must not INVALIDATE the crashing (valid) slot"
+BOOT_GUARD = (SRC / "boot_guard.h").read_text()
+assert "esp_ota" not in BOOT_GUARD and "#include <esp" not in BOOT_GUARD, "boot_guard.h must stay host-pure"
+assert "kPipecatSlotFlipCrashBoots = 3u" in BOOT_GUARD
+
 # (b)(d) brownout + task WDT on; idle checks off (audio saturates core 0).
 for name in ("CONFIG_ESP_TASK_WDT_EN", "CONFIG_ESP_TASK_WDT_INIT",
              "CONFIG_ESP_TASK_WDT_PANIC", "CONFIG_ESP_BROWNOUT_DET"):
