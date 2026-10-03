@@ -14,6 +14,39 @@
 #include "sctp.h"
 #include "sdp.h"
 
+#ifndef PIPECAT_RX_DRAIN_MAX
+#define PIPECAT_RX_DRAIN_MAX 8  // datagrams per loop pass (1 = upstream)
+#endif
+
+#if PIPECAT_ARRIVAL_TRACE
+#include <sys/select.h>
+
+#include "arrival_trace.h"
+#include "esp_timer.h"
+
+// t_5faf78b4: is another datagram already queued on the agent socket? A set
+// bit on consecutive arrivals means the loop (one datagram per pass, then a
+// TICK_INTERVAL sleep) is the bottleneck, not the air.
+static uint8_t at_socket_backlogged(Agent *agent) {
+  fd_set rfds;
+  struct timeval tv = {0, 0};
+  int maxfd = -1;
+  FD_ZERO(&rfds);
+  // Same socket set as agent_socket_recv: udp_sockets[1] (IPv6) is never
+  // opened with CONFIG_IPV6=0 and its fd stays 0 (the console VFS).
+  for (int i = 0; i < (CONFIG_IPV6 ? 2 : 1); i++) {
+    if (agent->udp_sockets[i].fd >= 0) {
+      FD_SET(agent->udp_sockets[i].fd, &rfds);
+      if (agent->udp_sockets[i].fd > maxfd)
+        maxfd = agent->udp_sockets[i].fd;
+    }
+  }
+  if (maxfd < 0)
+    return 0;
+  return select(maxfd + 1, &rfds, NULL, NULL, &tv) > 0 ? 1 : 0;
+}
+#endif
+
 #define STATE_CHANGED(pc, curr_state)                                 \
   if (pc->oniceconnectionstatechange && pc->state != curr_state) {    \
     pc->oniceconnectionstatechange(curr_state, pc->config.user_data); \
@@ -336,8 +369,16 @@ int peer_connection_loop(PeerConnection *pc) {
       }
       break;
     case PEER_CONNECTION_COMPLETED:
-      if ((pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf,
-                                      sizeof(pc->agent_buf))) > 0) {
+      // t_5faf78b4: drain every queued datagram per pass. One-per-pass + the
+      // caller's TICK_INTERVAL sleep serviced ~1 packet / 19 ms against a
+      // 20 ms downlink: a wifi burst sat in lwIP's 6-deep UDP mailbox (overflow
+      // = loss) and took seconds to clear, so the ring drained on the next
+      // stall. Bounded so a flood can't starve the rest of the loop.
+      for (int rx_n = 0;
+           rx_n < PIPECAT_RX_DRAIN_MAX &&
+           (pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf,
+                                       sizeof(pc->agent_buf))) > 0;
+           rx_n++) {
         LOGD("agent_recv %d", pc->agent_ret);
 
         if (rtcp_probe(pc->agent_buf, pc->agent_ret)) {
@@ -363,6 +404,11 @@ int peer_connection_loop(PeerConnection *pc) {
 
           ssrc = rtp_get_ssrc(pc->agent_buf);
           if (ssrc == pc->remote_assrc) {
+#if PIPECAT_ARRIVAL_TRACE
+            at_push((uint32_t)(esp_timer_get_time() / 1000),
+                    (uint16_t)((pc->agent_buf[2] << 8) | pc->agent_buf[3]),
+                    AT_ARR, at_socket_backlogged(&pc->agent));
+#endif
             rtp_decoder_decode(&pc->artp_decoder, pc->agent_buf, pc->agent_ret);
           } else if (ssrc == pc->remote_vssrc) {
             rtp_decoder_decode(&pc->vrtp_decoder, pc->agent_buf, pc->agent_ret);

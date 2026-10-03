@@ -20,6 +20,11 @@ CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_SPIRAM_RODATA=y
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 
+# Downlink burst headroom (t_5faf78b4): lwIP's default 6-datagram UDP mailbox
+# overflowed when a wifi stall released ~7 queued 20 ms RTP packets at once
+# (6 serviced, the rest dropped -> RED/PLC + ring drain). 16 = 320 ms of audio.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+
 # Enable DTLS
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
