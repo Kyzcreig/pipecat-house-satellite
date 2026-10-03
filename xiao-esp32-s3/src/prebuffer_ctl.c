@@ -30,6 +30,15 @@ int pbc_on_refill(prebuffer_ctl *c, uint32_t now_ms) {
   return 0; /* refill came late: genuine end of utterance, not a gap */
 }
 
+/* One grow step, bounded; shared by the recovery and arrival-stall inputs. */
+static void pbc_grow_one(prebuffer_ctl *c) {
+  uint32_t max_steps = (PBC_MAX_MS - PBC_MIN_MS) / PBC_STEP_MS;
+  if (c->offset_steps < max_steps) {
+    c->offset_steps++;
+    c->transitions++;
+  }
+}
+
 void pbc_track_recoveries(prebuffer_ctl *c, uint32_t cumulative_recoveries,
                           uint32_t now_ms) {
   if (!c->have_baseline) {
@@ -62,11 +71,7 @@ void pbc_track_recoveries(prebuffer_ctl *c, uint32_t cumulative_recoveries,
 
   /* Grow: recovery rate over threshold within the window -> +1 step. */
   if (c->window_events >= PBC_RATE_THRESHOLD) {
-    uint32_t max_steps = (PBC_MAX_MS - PBC_MIN_MS) / PBC_STEP_MS;
-    if (c->offset_steps < max_steps) {
-      c->offset_steps++;
-      c->transitions++;
-    }
+    pbc_grow_one(c);
     /* Consume the window so one burst = one step, not a step per call. */
     c->window_events = 0;
     c->window_start_ms = now_ms;
@@ -79,6 +84,29 @@ void pbc_track_recoveries(prebuffer_ctl *c, uint32_t cumulative_recoveries,
     c->transitions++;
     c->last_recovery_ms = now_ms; /* one step per quiet period */
   }
+}
+
+int pbc_track_arrival(prebuffer_ctl *c, uint32_t last_arrival_ms, int playing,
+                      uint32_t now_ms) {
+  if (!c->have_arrival) {
+    c->have_arrival = 1;
+    c->last_arrival_ms = last_arrival_ms;
+    return 0;
+  }
+  if (last_arrival_ms == c->last_arrival_ms) {
+    return 0; /* no new packet since the last call */
+  }
+  uint32_t gap = last_arrival_ms - c->last_arrival_ms; /* wraparound-safe */
+  c->last_arrival_ms = last_arrival_ms;
+  if (!playing || gap <= PBC_STALL_MS || gap > c->resume_window_ms) {
+    return 0;
+  }
+  c->stalls++;
+  if (c->adaptive) {
+    pbc_grow_one(c);
+    c->last_recovery_ms = now_ms; /* same decay timer as the recovery path */
+  }
+  return 1;
 }
 
 uint32_t pbc_effective_ms(const prebuffer_ctl *c, uint32_t base_ms) {
