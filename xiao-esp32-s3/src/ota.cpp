@@ -992,9 +992,8 @@ static esp_err_t playback_trace_send(httpd_req_t *req, uint32_t from) {
     at_rec r;
     if (!at_get(i, &r))
       continue;
-    int n = snprintf(line, sizeof(line), "%lu %lu %u %u %u\n",
-                     (unsigned long)i, (unsigned long)r.t_ms, r.kind, r.seq,
-                     r.aux);
+    int n = snprintf(line, sizeof(line), "%lu %lu %u %u %u\n", (unsigned long)i,
+                     (unsigned long)r.t_ms, r.kind, r.seq, r.aux);
     if (httpd_resp_send_chunk(req, line, n) != ESP_OK)
       return ESP_FAIL;
   }

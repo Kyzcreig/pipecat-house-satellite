@@ -33,7 +33,9 @@ void at_push(uint32_t t_ms, uint16_t seq, uint8_t kind, uint8_t aux) {
   __atomic_store_n(&r->stamp, idx + 1, __ATOMIC_RELEASE);
 }
 
-uint32_t at_head(void) { return __atomic_load_n(&s_head, __ATOMIC_ACQUIRE); }
+uint32_t at_head(void) {
+  return __atomic_load_n(&s_head, __ATOMIC_ACQUIRE);
+}
 
 int at_get(uint32_t idx, at_rec *out) {
   at_rec *buf = __atomic_load_n(&s_buf, __ATOMIC_ACQUIRE);

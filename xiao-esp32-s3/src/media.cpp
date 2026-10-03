@@ -2093,8 +2093,8 @@ void pipecat_init_audio_decoder() {
   }
   ack_beep_glue_init();
 #if PIPECAT_ARRIVAL_TRACE
-  at_rec *at_buf = (at_rec *)heap_caps_malloc(
-      AT_TRACE_RECORDS * sizeof(at_rec), MALLOC_CAP_SPIRAM);
+  at_rec *at_buf = (at_rec *)heap_caps_malloc(AT_TRACE_RECORDS * sizeof(at_rec),
+                                              MALLOC_CAP_SPIRAM);
   at_init(at_buf, AT_TRACE_RECORDS);
   ESP_LOGI(LOG_TAG, "arrival trace: %s (%d records)",
            at_buf ? "on" : "ALLOC FAILED", AT_TRACE_RECORDS);

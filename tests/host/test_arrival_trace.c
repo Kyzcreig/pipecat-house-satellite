@@ -5,12 +5,12 @@
 #include "arrival_trace.h"
 
 static int fails = 0;
-#define CHECK(c)                                          \
-  do {                                                    \
-    if (!(c)) {                                           \
+#define CHECK(c)                                                  \
+  do {                                                            \
+    if (!(c)) {                                                   \
       fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); \
-      fails++;                                            \
-    }                                                     \
+      fails++;                                                    \
+    }                                                             \
   } while (0)
 
 int main(void) {
@@ -32,10 +32,9 @@ int main(void) {
   at_push(100, 7, AT_ARR, 1);
   at_push(120, 8, AT_GAP, 3);
   CHECK(at_head() == 2);
-  CHECK(at_get(0, &r) == 1 && r.t_ms == 100 && r.seq == 7 &&
-        r.kind == AT_ARR && r.aux == 1);
-  CHECK(at_get(1, &r) == 1 && r.t_ms == 120 && r.kind == AT_GAP &&
-        r.aux == 3);
+  CHECK(at_get(0, &r) == 1 && r.t_ms == 100 && r.seq == 7 && r.kind == AT_ARR &&
+        r.aux == 1);
+  CHECK(at_get(1, &r) == 1 && r.t_ms == 120 && r.kind == AT_GAP && r.aux == 3);
   CHECK(at_get(2, &r) == 0);
 
   /* Wrap: after 10 pushes total, indices 0,1 are overwritten by 8,9. */
