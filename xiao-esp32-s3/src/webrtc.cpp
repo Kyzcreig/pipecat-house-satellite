@@ -118,13 +118,34 @@ bool pipecat_webrtc_server_heartbeat_fresh() {
 }
 
 #ifndef LINUX_BUILD
+// audio_publisher stack, in BYTES (ESP-IDF StackType_t is uint8_t). It runs
+// opus_encode() with USE_ALLOCA, so the stack holds the encoder's scratch.
+// t_6ec97d6b: the old 30000 B covered SILK (host-measured 22,800 B per encode,
+// 16 kHz stereo) but not CELT (33,360 B at 64k/lane with FEC off), so codec
+// arm C overflowed on its first frame after CONNECTED and panicked every
+// boot. 64 KiB lives in PSRAM; /playback/stats reports the live high-water.
+#define AUDIO_PUBLISHER_STACK_BYTES (64 * 1024)
 StaticTask_t task_buffer;
+static TaskHandle_t s_audio_publisher_task = nullptr;
+
+static volatile uint32_t s_uplink_frames_sent = 0;
+
+uint32_t pipecat_uplink_frames_sent() {
+  return s_uplink_frames_sent;
+}
+
+uint32_t pipecat_audio_publisher_stack_free() {
+  TaskHandle_t task = s_audio_publisher_task;
+  return task ? (uint32_t)uxTaskGetStackHighWaterMark(task) : 0;
+}
+
 void pipecat_send_audio_task(void *user_data) {
   pipecat_init_audio_encoder();
   TickType_t next_frame_at = xTaskGetTickCount();
 
   while (1) {
     pipecat_send_audio(peer_connection);
+    s_uplink_frames_sent = s_uplink_frames_sent + 1;
     // Pace to absolute 20 ms frame deadlines. A fixed post-processing sleep
     // under-produced RTP media by 4.85%; a tight yield loop starved the
     // lower-priority peer/data-channel task and lost heartbeat replies.
@@ -191,10 +212,10 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
 #ifndef LINUX_BUILD
     pipecat_webrtc_connected = true;
     StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
-        30000 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
-    xTaskCreateStaticPinnedToCore(pipecat_send_audio_task, "audio_publisher",
-                                  30000, NULL, 7, stack_memory, &task_buffer,
-                                  0);
+        AUDIO_PUBLISHER_STACK_BYTES * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+    s_audio_publisher_task = xTaskCreateStaticPinnedToCore(
+        pipecat_send_audio_task, "audio_publisher", AUDIO_PUBLISHER_STACK_BYTES,
+        NULL, 7, stack_memory, &task_buffer, 0);
     // LED ring task: owns ALL XVF control-I2C for the ring (state decision,
     // beam telemetry read, 48-byte ring write) on core 1 at low priority, so a
     // slow/contended XVF control transaction can never stall the audio
