@@ -22,7 +22,10 @@
 
 #define OTA_HTTP_PORT 80
 #define OTA_REBOOT_DELAY_MS 1000
-#define OTA_ROLLBACK_TIMEOUT_MS 60000
+// Pending image must reach WebRTC + uplink health within this window (boot,
+// Wi-Fi join, offer and ICE took 8-38 s in the 09-30 drill; 2x margin).
+#define OTA_ROLLBACK_TIMEOUT_MS 120000
+#define OTA_VALIDATION_MIN_UPLINK_FRAMES 250  // 5 s of 20 ms uplink frames
 #define OTA_CHUNK_SIZE 4096
 #define OTA_NVS_NAMESPACE "ota"
 #define OTA_NVS_SHA_KEY "last_sha"
@@ -91,9 +94,20 @@ static bool ota_state_is_valid_for_status(esp_ota_img_states_t state) {
          state == ESP_OTA_IMG_NEW;
 }
 
+// t_6ec97d6b: a new image is only valid once it has done its job, not once it
+// joined Wi-Fi. Codec arm C joined Wi-Fi, passed the old wifi/mdns/http/xvf
+// check, was marked valid, and then panicked on its first uplink encode after
+// WebRTC CONNECTED, every boot. Requiring a connected peer, a fresh server
+// heartbeat and OTA_VALIDATION_MIN_UPLINK_FRAMES published uplink frames means
+// such an image stays PENDING_VERIFY: the bootloader reverts it on the next
+// reset, and ota_validation_watchdog_task reverts it after the timeout.
 static bool health_check_passes() {
+  const uint32_t uplink_frames = pipecat_uplink_frames_sent();
   bool healthy = pipecat_wifi_connected() && pipecat_mdns_started() &&
-                 pipecat_ota_server_started() && pipecat_xvf3800_present();
+                 pipecat_ota_server_started() && pipecat_xvf3800_present() &&
+                 pipecat_webrtc_connected &&
+                 pipecat_webrtc_server_heartbeat_fresh() &&
+                 uplink_frames >= OTA_VALIDATION_MIN_UPLINK_FRAMES;
   if (!healthy) {
     static int64_t last_log_us = 0;
     int64_t now_us = esp_timer_get_time();
@@ -101,9 +115,12 @@ static bool health_check_passes() {
       last_log_us = now_us;
       ESP_LOGW(LOG_TAG,
                "OTA validation health failed: wifi=%d mdns=%d ota_http=%d "
-               "xvf3800=%d",
+               "xvf3800=%d peer=%d hb=%d uplink_frames=%lu",
                pipecat_wifi_connected(), pipecat_mdns_started(),
-               pipecat_ota_server_started(), pipecat_xvf3800_present());
+               pipecat_ota_server_started(), pipecat_xvf3800_present(),
+               pipecat_webrtc_connected,
+               pipecat_webrtc_server_heartbeat_fresh(),
+               (unsigned long)uplink_frames);
     }
   }
   return healthy;
@@ -300,13 +317,16 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"satellite_id\":\"%s\","
            "\"mdns_hostname\":\"%s.local\","
            "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
-           "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u}",
+           "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u,"
+           "\"audio_stack_free\":%lu,\"uplink_frames\":%lu}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
            PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME,
            pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
            (unsigned)pipecat_boots_since_poweron(),
-           (unsigned)pipecat_net_watchdog_deadline_s());
+           (unsigned)pipecat_net_watchdog_deadline_s(),
+           (unsigned long)pipecat_audio_publisher_stack_free(),
+           (unsigned long)pipecat_uplink_frames_sent());
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
