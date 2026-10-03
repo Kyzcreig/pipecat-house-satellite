@@ -3,11 +3,14 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <peer.h>
+#include <string.h>
 
 #include "reconnect_watchdog.h"
 
 #ifndef LINUX_BUILD
+#include <esp_app_desc.h>
 #include <esp_attr.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
@@ -84,6 +87,12 @@ uint32_t pipecat_boots_since_poweron() {
 uint32_t pipecat_netwdt_restarts() {
   return s_boot_guard.netwdt_restarts;
 }
+uint32_t pipecat_crash_boots() {
+  return s_boot_guard.crash_boots;
+}
+uint32_t pipecat_slot_flipped() {
+  return s_boot_guard.slot_flipped;
+}
 uint32_t pipecat_net_watchdog_deadline_s() {
   return s_net_deadline_ms / 1000;
 }
@@ -111,19 +120,100 @@ static void pipecat_net_watchdog_cb(void *arg) {
   }
 }
 
+// Reads otadata for the other OTA slot and, if boot_guard.h agrees, boots it.
+// Returns only when no flip happened. esp_ota_set_boot_partition verifies the
+// target image (header, segments, checksum, SHA) before rewriting otadata, so
+// a corrupt/erased slot is refused here and we fall through to the hold.
+static void pipecat_boot_guard_try_slot_flip() {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *other = esp_ota_get_next_update_partition(nullptr);
+  const bool present = other != nullptr && running != nullptr &&
+                       other->address != running->address;
+
+  PipecatOtaSlotState other_state = PipecatOtaSlotState::kUnknown;
+  bool same_image = false;
+  if (present) {
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    const esp_err_t ret = esp_ota_get_state_partition(other, &st);
+    if (ret == ESP_OK) {
+      switch (st) {
+        case ESP_OTA_IMG_VALID:
+          other_state = PipecatOtaSlotState::kValid;
+          break;
+        case ESP_OTA_IMG_UNDEFINED:
+          other_state = PipecatOtaSlotState::kUndefined;
+          break;
+        case ESP_OTA_IMG_NEW:
+          other_state = PipecatOtaSlotState::kNew;
+          break;
+        case ESP_OTA_IMG_PENDING_VERIFY:
+          other_state = PipecatOtaSlotState::kPendingVerify;
+          break;
+        default:
+          other_state = PipecatOtaSlotState::kInvalid;
+          break;
+      }
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+      // No otadata entry names that slot; the app there (if any) was never
+      // selected. Treat as undefined and let image verification decide.
+      other_state = PipecatOtaSlotState::kUndefined;
+    }
+    // Same image on both slots (e.g. the same src.bin uploaded twice to land
+    // in a specific slot): flipping would re-run the crashing code.
+    esp_app_desc_t other_desc = {};
+    const esp_app_desc_t *self = esp_app_get_description();
+    if (esp_ota_get_partition_description(other, &other_desc) == ESP_OK) {
+      same_image = memcmp(other_desc.app_elf_sha256, self->app_elf_sha256,
+                          sizeof(self->app_elf_sha256)) == 0;
+    } else {
+      other_state = PipecatOtaSlotState::kInvalid;  // no app header there
+    }
+  }
+
+  const bool flip = pipecat_boot_guard_should_flip_slot(
+      &s_boot_guard, present, other_state, same_image);
+  ESP_LOGE(LOG_TAG,
+           "Boot guard: %u consecutive crash boots on %s (other=%s state=%d "
+           "same_image=%d) -> %s",
+           (unsigned)s_boot_guard.crash_boots, running ? running->label : "?",
+           present ? other->label : "none", (int)other_state, same_image,
+           flip ? "booting other slot" : "no eligible fallback, backing off");
+  if (!flip)
+    return;
+
+  const esp_err_t ret = esp_ota_set_boot_partition(other);
+  if (ret != ESP_OK) {
+    ESP_LOGE(LOG_TAG, "Boot guard: esp_ota_set_boot_partition(%s) failed: %s",
+             other->label, esp_err_to_name(ret));
+    return;
+  }
+  pipecat_boot_guard_note_slot_flip(&s_boot_guard);
+  esp_restart();
+}
+
 static void pipecat_boot_guard_start() {
   s_reset_reason = esp_reset_reason();
   const bool after_fault = pipecat_boot_guard_on_boot(
       &s_boot_guard, pipecat_classify_reset(s_reset_reason));
   s_boot_fault_count = s_boot_guard.fault_boots;
   s_net_deadline_ms = pipecat_net_watchdog_deadline_ms(&s_boot_guard);
-  ESP_LOGI(LOG_TAG,
-           "Boot guard: reset=%s fault=%d fault_boots=%u boots=%u "
-           "net_watchdog=%us",
-           pipecat_reset_reason_name(), after_fault,
-           (unsigned)s_boot_guard.fault_boots,
-           (unsigned)s_boot_guard.total_boots,
-           (unsigned)(s_net_deadline_ms / 1000));
+  ESP_LOGI(
+      LOG_TAG,
+      "Boot guard: reset=%s fault=%d fault_boots=%u crash_boots=%u "
+      "slot_flipped=%u boots=%u net_watchdog=%us",
+      pipecat_reset_reason_name(), after_fault,
+      (unsigned)s_boot_guard.fault_boots, (unsigned)s_boot_guard.crash_boots,
+      (unsigned)s_boot_guard.slot_flipped, (unsigned)s_boot_guard.total_boots,
+      (unsigned)(s_net_deadline_ms / 1000));
+
+  // Slot fallback (t_cf433ede): a VALID image that crashes before health on
+  // kPipecatSlotFlipCrashBoots consecutive boots hands over to the other OTA
+  // slot, once per power cycle. Decided before any init so a crash during
+  // init cannot pre-empt it. Only the pure policy lives in boot_guard.h.
+  if (s_boot_guard.crash_boots >= kPipecatSlotFlipCrashBoots &&
+      !s_boot_guard.slot_flipped) {
+    pipecat_boot_guard_try_slot_flip();
+  }
 
   // Task WDT on app_main: every blocking init below and the main loop must
   // make progress within CONFIG_ESP_TASK_WDT_TIMEOUT_S or the chip resets.

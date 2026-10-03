@@ -29,7 +29,8 @@ handler = OTA[start:end]
 
 for key in ("build", "git_sha", "dirty", "version", "built", "idf",
             "boot_guard", "reset_reason", "fault_boots", "boots_since_poweron",
-            "netwdt_restarts", "net_watchdog_s", "uptime_s"):
+            "netwdt_restarts", "crash_boots", "slot_flipped", "net_watchdog_s",
+            "uptime_s"):
     assert f'\\"{key}\\":' in handler, f"/xvf/params lost {key}"
 for arg in ("PIPECAT_BUILD_GIT_SHA", "PIPECAT_BUILD_GIT_DIRTY", "app->date",
             "app->time", "pipecat_netwdt_restarts()",
