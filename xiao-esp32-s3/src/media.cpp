@@ -178,6 +178,9 @@ static constexpr uint8_t XVF_CMD_AEC_HPFONOFF = 1;
 static constexpr uint8_t XVF_CMD_AEC_FAR_EXTGAIN = 5;
 static constexpr uint8_t XVF_CMD_AEC_ASROUTONOFF = 35;
 static constexpr uint8_t XVF_CMD_AEC_FIXEDBEAMSONOFF = 37;
+// Two floats (radians): fixed beam 1, fixed beam 2. Live only while
+// FIXEDBEAMSONOFF=1 (XMOS control map; ESPHome lock_beam() used the same pair).
+static constexpr uint8_t XVF_CMD_AEC_FIXEDBEAMSAZIMUTH_VALUES = 81;
 static constexpr uint8_t XVF_CMD_AEC_AZIMUTH_VALUES = 75;
 static constexpr uint8_t XVF_CMD_AEC_SPENERGY_VALUES = 80;
 // Read-only AEC diagnostics (XMOS XVF3800 control map, RESID 33).
@@ -433,6 +436,44 @@ static esp_err_t xvf_write_u8_pair(uint8_t resid, uint8_t cmd, uint8_t first,
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
 }
 
+static esp_err_t xvf_read_floats(uint8_t resid, uint8_t cmd, float *values,
+                                 size_t count);
+
+// Read-modify-write one slot of a two-float register, then read the slot
+// back. The other slot is preserved from the live chip value.
+static esp_err_t xvf_write_float_pair_slot(uint8_t resid, uint8_t cmd,
+                                           uint8_t slot, float value) {
+  if (slot > 1) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  float pair[2] = {};
+  esp_err_t ret = xvf_read_floats(resid, cmd, pair, 2);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  pair[slot] = value;
+  uint8_t payload[2 * sizeof(float)];
+  for (size_t i = 0; i < 2; i++) {
+    uint32_t bits = 0;
+    memcpy(&bits, &pair[i], sizeof(bits));
+    store_le32(&payload[i * sizeof(float)], bits);
+  }
+  return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
+}
+
+static esp_err_t xvf_read_float_pair_slot(uint8_t resid, uint8_t cmd,
+                                          uint8_t slot, float *value) {
+  if (slot > 1 || value == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  float pair[2] = {};
+  esp_err_t ret = xvf_read_floats(resid, cmd, pair, 2);
+  if (ret == ESP_OK) {
+    *value = pair[slot];
+  }
+  return ret;
+}
+
 static esp_err_t xvf_read_scalar(uint8_t resid, uint8_t cmd, bool is_float,
                                  float *value) {
   uint8_t payload[sizeof(uint32_t)] = {};
@@ -457,6 +498,9 @@ enum class TuneTarget : uint8_t {
   XVF_INT32,
   DAC_ATTEN,
   LED_BRIGHTNESS,  // ESP32-side ring scalar, own NVS namespace (not xvf_dsp)
+  // One slot of a two-float XVF register (fixed-beam azimuth pair 33/81):
+  // read-modify-write of the pair, readback of the slot. pair_slot picks it.
+  XVF_FLOAT_PAIR_SLOT,
 };
 
 struct TuneEntry {
@@ -470,6 +514,7 @@ struct TuneEntry {
   float max_value;
   float default_value;
   bool dtsensitive_range;
+  uint8_t pair_slot;  // XVF_FLOAT_PAIR_SLOT only (0 or 1); zero elsewhere
 };
 
 // Persistent entries are the reconciler-owned DSP surface. Legacy entries stay
@@ -522,6 +567,22 @@ static const TuneEntry kTuneEntries[] = {
     // (<=50ms) renders at the new level.
     {"led_brightness", 0, 0, TuneTarget::LED_BRIGHTNESS, false, true, 0.0f,
      255.0f, static_cast<float>(PIPECAT_LED_BRIGHTNESS), false},
+    // Fixed beams (t_a6061357, paired-capture #8): aim both beamformer beams
+    // at known talker azimuths instead of auto-steering. VOLATILE on purpose:
+    // the baked boot profile writes FIXEDBEAMSONOFF=0 (auto), so a reboot is
+    // the fail-safe and the hub re-applies the room's registry row at every
+    // connect (FIXED_BEAM_<room> in observer-map.env). Order of writes:
+    // az1, az2, then fixed_beams_onoff=1; onoff=0 is the kill switch.
+    {"fixed_beams_onoff", XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSONOFF,
+     TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 0.0f, false},
+    // Radians, same frame as AEC_AZIMUTH_VALUES / AUDIO_MGR_SELECTED_AZIMUTHS
+    // (0..2pi as the chip reports them).
+    {"fixed_beam_az1", XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSAZIMUTH_VALUES,
+     TuneTarget::XVF_FLOAT_PAIR_SLOT, false, true, 0.0f, 6.2831855f, 0.0f,
+     false, 0},
+    {"fixed_beam_az2", XVF_RESID_AEC, XVF_CMD_AEC_FIXEDBEAMSAZIMUTH_VALUES,
+     TuneTarget::XVF_FLOAT_PAIR_SLOT, false, true, 0.0f, 6.2831855f, 0.0f,
+     false, 1},
 };
 
 static const TuneEntry *find_tune_entry(const char *param) {
@@ -555,7 +616,8 @@ static bool normalize_tune_value(const TuneEntry &entry, float requested,
   if (entry.dtsensitive_range) {
     value = clamp_dtsensitive(value);
   }
-  if (entry.target != TuneTarget::XVF_FLOAT) {
+  if (entry.target != TuneTarget::XVF_FLOAT &&
+      entry.target != TuneTarget::XVF_FLOAT_PAIR_SLOT) {
     value = static_cast<float>(static_cast<int32_t>(value));
   }
   *applied_value = value;
@@ -629,6 +691,12 @@ esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
     *readback_valid = true;
     return ESP_OK;
   }
+  if (entry->target == TuneTarget::XVF_FLOAT_PAIR_SLOT) {
+    esp_err_t pair_ret = xvf_read_float_pair_slot(entry->resid, entry->cmd,
+                                                  entry->pair_slot, readback);
+    *readback_valid = pair_ret == ESP_OK;
+    return pair_ret;
+  }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
   esp_err_t ret = xvf_read_scalar(entry->resid, entry->cmd, is_float, readback);
   *readback_valid = ret == ESP_OK;
@@ -691,13 +759,23 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
     return ESP_OK;
   }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
-  esp_err_t ret = is_float
-                      ? xvf_write_float(entry->resid, entry->cmd, applied_value)
-                      : xvf_write_int32(entry->resid, entry->cmd,
-                                        static_cast<int32_t>(applied_value));
+  bool is_pair_slot = entry->target == TuneTarget::XVF_FLOAT_PAIR_SLOT;
+  esp_err_t ret;
+  if (is_pair_slot) {
+    ret = xvf_write_float_pair_slot(entry->resid, entry->cmd, entry->pair_slot,
+                                    applied_value);
+  } else if (is_float) {
+    ret = xvf_write_float(entry->resid, entry->cmd, applied_value);
+  } else {
+    ret = xvf_write_int32(entry->resid, entry->cmd,
+                          static_cast<int32_t>(applied_value));
+  }
   if (ret == ESP_OK) {
-    ret =
-        xvf_read_scalar(entry->resid, entry->cmd, is_float, &result->readback);
+    ret = is_pair_slot
+              ? xvf_read_float_pair_slot(entry->resid, entry->cmd,
+                                         entry->pair_slot, &result->readback)
+              : xvf_read_scalar(entry->resid, entry->cmd, is_float,
+                                &result->readback);
   }
   if (ret == ESP_OK) {
     result->readback_valid = true;
