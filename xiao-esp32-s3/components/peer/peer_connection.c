@@ -14,6 +14,35 @@
 #include "sctp.h"
 #include "sdp.h"
 
+#if PIPECAT_ARRIVAL_TRACE
+#include <sys/select.h>
+
+#include "arrival_trace.h"
+#include "esp_timer.h"
+
+// t_5faf78b4: is another datagram already queued on the agent socket? A set
+// bit on consecutive arrivals means the loop (one datagram per pass, then a
+// TICK_INTERVAL sleep) is the bottleneck, not the air.
+static uint8_t at_socket_backlogged(Agent *agent) {
+  fd_set rfds;
+  struct timeval tv = {0, 0};
+  int maxfd = -1;
+  FD_ZERO(&rfds);
+  for (int i = 0; i < (int)(sizeof(agent->udp_sockets) /
+                            sizeof(agent->udp_sockets[0]));
+       i++) {
+    if (agent->udp_sockets[i].fd >= 0) {
+      FD_SET(agent->udp_sockets[i].fd, &rfds);
+      if (agent->udp_sockets[i].fd > maxfd)
+        maxfd = agent->udp_sockets[i].fd;
+    }
+  }
+  if (maxfd < 0)
+    return 0;
+  return select(maxfd + 1, &rfds, NULL, NULL, &tv) > 0 ? 1 : 0;
+}
+#endif
+
 #define STATE_CHANGED(pc, curr_state)                                 \
   if (pc->oniceconnectionstatechange && pc->state != curr_state) {    \
     pc->oniceconnectionstatechange(curr_state, pc->config.user_data); \
@@ -363,6 +392,11 @@ int peer_connection_loop(PeerConnection *pc) {
 
           ssrc = rtp_get_ssrc(pc->agent_buf);
           if (ssrc == pc->remote_assrc) {
+#if PIPECAT_ARRIVAL_TRACE
+            at_push((uint32_t)(esp_timer_get_time() / 1000),
+                    (uint16_t)((pc->agent_buf[2] << 8) | pc->agent_buf[3]),
+                    AT_ARR, at_socket_backlogged(&pc->agent));
+#endif
             rtp_decoder_decode(&pc->artp_decoder, pc->agent_buf, pc->agent_ret);
           } else if (ssrc == pc->remote_vssrc) {
             rtp_decoder_decode(&pc->vrtp_decoder, pc->agent_buf, pc->agent_ret);

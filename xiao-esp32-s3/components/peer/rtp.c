@@ -10,6 +10,10 @@
 #include "red_unwrap.h"
 #include "red_wrap.h"
 #include "utils.h"
+#if PIPECAT_ARRIVAL_TRACE
+#include "arrival_trace.h"
+#include "esp_timer.h"
+#endif
 
 typedef enum RtpH264Type {
 
@@ -766,6 +770,9 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
         // their successors already decoded (decoder-state corruption
         // otherwise, spec §Decoder-feed-order). Count the discard.
         g_rtp_late_drops++;
+#if PIPECAT_ARRIVAL_TRACE
+        at_push((uint32_t)(esp_timer_get_time() / 1000), seq, AT_LATE, 0);
+#endif
         if (red_ok) {
           g_red_dup_drops++;
         }
@@ -779,6 +786,10 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
         // (oldest first) so the opus decoder state stays coherent. Frames
         // without a covering block keep the (NULL, 0) PLC/FEC signal.
         g_rtp_gap_events++;
+#if PIPECAT_ARRIVAL_TRACE
+        at_push((uint32_t)(esp_timer_get_time() / 1000), seq, AT_GAP,
+                (uint8_t)delta);
+#endif
         int8_t actions[RED_MAX_GAP];
         int planned = 0;
         if (red_ok) {

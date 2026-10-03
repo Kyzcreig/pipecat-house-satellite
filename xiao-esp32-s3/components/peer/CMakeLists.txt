@@ -10,6 +10,10 @@ set(LOCAL_CODES "peer_connection.c" "rtp.c" "red_unwrap.c" "red_wrap.c")
 # nack_client.c and the vendored sctp.c/h are used only by NACK-v2. Excluding
 # both from a dark build keeps the default theater flash free of the retired
 # client and on the stock SCTP ABI.
+# Downlink arrival/drain trace (t_5faf78b4): diagnostic build only.
+if("$ENV{PIPECAT_ARRIVAL_TRACE}" STREQUAL "1")
+  list(APPEND LOCAL_CODES "arrival_trace.c")
+endif()
 if("$ENV{PIPECAT_NACK}" STREQUAL "1")
   list(FILTER CODES EXCLUDE REGEX ".*/sctp\\.c$")
   list(APPEND LOCAL_CODES "nack_client.c")

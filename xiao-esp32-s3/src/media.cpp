@@ -1805,6 +1805,10 @@ volatile uint32_t g_play_prebuffer_steps = 0;
 #include "opus_gapfill.h"
 #endif
 #include "prebuffer_ctl.h"
+#if PIPECAT_ARRIVAL_TRACE
+#include "arrival_trace.h"
+#define AT_TRACE_RECORDS 16384  // ~5 min of 50 pps downlink; 192 KB PSRAM
+#endif
 #ifndef PIPECAT_ADAPTIVE_PREBUFFER
 #define PIPECAT_ADAPTIVE_PREBUFFER 0  // Phase 6 dark by default
 #endif
@@ -1976,7 +1980,16 @@ static void pipecat_playback_task(void *arg) {
       }
       // Ring refilled: if a FULL drain happened within the resume window,
       // that drain was a mid-speech gap, not end of utterance.
+#if PIPECAT_ARRIVAL_TRACE
+      int at_drained = pbc.drain_pending;
+      int at_resumed = pbc_on_refill(&pbc, now_ms);
+      if (at_drained) {
+        at_push(now_ms, 0, AT_REFILL, at_resumed ? 1 : 0);
+      }
+      if (at_resumed) {
+#else
       if (pbc_on_refill(&pbc, now_ms)) {
+#endif
         g_play_stat_gap_resumes = pbc.gap_resumes;
         ESP_LOGW(LOG_TAG,
                  "gap resume: ring refilled %lums after full drain "
@@ -2003,6 +2016,9 @@ static void pipecat_playback_task(void *arg) {
         g_play_stat_underruns++;
       } else {
         pbc_on_full_drain(&pbc, now_ms);
+#if PIPECAT_ARRIVAL_TRACE
+        at_push(now_ms, 0, AT_DRAIN, 0);
+#endif
       }
       prebuffering = true;
       continue;
@@ -2076,6 +2092,13 @@ void pipecat_init_audio_decoder() {
     return;
   }
   ack_beep_glue_init();
+#if PIPECAT_ARRIVAL_TRACE
+  at_rec *at_buf = (at_rec *)heap_caps_malloc(
+      AT_TRACE_RECORDS * sizeof(at_rec), MALLOC_CAP_SPIRAM);
+  at_init(at_buf, AT_TRACE_RECORDS);
+  ESP_LOGI(LOG_TAG, "arrival trace: %s (%d records)",
+           at_buf ? "on" : "ALLOC FAILED", AT_TRACE_RECORDS);
+#endif
   // Consumer task: core 1 (away from audio_publisher on core 0 prio 7),
   // prio 6 (above led_ring prio 2). Blocking i2s_channel_write paces it.
   xTaskCreatePinnedToCore(pipecat_playback_task, "playback", 4096, NULL, 6,

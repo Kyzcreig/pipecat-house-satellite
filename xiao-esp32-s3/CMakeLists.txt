@@ -56,6 +56,13 @@ endforeach()
 # 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
 # in a rolling window; decay back one step after a quiet period. DARK by
 # default — set PIPECAT_ADAPTIVE_PREBUFFER=1 at configure time to enable.
+# Downlink arrival/drain trace (t_5faf78b4): records per-packet service time,
+# queued-behind flag, seq gaps and ring drain/refill edges on the device
+# clock; GET /playback/stats?trace_from=N. Diagnostic only, default OFF.
+if("$ENV{PIPECAT_ARRIVAL_TRACE}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_ARRIVAL_TRACE=1)
+endif()
+
 if("$ENV{PIPECAT_ADAPTIVE_PREBUFFER}" STREQUAL "1")
   add_compile_definitions(PIPECAT_ADAPTIVE_PREBUFFER=1)
 endif()

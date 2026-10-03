@@ -973,9 +973,44 @@ static esp_err_t playback_selftest_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#if PIPECAT_ARRIVAL_TRACE
+#include "arrival_trace.h"
+// GET /playback/stats?trace_from=N (t_5faf78b4): text dump of trace records
+// [max(N, head-cap), min(head, N+1024)). First line "head <H> first <F>";
+// then "<idx> <t_ms> <kind> <seq> <aux>" per record still in the ring.
+static esp_err_t playback_trace_send(httpd_req_t *req, uint32_t from) {
+  uint32_t head = at_head();
+  uint32_t end = head - from > 1024 ? from + 1024 : head;
+  if ((int32_t)(head - from) < 0)
+    end = from = head;
+  char line[64];
+  httpd_resp_set_type(req, "text/plain");
+  snprintf(line, sizeof(line), "head %lu first %lu\n", (unsigned long)head,
+           (unsigned long)from);
+  httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+  for (uint32_t i = from; i < end; i++) {
+    at_rec r;
+    if (!at_get(i, &r))
+      continue;
+    int n = snprintf(line, sizeof(line), "%lu %lu %u %u %u\n",
+                     (unsigned long)i, (unsigned long)r.t_ms, r.kind, r.seq,
+                     r.aux);
+    if (httpd_resp_send_chunk(req, line, n) != ESP_OK)
+      return ESP_FAIL;
+  }
+  return httpd_resp_send_chunk(req, NULL, 0);
+}
+#endif
+
 static esp_err_t playback_stats_handler(httpd_req_t *req) {
   char query[64] = {0};
   char val[16] = {0};
+#if PIPECAT_ARRIVAL_TRACE
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "trace_from", val, sizeof(val)) == ESP_OK) {
+    return playback_trace_send(req, (uint32_t)strtoul(val, nullptr, 10));
+  }
+#endif
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
       httpd_query_key_value(query, "prebuffer_ms", val, sizeof(val)) ==
           ESP_OK) {
