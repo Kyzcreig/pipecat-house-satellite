@@ -14,6 +14,10 @@
 #include "sctp.h"
 #include "sdp.h"
 
+#ifndef PIPECAT_RX_DRAIN_MAX
+#define PIPECAT_RX_DRAIN_MAX 8  // datagrams per loop pass (1 = upstream)
+#endif
+
 #if PIPECAT_ARRIVAL_TRACE
 #include <sys/select.h>
 
@@ -28,9 +32,9 @@ static uint8_t at_socket_backlogged(Agent *agent) {
   struct timeval tv = {0, 0};
   int maxfd = -1;
   FD_ZERO(&rfds);
-  for (int i = 0; i < (int)(sizeof(agent->udp_sockets) /
-                            sizeof(agent->udp_sockets[0]));
-       i++) {
+  // Same socket set as agent_socket_recv: udp_sockets[1] (IPv6) is never
+  // opened with CONFIG_IPV6=0 and its fd stays 0 (the console VFS).
+  for (int i = 0; i < (CONFIG_IPV6 ? 2 : 1); i++) {
     if (agent->udp_sockets[i].fd >= 0) {
       FD_SET(agent->udp_sockets[i].fd, &rfds);
       if (agent->udp_sockets[i].fd > maxfd)
@@ -365,8 +369,16 @@ int peer_connection_loop(PeerConnection *pc) {
       }
       break;
     case PEER_CONNECTION_COMPLETED:
-      if ((pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf,
-                                      sizeof(pc->agent_buf))) > 0) {
+      // t_5faf78b4: drain every queued datagram per pass. One-per-pass + the
+      // caller's TICK_INTERVAL sleep serviced ~1 packet / 19 ms against a
+      // 20 ms downlink: a wifi burst sat in lwIP's 6-deep UDP mailbox (overflow
+      // = loss) and took seconds to clear, so the ring drained on the next
+      // stall. Bounded so a flood can't starve the rest of the loop.
+      for (int rx_n = 0;
+           rx_n < PIPECAT_RX_DRAIN_MAX &&
+           (pc->agent_ret = agent_recv(&pc->agent, pc->agent_buf,
+                                       sizeof(pc->agent_buf))) > 0;
+           rx_n++) {
         LOGD("agent_recv %d", pc->agent_ret);
 
         if (rtcp_probe(pc->agent_buf, pc->agent_ret)) {
