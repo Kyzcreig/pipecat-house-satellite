@@ -82,6 +82,27 @@ profile_body = function_body(MEDIA, "static void configure_xvf3800_dsp_profile()
 assert "xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2)" in re.sub(
     r"\s+", " ", profile_body
 )
+# sys_delay (AUDIO_MGR 35/26) is VOLATILE (persistent=false: no NVS key, no
+# boot replay), so the chip runs whatever configure_xvf3800_dsp_profile()
+# bakes at every boot. That bake and the table's replay default must agree.
+# Value -30 is the t_bfdf7151 measurement (2026-10-04 kitchen sweep): 12 never
+# converged the AEC (0/64 playback polls, clean echo p95 1329); -30 converged
+# 62/62 (echo p95 200). Pinned by t_ef9294b3.
+SYS_DELAY = -30
+sys_delay_row = re.search(
+    r'\{"sys_delay",\s*XVF_RESID_AUDIO_MGR,\s*XVF_CMD_AUDIO_MGR_SYS_DELAY,\s*'
+    r"TuneTarget::XVF_INT32,\s*false,\s*true,\s*-64\.0f,\s*256\.0f,\s*"
+    r"(-?\d+)\.0f,\s*false\}",
+    table,
+)
+assert sys_delay_row, "sys_delay tune-table row drifted"
+assert int(sys_delay_row.group(1)) == SYS_DELAY, sys_delay_row.group(0)
+baked_sys_delay = re.search(
+    r"xvf_write_int32\(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, (-?\d+)\)",
+    re.sub(r"\s+", " ", profile_body),
+)
+assert baked_sys_delay, "configure_xvf3800_dsp_profile() no longer bakes sys_delay"
+assert int(baked_sys_delay.group(1)) == SYS_DELAY, baked_sys_delay.group(0)
 i2c_body = function_body(MEDIA, "static void init_i2c_and_codec()")
 assert "configure_xvf3800_dsp_profile();" in i2c_body
 capture_body = function_body(MEDIA, "void pipecat_init_audio_capture()")
