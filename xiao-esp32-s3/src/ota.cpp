@@ -612,7 +612,8 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
   }
 
   // Heap, not the 4 KB httpd task stack (same rule as playback_stats).
-  static constexpr size_t kParamsBodyCapacity = 1024;
+  // +512 for the `redial` object (t_db77e56b); the live body is ~500 B.
+  static constexpr size_t kParamsBodyCapacity = PIPECAT_REDIAL ? 1536 : 1024;
   char *body = static_cast<char *>(calloc(1, kParamsBodyCapacity));
   if (body == nullptr) {
     httpd_resp_set_status(req, "500 Internal Server Error");
@@ -676,7 +677,7 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
       "\"boot_guard\":{\"reset_reason\":\"%s\",\"fault_boots\":%u,"
       "\"boots_since_poweron\":%u,\"netwdt_restarts\":%u,"
       "\"crash_boots\":%u,\"slot_flipped\":%u,"
-      "\"net_watchdog_s\":%u,\"uptime_s\":%lld}}",
+      "\"net_watchdog_s\":%u,\"uptime_s\":%lld}",
       (unsigned long)count, PIPECAT_BUILD_GIT_SHA,
       PIPECAT_BUILD_GIT_DIRTY ? "true" : "false", app->version, app->date,
       app->time, app->idf_ver, pipecat_reset_reason_name(),
@@ -691,6 +692,23 @@ static esp_err_t xvf_params_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "500 Internal Server Error");
     return httpd_resp_sendstr(req, "{\"error\":\"params response overflow\"}");
   }
+  used += static_cast<size_t>(tail);
+#if PIPECAT_REDIAL
+  // Re-offer-without-restart telemetry (t_db77e56b): sits next to boot_guard
+  // because fault_boots/netwdt_restarts above are the pass-criterion
+  // counters it is measured against. Owned by webrtc.cpp.
+  if (used + 1 < kParamsBodyCapacity) {
+    body[used++] = ',';
+    used += pipecat_webrtc_redial_json(body + used, kParamsBodyCapacity - used);
+  }
+#endif
+  if (used + 2 > kParamsBodyCapacity) {
+    free(body);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"params response overflow\"}");
+  }
+  body[used++] = '}';
+  body[used] = '\0';
   httpd_resp_set_type(req, "application/json");
   esp_err_t sent = httpd_resp_sendstr(req, body);
   free(body);
@@ -1151,6 +1169,9 @@ void pipecat_init_ota_server() {
 #else
   config.max_uri_handlers = 9;
 #endif
+#if PIPECAT_REDIAL
+  config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
+#endif
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1231,6 +1252,9 @@ void pipecat_init_ota_server() {
 #endif
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
+#if PIPECAT_REDIAL
+  ESP_ERROR_CHECK(pipecat_webrtc_register_http(g_ota_server));
+#endif
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
 }
 

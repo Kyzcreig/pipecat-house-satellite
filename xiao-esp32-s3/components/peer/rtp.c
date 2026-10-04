@@ -683,6 +683,31 @@ size_t rtp_nack_format_rtt_samples(char *out, size_t capacity) {
 #endif
 }
 
+// Per-decoder RTP sequence side-table (the 2026-07-09 reorder/loss patch in
+// rtp_decode_generic). File-scope so a PeerConnection teardown can forget it.
+enum { RTP_SEQ_SLOTS = 4 };
+static struct {
+  RtpDecoder *dec;
+  uint16_t last_seq;
+  uint32_t last_ts;
+  uint8_t initialized;
+} s_rtp_seq_state[RTP_SEQ_SLOTS];
+
+#if PIPECAT_REDIAL
+// Forget every decoder's sequence state. Called by the PIPECAT_REDIAL teardown
+// right after peer_connection_destroy() (t_db77e56b, kitchen 2026-10-04
+// 11:49): the next PeerConnection's RtpDecoder is allocated at the SAME
+// address as the freed one, so its slot was still `initialized` with the dead
+// stream's last_seq, and the new peer's random sequence base read as "late"
+// on every packet -- packets_received +201, late_drops +201, red_dup_drops
+// +201, frames +0 for a 2 s tone. A reboot cleared this table for free; a
+// re-dial has to do it explicitly. Runs on the transport-loop task, the same
+// task that calls rtp_decode_generic, so there is no concurrent reader.
+void rtp_seq_state_reset(void) {
+  memset(s_rtp_seq_state, 0, sizeof(s_rtp_seq_state));
+}
+#endif
+
 static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
                               size_t size) {
   RtpPacket *rtp_packet = (RtpPacket *)buf;
@@ -738,27 +763,23 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
   // Late/duplicate packets (seq behind) are dropped — the ring already played
   // past them. Seq state lives in a tiny side-table keyed by decoder pointer
   // (can't add fields to RtpDecoder — rtp.h stays in the pristine submodule).
-  enum { RTP_SEQ_SLOTS = 4 };
-  static struct {
-    RtpDecoder *dec;
-    uint16_t last_seq;
-    uint32_t last_ts;
-    uint8_t initialized;
-  } seq_state[RTP_SEQ_SLOTS];
+  // The table is file-scope (s_rtp_seq_state) so a PeerConnection teardown can
+  // forget it: see rtp_seq_state_reset() above.
   int slot = -1;
   for (int i = 0; i < RTP_SEQ_SLOTS; i++) {
-    if (seq_state[i].dec == rtp_decoder) {
+    if (s_rtp_seq_state[i].dec == rtp_decoder) {
       slot = i;
       break;
     }
-    if (slot < 0 && seq_state[i].dec == NULL)
+    if (slot < 0 && s_rtp_seq_state[i].dec == NULL)
       slot = i;
   }
   if (slot >= 0) {
     uint16_t seq = ntohs(rtp_packet->header.seq_number);
     uint32_t ts = ntohl(rtp_packet->header.timestamp);
-    if (seq_state[slot].dec == rtp_decoder && seq_state[slot].initialized) {
-      uint16_t expected = (uint16_t)(seq_state[slot].last_seq + 1);
+    if (s_rtp_seq_state[slot].dec == rtp_decoder &&
+        s_rtp_seq_state[slot].initialized) {
+      uint16_t expected = (uint16_t)(s_rtp_seq_state[slot].last_seq + 1);
       int16_t delta = (int16_t)(seq - expected);
       if (delta < 0) {
         // Late or duplicate packet — playback has moved on; drop it.
@@ -796,7 +817,7 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
           // RTP ts units per packet, derived from the actual stream (960 for
           // 20ms opus @48k) so a ptime change can't silently break mapping.
           uint32_t ts_step =
-              (ts - seq_state[slot].last_ts) / (uint32_t)(delta + 1);
+              (ts - s_rtp_seq_state[slot].last_ts) / (uint32_t)(delta + 1);
           planned = red_recover_plan(&red, delta, ts_step, actions);
         }
 #ifdef PIPECAT_NACK
@@ -838,10 +859,10 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
         }
       }
     }
-    seq_state[slot].dec = rtp_decoder;
-    seq_state[slot].last_seq = seq;
-    seq_state[slot].last_ts = ts;
-    seq_state[slot].initialized = 1;
+    s_rtp_seq_state[slot].dec = rtp_decoder;
+    s_rtp_seq_state[slot].last_seq = seq;
+    s_rtp_seq_state[slot].last_ts = ts;
+    s_rtp_seq_state[slot].initialized = 1;
   }
   // --- END VENDORED PATCH ---
   if (rtp_decoder->on_packet != NULL)

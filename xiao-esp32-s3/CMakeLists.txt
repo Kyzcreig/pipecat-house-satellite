@@ -101,6 +101,16 @@ if(NOT "$ENV{PIPECAT_GAP_RESUME_MS}" STREQUAL "")
   add_compile_definitions(PIPECAT_GAP_RESUME_MS=$ENV{PIPECAT_GAP_RESUME_MS})
 endif()
 
+# Re-offer without esp_restart() (GADGET-2, t_db77e56b): on a hub-closed peer,
+# stale heartbeat or POST /webrtc/redial, tear down + recreate the libpeer
+# PeerConnection and POST a fresh offer; XVF/I2S/LED/mdns/OTA stay up.
+# esp_restart() remains the fallback after 40 failed re-dials. Also reaches
+# components/peer (DTLS close_notify -> CLOSED). DEFAULT OFF; set
+# PIPECAT_REDIAL=1 at configure time.
+if("$ENV{PIPECAT_REDIAL}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_REDIAL=1)
+endif()
+
 set(WIFI_SSID_VALUE "$ENV{WIFI_SSID}")
 set(WIFI_PASSWORD_VALUE "$ENV{WIFI_PASSWORD}")
 set(PIPECAT_SMALLWEBRTC_URL_VALUE "$ENV{PIPECAT_SMALLWEBRTC_URL}")

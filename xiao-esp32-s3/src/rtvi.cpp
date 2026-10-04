@@ -135,7 +135,7 @@ bool pipecat_rtvi_handle_heartbeat(const char *msg, uint16_t sid) {
 }
 
 void pipecat_rtvi_send_pending_heartbeat() {
-  if (!pending_pong_ready)
+  if (!pending_pong_ready || peer_connection == NULL)
     return;
   int sent = peer_connection_datachannel_send_sid(
       peer_connection, pending_pong, pending_pong_len, pending_pong_sid);
@@ -257,9 +257,22 @@ void pipecat_init_rtvi(PeerConnection *connection,
   peer_connection = connection;
   rtvi_callbacks = callbacks;
 
+  // Queue + task are created once; a re-dial (PIPECAT_REDIAL) re-points the
+  // PeerConnection on every CONNECTED and must not leak a task per cycle.
+  if (rtvi_queue != NULL)
+    return;
   rtvi_queue = xQueueCreate(10, sizeof(rtvi_msg_t));
   xTaskCreatePinnedToCore(rtvi_task, "RTVI Task", 4096, NULL, 2, NULL, 1);
 }
+
+#if PIPECAT_REDIAL
+// The PeerConnection is about to be destroyed: drop our pointer and any
+// staged pong so pipecat_rtvi_send_pending_heartbeat() cannot touch it.
+void pipecat_rtvi_detach() {
+  peer_connection = NULL;
+  pending_pong_ready = false;
+}
+#endif
 
 void pipecat_rtvi_send_client_ready() {
   rtvi_msg_t *msg = create_rtvi_message("client-ready");
