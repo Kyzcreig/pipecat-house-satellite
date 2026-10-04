@@ -101,9 +101,15 @@ class PipecatRedialPolicy {
       consecutive_failures_ = 0;
   }
 
-  uint32_t consecutive_failures() const { return consecutive_failures_; }
-  uint32_t total_failures() const { return total_failures_; }
-  uint32_t next_backoff_ms() const { return backoff_ms(consecutive_failures_); }
+  uint32_t consecutive_failures() const {
+    return consecutive_failures_;
+  }
+  uint32_t total_failures() const {
+    return total_failures_;
+  }
+  uint32_t next_backoff_ms() const {
+    return backoff_ms(consecutive_failures_);
+  }
 
  private:
   uint32_t consecutive_failures_ = 0;

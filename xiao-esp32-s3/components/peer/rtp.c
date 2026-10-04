@@ -777,7 +777,8 @@ static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,
   if (slot >= 0) {
     uint16_t seq = ntohs(rtp_packet->header.seq_number);
     uint32_t ts = ntohl(rtp_packet->header.timestamp);
-    if (s_rtp_seq_state[slot].dec == rtp_decoder && s_rtp_seq_state[slot].initialized) {
+    if (s_rtp_seq_state[slot].dec == rtp_decoder &&
+        s_rtp_seq_state[slot].initialized) {
       uint16_t expected = (uint16_t)(s_rtp_seq_state[slot].last_seq + 1);
       int16_t delta = (int16_t)(seq - expected);
       if (delta < 0) {

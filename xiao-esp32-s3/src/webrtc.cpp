@@ -279,13 +279,13 @@ static void pipecat_ondatachannel_onopen_task(void *userdata) {
 static PipecatRedialTrigger s_redial_requested = PipecatRedialTrigger::kNone;
 static PipecatRedialPolicy s_redial_policy;
 static bool s_offer_answered = false;
-static uint32_t s_offer_sent_ms = 0;        // 0 = no attempt in flight
-static uint32_t s_connected_at_ms = 0;      // 0 = not connected
-static uint32_t s_next_attempt_at_ms = 0;   // valid while peer_connection==NULL
-static uint32_t s_redials_total = 0;        // trigger-driven teardown+re-offer
-static uint32_t s_attempts_total = 0;       // dials incl. ladder retries
-static uint32_t s_redial_connects = 0;      // CONNECTED edges after a re-dial
-static uint32_t s_peer_generation = 0;      // 1 = boot connection
+static uint32_t s_offer_sent_ms = 0;       // 0 = no attempt in flight
+static uint32_t s_connected_at_ms = 0;     // 0 = not connected
+static uint32_t s_next_attempt_at_ms = 0;  // valid while peer_connection==NULL
+static uint32_t s_redials_total = 0;       // trigger-driven teardown+re-offer
+static uint32_t s_attempts_total = 0;      // dials incl. ladder retries
+static uint32_t s_redial_connects = 0;     // CONNECTED edges after a re-dial
+static uint32_t s_peer_generation = 0;     // 1 = boot connection
 static uint32_t s_last_redial_ms = 0;
 static uint32_t s_last_redial_to_connected_ms = 0;
 static PipecatRedialTrigger s_last_trigger = PipecatRedialTrigger::kNone;
@@ -475,7 +475,8 @@ static void pipecat_webrtc_teardown() {
 // Schedules the next attempt per the ladder; reboots after the cap.
 void pipecat_webrtc_note_attempt_failed(PipecatRedialTrigger why) {
   const bool give_up = s_redial_policy.note_failure();
-  ESP_LOGW(LOG_TAG, "redial: attempt failed (%s) consecutive=%u next in %u ms%s",
+  ESP_LOGW(LOG_TAG,
+           "redial: attempt failed (%s) consecutive=%u next in %u ms%s",
            pipecat_redial_trigger_name(why),
            (unsigned)s_redial_policy.consecutive_failures(),
            (unsigned)s_redial_policy.next_backoff_ms(),
@@ -521,9 +522,8 @@ static void pipecat_webrtc_redial(PipecatRedialTrigger why) {
 // caller re-arms its reconnect watchdog so the new attempt gets fresh grace).
 bool pipecat_webrtc_redial_tick(bool watchdog_expired) {
   const uint32_t now = redial_now_ms();
-  PipecatRedialTrigger why =
-      __atomic_exchange_n(&s_redial_requested, PipecatRedialTrigger::kNone,
-                          __ATOMIC_SEQ_CST);
+  PipecatRedialTrigger why = __atomic_exchange_n(
+      &s_redial_requested, PipecatRedialTrigger::kNone, __ATOMIC_SEQ_CST);
   if (why == PipecatRedialTrigger::kNone && watchdog_expired)
     why = PipecatRedialTrigger::kWatchdog;
 
@@ -584,7 +584,8 @@ size_t pipecat_webrtc_redial_json(char *out, size_t capacity) {
       out, capacity,
       "\"redial\":{\"enabled\":true,\"generation\":%u,\"peer_state\":\"%s\","
       "\"connected\":%s,\"connected_for_ms\":%u,\"redials_total\":%u,"
-      "\"attempts_total\":%u,\"redial_connects\":%u,\"last_trigger\":\"%s\",\"last_redial_ms\":%u,"
+      "\"attempts_total\":%u,\"redial_connects\":%u,\"last_trigger\":\"%s\","
+      "\"last_redial_ms\":%u,"
       "\"last_redial_to_connected_ms\":%u,\"consecutive_failures\":%u,"
       "\"total_failures\":%u,\"next_attempt_in_ms\":%u,"
       "\"heap_free_int\":%u,\"heap_min_free_int\":%u,\"heap_largest_int\":%u,"
@@ -594,8 +595,7 @@ size_t pipecat_webrtc_redial_json(char *out, size_t capacity) {
       (unsigned)(s_connected_at_ms ? now - s_connected_at_ms : 0),
       (unsigned)s_redials_total, (unsigned)s_attempts_total,
       (unsigned)s_redial_connects, pipecat_redial_trigger_name(s_last_trigger),
-      (unsigned)s_last_redial_ms,
-      (unsigned)s_last_redial_to_connected_ms,
+      (unsigned)s_last_redial_ms, (unsigned)s_last_redial_to_connected_ms,
       (unsigned)s_redial_policy.consecutive_failures(),
       (unsigned)s_redial_policy.total_failures(),
       (unsigned)(peer_connection == NULL &&

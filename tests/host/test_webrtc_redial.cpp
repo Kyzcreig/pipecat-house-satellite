@@ -89,8 +89,8 @@ static void test_trigger_names_are_stable_telemetry() {
                 "http") == 0);
   assert(strcmp(pipecat_redial_trigger_name(PipecatRedialTrigger::kOfferFailed),
                 "offer_failed") == 0);
-  assert(strcmp(
-             pipecat_redial_trigger_name(PipecatRedialTrigger::kConnectTimeout),
+  assert(
+      strcmp(pipecat_redial_trigger_name(PipecatRedialTrigger::kConnectTimeout),
              "connect_timeout") == 0);
 }
 

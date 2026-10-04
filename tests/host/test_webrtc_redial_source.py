@@ -114,7 +114,7 @@ lost = WEBRTC[WEBRTC.index("if (state == PEER_CONNECTION_DISCONNECTED") : WEBRTC
 assert "esp_restart();" not in lost
 # The tick consumes the request after peer_connection_loop() returned.
 tick = function_body(WEBRTC, "bool pipecat_webrtc_redial_tick(")
-assert "__atomic_exchange_n(&s_redial_requested" in tick
+assert re.search(r"__atomic_exchange_n\(\s*&s_redial_requested", tick), "tick must atomically take the request"
 wl = function_body(WEBRTC, "void pipecat_webrtc_loop()")
 assert "if (peer_connection == NULL)" in wl  # between attempts: no loop on NULL
 
