@@ -2421,7 +2421,9 @@ void pipecat_send_audio(PeerConnection *peer_connection) {
   auto encoded_size = opus_encode(opus_encoder, (const opus_int16 *)read_buffer,
                                   PCM_SAMPLES_PER_FRAME, encoder_output_buffer,
                                   OPUS_BUFFER_SIZE);
-  if (encoded_size > 0) {
+  // peer_connection is NULL between re-dial attempts (PIPECAT_REDIAL): keep
+  // the I2S drain + encoder warm, skip only the RTP send.
+  if (encoded_size > 0 && peer_connection != NULL) {
     peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                encoded_size);
   }

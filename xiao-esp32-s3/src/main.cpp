@@ -289,14 +289,32 @@ extern "C" void app_main(void) {
     pipecat_webrtc_loop();
     pipecat_validate_ota_if_healthy();
     const bool heartbeat_fresh = pipecat_webrtc_server_heartbeat_fresh();
-    if (reconnect_watchdog.update(pipecat_webrtc_connected, heartbeat_fresh,
-                                  TICK_INTERVAL)) {
+    const bool reconnect_deadline = reconnect_watchdog.update(
+        pipecat_webrtc_connected, heartbeat_fresh, TICK_INTERVAL);
+#if PIPECAT_REDIAL
+    // t_db77e56b: the watchdog deadline (and a hub-closed peer, SCTP ABORT,
+    // or POST /webrtc/redial) re-dials the hub in place; esp_restart() is
+    // the fallback inside the policy after kMaxConsecutiveFailures.
+    if (reconnect_deadline) {
+      ESP_LOGW(LOG_TAG,
+               "WebRTC reconnect deadline reached (peer_connected=%d "
+               "server_heartbeat_fresh=%d); re-dialing without restart",
+               pipecat_webrtc_connected, heartbeat_fresh);
+    }
+    if (pipecat_webrtc_redial_tick(reconnect_deadline) || reconnect_deadline) {
+      // Fresh grace for the new attempt (an expired watchdog is pinned at
+      // its deadline and would fire every tick).
+      reconnect_watchdog = PipecatReconnectWatchdog();
+    }
+#else
+    if (reconnect_deadline) {
       ESP_LOGW(LOG_TAG,
                "WebRTC reconnect deadline reached (peer_connected=%d "
                "server_heartbeat_fresh=%d); restarting to re-offer",
                pipecat_webrtc_connected, heartbeat_fresh);
       esp_restart();
     }
+#endif
     vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
   }
 }

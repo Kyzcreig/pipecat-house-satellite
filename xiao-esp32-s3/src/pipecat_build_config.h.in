@@ -36,3 +36,11 @@
 #ifndef PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR
 #define PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR -75  // dBm; the pinned fast path refuses a weaker AP and falls back
 #endif
+
+// Re-offer to the hub without esp_restart() (GADGET-2, t_db77e56b). DEFAULT
+// OFF: the live firmware reboots to re-offer; PIPECAT_REDIAL=1 tears down and
+// recreates the PeerConnection instead (webrtc_redial.h). Adopt only on the
+// bench measurement (median re-offer < 10 s, 0 fault_boots, flat heap/50).
+#ifndef PIPECAT_REDIAL
+#define PIPECAT_REDIAL 0
+#endif

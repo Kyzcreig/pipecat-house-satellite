@@ -93,6 +93,18 @@ extern bool pipecat_ota_server_started();
 extern void pipecat_init_webrtc();
 extern void pipecat_webrtc_loop();
 extern volatile bool pipecat_webrtc_connected;
+#if PIPECAT_REDIAL
+// Re-offer without esp_restart() (t_db77e56b). See webrtc_redial.h.
+#include <esp_http_server.h>
+
+#include "webrtc_redial.h"
+extern bool pipecat_webrtc_redial_tick(bool watchdog_expired);
+extern void pipecat_webrtc_note_attempt_failed(PipecatRedialTrigger why);
+extern void pipecat_webrtc_request_redial();
+extern esp_err_t pipecat_webrtc_register_http(httpd_handle_t server);
+extern size_t pipecat_webrtc_redial_json(char *out, size_t capacity);
+extern void pipecat_rtvi_detach();
+#endif
 extern void pipecat_webrtc_note_server_ping();
 extern void pipecat_webrtc_note_server_media();
 extern bool pipecat_webrtc_server_heartbeat_fresh();
