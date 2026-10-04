@@ -37,10 +37,11 @@ golden), where the re-offer is a reboot. Produces the "before" row of the
 table with the same instrument; the redial-only checks are skipped.
 
 EVERYTHING THIS SCRIPT PLAYS IS SILENT (Apollo ruling 11:50 PT 10-04: no
-audible soak on the kitchen; re-dial drills need no acoustics). The satellite's
-`frames` counter is the oracle, verified 11:48 PT: idle = flat, a 2 s tone at
-volume 0.0 = +84 frames within 3 s. aiortc 1.14 does not enable Opus DTX, so
-zero PCM is still a full RTP stream.
+audible soak on the kitchen; re-dial drills need no acoustics). Story leg =
+volume 0.0 (zero PCM, full Opus RTP: aiortc 1.14 has no DTX; oracle =
+packets_received). Restart probe = 20 Hz at volume 0.0002 (~6 LSB, -75 dBFS)
+because the firmware's digital-silence gate keeps exact zeros out of the I2S
+`frames` counter (see Bench.test_tone).
 
 Plain mode (no --apply) prints the plan and the current device/hub state and
 exits 0. Start/stop lines to the home chat, the acoustic room lock, the OTA
@@ -145,9 +146,16 @@ class Bench:
     def restart_hub(self) -> None:
         subprocess.run(["systemctl", "--user", "restart", self.unit], check=True, timeout=60)
 
-    # SILENT by construction: volume=0.0 -> zero PCM -> still Opus RTP.
-    def test_tone(self, ms: int = 300) -> dict | None:
-        return _post(f"{self.hub}/test-tone?freq=20&ms={ms}&volume=0.0", timeout=8.0)
+    # SILENT by construction. Two levels, both inaudible:
+    #  * volume=0.0 (story leg): zero PCM, still a full Opus RTP stream (the
+    #    hub's aiortc 1.14 has no DTX) -> counts on packets_received and feeds
+    #    server_liveness, but the firmware's update_is_playing() gate treats
+    #    |pcm| <= 1 LSB as digital silence and never writes it to I2S, so
+    #    `frames` stays flat (measured 12:34 PT: packets +9387, frames +0).
+    #  * volume=0.0002 (restart probe): a 20 Hz sine at ~6 LSB peak (-75 dBFS)
+    #    passes that gate so `frames` moves; nothing a speaker can render.
+    def test_tone(self, ms: int = 300, volume: float = 0.0002) -> dict | None:
+        return _post(f"{self.hub}/test-tone?freq=20&ms={ms}&volume={volume}", timeout=8.0)
 
 
 def now_pt() -> dt.datetime:
@@ -171,19 +179,21 @@ def wait_for(pred, timeout_s: float, period_s: float = 0.25) -> float | None:
 def leg_story(b: Bench, seconds: float, ledger: dict) -> None:
     """Continuous SILENT downlink media for `seconds` via chained zero-volume tones."""
     before = b.liveness() or {}
-    frames0 = (b.stats() or {}).get("frames", -1)
+    st0 = b.stats() or {}
+    frames0, pkts0 = st0.get("frames", -1), st0.get("packets_received", -1)
     t0 = time.monotonic()
     chunks: list[dict] = []
     i = 0
     gap_max = 0.0
     last_ok_end = t0
     while time.monotonic() - t0 < seconds:
-        r = b.test_tone(ms=STORY_CHUNK_MS)
+        r = b.test_tone(ms=STORY_CHUNK_MS, volume=0.0)
         now = time.monotonic()
         if r and r.get("ok"):
             gap_max = max(gap_max, now - last_ok_end)
-            fr = (b.stats() or {}).get("frames", -1)
-            chunks.append({"i": i, "t_s": round(now - t0, 1), "bytes": r.get("bytes"), "frames": fr})
+            stc = b.stats() or {}
+            chunks.append({"i": i, "t_s": round(now - t0, 1), "bytes": r.get("bytes"),
+                           "packets_received": stc.get("packets_received"), "late_drops": stc.get("late_drops")})
             print(json.dumps(chunks[-1]), flush=True)
             time.sleep(STORY_CHUNK_MS / 1000.0 - 0.5)  # re-post just before the chunk ends
             last_ok_end = time.monotonic()
@@ -193,11 +203,13 @@ def leg_story(b: Bench, seconds: float, ledger: dict) -> None:
             chunks.append({"i": i, "t_s": round(now - t0, 1), "deferred": reason})
             time.sleep(1.5)
     after = b.liveness() or {}
-    frames1 = (b.stats() or {}).get("frames", -1)
+    st1 = b.stats() or {}
+    frames1, pkts1 = st1.get("frames", -1), st1.get("packets_received", -1)
     ledger["story"] = {
         "seconds": round(time.monotonic() - t0, 1), "chunks_ok": sum(1 for c in chunks if "bytes" in c),
         "chunks_deferred": sum(1 for c in chunks if "deferred" in c), "inter_chunk_gap_max_s": round(gap_max, 2),
         "frames_delta": frames1 - frames0 if frames0 >= 0 and frames1 >= 0 else None,
+        "packets_delta": pkts1 - pkts0 if pkts0 >= 0 and pkts1 >= 0 else None,
         "liveness_before": before, "liveness_after": after, "chunks": chunks,
         "rebooted": before.get("boots_since_poweron") != after.get("boots_since_poweron"),
     }
@@ -327,8 +339,8 @@ def verdict(ledger: dict, heap_slack: int, baseline: bool) -> dict:
         v["story_media_holds_delta"] = (
             (la.get("media_liveness_holds") or 0) - (lb.get("media_liveness_holds") or 0)
             if la.get("media_liveness_holds") is not None else None)
-        v["story_frames_delta"] = st["frames_delta"]
-        v["pass_story_no_reboot"] = not st["rebooted"] and st["chunks_ok"] > 0 and (st["frames_delta"] or 0) > 0
+        v["story_packets_delta"] = st.get("packets_delta")
+        v["pass_story_no_reboot"] = not st["rebooted"] and st["chunks_ok"] > 0 and (st.get("packets_delta") or 0) > 0
     hr = ledger.get("hub_restarts") or []
     if hr:
         ff = [s["first_frames_s"] for s in hr if s["first_frames_s"] is not None]
