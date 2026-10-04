@@ -14,6 +14,14 @@
 // Wifi
 extern void pipecat_init_wifi();
 extern bool pipecat_wifi_connected();
+// Re-join instrumentation (t_2a5f2312): link losses since boot, how the last
+// re-join happened (pinned fast path vs all-channel), and its DISCONNECTED ->
+// GOT_IP wall time in ms. Read on /ota/status.
+extern uint32_t pipecat_wifi_disconnects();
+extern uint32_t pipecat_wifi_fast_rejoins();
+extern uint32_t pipecat_wifi_fallback_rejoins();
+extern uint32_t pipecat_wifi_rejoin_last_ms();
+extern bool pipecat_wifi_fast_rejoin_enabled();
 
 // WebRTC / Media
 extern void pipecat_init_audio_capture();
