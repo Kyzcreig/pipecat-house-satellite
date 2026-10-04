@@ -12,6 +12,7 @@
 
 #include "main.h"
 #include "peer_connection.h"
+#include "server_liveness.h"
 
 #ifdef PIPECAT_NACK
 #include <esp_timer.h>
@@ -102,19 +103,38 @@ static void pipecat_nack_handle_rtx_frame(const char *msg, size_t len) {
 // server-side eviction can leave the local ICE/SCTP stack half-open without a
 // state callback. The server heartbeat timestamp detects that silent wedge.
 volatile bool pipecat_webrtc_connected = false;
-static volatile uint32_t last_server_ping_ms = 0;
+// 35 s = the hub's 30 s ping interval + 5 s jitter grace. On its own that was
+// too tight: one ping delayed >5 s rebooted a device mid-TTS (kitchen
+// 2026-10-04 02:40 / 03:04, t_56a17737). Downlink media now also counts as a
+// sign of life -- see server_liveness.h.
 static constexpr uint32_t WEBRTC_SERVER_HEARTBEAT_STALE_MS = 35000;
+static PipecatServerLiveness s_server_liveness(
+    WEBRTC_SERVER_HEARTBEAT_STALE_MS);
+
+static inline uint32_t pipecat_now_ms() {
+  return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 void pipecat_webrtc_note_server_ping() {
-  last_server_ping_ms = (uint32_t)(esp_timer_get_time() / 1000);
+  s_server_liveness.note_ping(pipecat_now_ms());
+}
+
+void pipecat_webrtc_note_server_media() {
+  s_server_liveness.note_media(pipecat_now_ms());
 }
 
 bool pipecat_webrtc_server_heartbeat_fresh() {
-  const uint32_t last_ping_ms = last_server_ping_ms;
-  if (last_ping_ms == 0)
-    return false;
-  const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-  return (uint32_t)(now_ms - last_ping_ms) <= WEBRTC_SERVER_HEARTBEAT_STALE_MS;
+  return s_server_liveness.fresh(pipecat_now_ms());
+}
+
+void pipecat_webrtc_server_liveness_stats(uint32_t *ping_rx,
+                                          uint32_t *ping_gap_max_ms,
+                                          uint32_t *ping_age_ms,
+                                          uint32_t *media_holds) {
+  *ping_rx = s_server_liveness.ping_rx;
+  *ping_gap_max_ms = s_server_liveness.ping_gap_max_ms;
+  *ping_age_ms = s_server_liveness.ping_age_ms(pipecat_now_ms());
+  *media_holds = s_server_liveness.media_holds;
 }
 
 #ifndef LINUX_BUILD
@@ -256,6 +276,8 @@ void pipecat_init_webrtc() {
       .video_codec = CODEC_NONE,
       .datachannel = DATA_CHANNEL_STRING,
       .onaudiotrack = [](uint8_t *data, size_t size, void *userdata) -> void {
+        // Downlink media is a sign of server life (server_liveness.h).
+        pipecat_webrtc_note_server_media();
 #ifndef LINUX_BUILD
         pipecat_audio_decode(data, size);
 #endif

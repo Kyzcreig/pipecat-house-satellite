@@ -86,7 +86,13 @@ extern void pipecat_init_webrtc();
 extern void pipecat_webrtc_loop();
 extern volatile bool pipecat_webrtc_connected;
 extern void pipecat_webrtc_note_server_ping();
+extern void pipecat_webrtc_note_server_media();
 extern bool pipecat_webrtc_server_heartbeat_fresh();
+// Server-liveness telemetry for /ota/status (t_56a17737).
+extern void pipecat_webrtc_server_liveness_stats(uint32_t *ping_rx,
+                                                 uint32_t *ping_gap_max_ms,
+                                                 uint32_t *ping_age_ms,
+                                                 uint32_t *media_holds);
 extern uint32_t pipecat_audio_publisher_stack_free();  // bytes, 0 = no task
 extern uint32_t pipecat_uplink_frames_sent();  // audio_publisher loop count
 extern void pipecat_http_request(char *offer, char *answer);
