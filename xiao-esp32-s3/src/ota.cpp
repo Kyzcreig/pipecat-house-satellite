@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "link_health.h"
 #include "main.h"
 #include "mbedtls/sha256.h"
 #include "mdns.h"
@@ -316,7 +317,11 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   uint32_t ping_rx = 0, ping_gap_max_ms = 0, ping_age_ms = 0, media_holds = 0;
   pipecat_webrtc_server_liveness_stats(&ping_rx, &ping_gap_max_ms, &ping_age_ms,
                                        &media_holds);
-  char body[768];
+  // Link health (GADGET-1, t_1910d632): rssi_dbm + heap on the status line
+  // the hub already polls. ~110 bytes; body grew 768 -> 896 for it.
+  char link_json[128];
+  pipecat_link_health_json(link_json, sizeof(link_json));
+  char body[896];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
@@ -328,7 +333,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"crash_boots\":%u,\"slot_flipped\":%u,"
            "\"audio_stack_free\":%lu,\"uplink_frames\":%lu,"
            "\"server_ping_rx\":%lu,\"server_ping_gap_max_ms\":%lu,"
-           "\"server_ping_age_ms\":%lu,\"media_liveness_holds\":%lu}",
+           "\"server_ping_age_ms\":%lu,\"media_liveness_holds\":%lu,%s}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
            PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME,
@@ -339,7 +344,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            (unsigned long)pipecat_audio_publisher_stack_free(),
            (unsigned long)pipecat_uplink_frames_sent(), (unsigned long)ping_rx,
            (unsigned long)ping_gap_max_ms, (unsigned long)ping_age_ms,
-           (unsigned long)media_holds);
+           (unsigned long)media_holds, link_json);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
@@ -1030,24 +1035,29 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
     }
   }
   constexpr size_t kRttSamplesCapacity = 800;
+  // Link health fragment (GADGET-1, t_1910d632): rssi_dbm + 4 heap fields,
+  // ~110 bytes, formatted into its own scratch after the ack-beep fragment.
+  constexpr size_t kLinkHealthCapacity = 128;
 #if PIPECAT_DECIM_COMP
-  constexpr size_t kBodyCapacity = 2400;  // +decim_comp_* fields (t_1ce88efe)
+  constexpr size_t kBodyCapacity = 2528;  // +decim_comp_* fields (t_1ce88efe)
 #else
-  constexpr size_t kBodyCapacity = 2200;
+  constexpr size_t kBodyCapacity = 2328;
 #endif
   // Wake-ACK beep fragment (t_69ffa409): the response body grows by
   // kAckBeepCapacity, and the fragment is formatted into its own
   // kAckBeepCapacity scratch after the body.
   constexpr size_t kAckBeepCapacity = 400;
   constexpr size_t kBodyTotal = kBodyCapacity + kAckBeepCapacity;
-  char *scratch =
-      (char *)malloc(kRttSamplesCapacity + kBodyTotal + kAckBeepCapacity);
+  char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyTotal +
+                                 kAckBeepCapacity + kLinkHealthCapacity);
   if (scratch == nullptr) {
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                "Unable to allocate playback stats response");
   }
   char *rtt_samples = scratch;
   char *body = scratch + kRttSamplesCapacity;
+  char *link_json = body + kBodyTotal + kAckBeepCapacity;
+  pipecat_link_health_json(link_json, kLinkHealthCapacity);
   rtp_nack_format_rtt_samples(rtt_samples, kRttSamplesCapacity);
   // Wake-ACK beep playback telemetry (t_69ffa409). ack_beep_played counts a
   // hub beep REQUEST (RTVI marker) whose fingerprint matched audio that
@@ -1092,7 +1102,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       "\"reconfig_rx\":%lu,\"reconfig_tx\":%lu,\"abort_tx\":%lu,"
       "\"gap_resumes\":%lu,\"prebuffer_ms\":%lu,"
       "\"prebuffer_effective_ms\":%lu,\"prebuffer_steps\":%"
-      "lu," DECIM_COMP_STATS_FMT "\"led_brightness\":%u,%s}",
+      "lu," DECIM_COMP_STATS_FMT "%s,\"led_brightness\":%u,%s}",
       (unsigned long)g_play_stat_frames, (unsigned long)g_play_stat_write_fail,
       (unsigned long)g_play_stat_underruns, (unsigned long)g_play_stat_plc,
       (unsigned long)g_play_stat_fec, (unsigned long)g_rtp_late_drops,
@@ -1115,7 +1125,7 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
       (unsigned long)g_play_stat_gap_resumes,
       (unsigned long)(g_play_prebuffer_samples / 16),
       (unsigned long)g_play_prebuffer_effective_ms,
-      (unsigned long)g_play_prebuffer_steps DECIM_COMP_STATS_ARGS,
+      (unsigned long)g_play_prebuffer_steps DECIM_COMP_STATS_ARGS, link_json,
       (unsigned)pipecat_led_brightness(), ack_beep_json);
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
