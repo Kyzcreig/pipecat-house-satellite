@@ -108,7 +108,8 @@ volatile bool pipecat_webrtc_connected = false;
 // 2026-10-04 02:40 / 03:04, t_56a17737). Downlink media now also counts as a
 // sign of life -- see server_liveness.h.
 static constexpr uint32_t WEBRTC_SERVER_HEARTBEAT_STALE_MS = 35000;
-static PipecatServerLiveness s_server_liveness(WEBRTC_SERVER_HEARTBEAT_STALE_MS);
+static PipecatServerLiveness s_server_liveness(
+    WEBRTC_SERVER_HEARTBEAT_STALE_MS);
 
 static inline uint32_t pipecat_now_ms() {
   return (uint32_t)(esp_timer_get_time() / 1000);

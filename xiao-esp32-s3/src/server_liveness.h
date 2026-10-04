@@ -42,7 +42,9 @@ struct PipecatServerLiveness {
     ping_rx = ping_rx + 1u;  // no ++ on volatile (C++20 -Wvolatile)
   }
 
-  void note_media(uint32_t now_ms) { last_media_ms = now_ms ? now_ms : 1u; }
+  void note_media(uint32_t now_ms) {
+    last_media_ms = now_ms ? now_ms : 1u;
+  }
 
   // True when the server has shown a sign of life inside the window. Counts a
   // "media hold" once per episode in which the ping is stale but media keeps
