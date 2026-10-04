@@ -4,8 +4,9 @@ One datagram per peer_connection_loop pass + main.cpp's TICK_INTERVAL (15 ms)
 sleep serviced ~1 packet / 19 ms against the 20 ms downlink: the device ran
 ~65 ms behind the hub (p50), and a ~120 ms wifi hold overflowed lwIP's 6-deep
 UDP mailbox (bench soak 2026-10-03: 71 hub-sent seqs never serviced in 9 min,
-every gap_resume = hold + 6 serviced + 3-5 dropped). Draining per pass +
-a 16-deep mailbox: 0 never-serviced, p50 lag 21 ms.
+every gap_resume = hold + 6 serviced + 3-5 dropped). Draining per pass fixes
+the backlog. The mailbox stays at 6: 16 was bisected (t_4431412c) as the cause
+of late-delivery drains and zero-frame stalls; drain loop + 6 = 0 late drains.
 """
 import re
 from pathlib import Path
@@ -37,9 +38,10 @@ def test_drain_bound_default() -> None:
     assert m and int(m.group(1)) >= 4
 
 
-def test_udp_mailbox_holds_a_wifi_burst() -> None:
+def test_udp_mailbox_stays_at_lwip_default() -> None:
+    # 16 regressed the downlink (t_4431412c bisect); keep lwIP's 6.
     m = re.search(r"^CONFIG_LWIP_UDP_RECVMBOX_SIZE=(\d+)$", SDK, re.M)
-    assert m and int(m.group(1)) >= 16
+    assert m and int(m.group(1)) == 6
 
 
 def test_arrival_trace_is_not_in_the_default_build() -> None:
