@@ -9,7 +9,7 @@
 #include "../../xiao-esp32-s3/src/reconnect_watchdog.h"
 #include "../../xiao-esp32-s3/src/server_liveness.h"
 
-static constexpr uint32_t kStale = 35000;   // WEBRTC_SERVER_HEARTBEAT_STALE_MS
+static constexpr uint32_t kStale = 35000;  // WEBRTC_SERVER_HEARTBEAT_STALE_MS
 static constexpr uint32_t kPingInterval = 30000;  // hub _PEER_PING_INTERVAL_S
 
 static void test_never_pinged_is_not_fresh_even_with_media() {
