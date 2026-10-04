@@ -55,3 +55,10 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 # outage resets cleanly instead of half-running on a sagging rail.
 CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+# GADGET-4 (t_092093f1) arm (b): Muse-size Wi-Fi RX buffers (static 16 / dynamic 64).
+# IDF defaults are 10 / 32 (generated sdkconfig). Each static RX buffer is ~1.6 KB of
+# internal DMA-capable heap, allocated at esp_wifi_init and never freed. Measurement arm;
+# lands in main ONLY on a PASS verdict (vault note shortlist #4 pass criterion).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
