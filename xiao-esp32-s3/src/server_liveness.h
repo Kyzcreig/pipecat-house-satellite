@@ -39,7 +39,7 @@ struct PipecatServerLiveness {
         ping_gap_max_ms = gap;
     }
     last_ping_ms = now_ms;
-    ping_rx++;
+    ping_rx = ping_rx + 1u;  // no ++ on volatile (C++20 -Wvolatile)
   }
 
   void note_media(uint32_t now_ms) { last_media_ms = now_ms ? now_ms : 1u; }
@@ -60,7 +60,7 @@ struct PipecatServerLiveness {
     if (media != 0 && (uint32_t)(now_ms - media) <= stale_ms_) {
       if (!in_media_hold_) {
         in_media_hold_ = true;
-        media_holds++;
+        media_holds = media_holds + 1u;
       }
       return true;
     }
