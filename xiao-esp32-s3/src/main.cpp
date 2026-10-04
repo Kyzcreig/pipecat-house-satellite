@@ -17,6 +17,7 @@
 #include <freertos/task.h>
 
 #include "boot_guard.h"
+#include "link_health.h"
 #include "nvs_flash.h"
 
 static constexpr unsigned WEBRTC_LOOP_TASK_PRIORITY = 8;
@@ -267,6 +268,9 @@ extern "C" void app_main(void) {
   pipecat_init_wifi();  // feeds the task WDT while it waits for an IP
   pipecat_init_mdns();
   pipecat_init_ota_server();
+  // 5 s LINK_HEALTH serial line (rssi + heap); the HTTP surfaces read the
+  // same snapshot on demand. Telemetry only (GADGET-1, t_1910d632).
+  pipecat_link_health_start();
   pipecat_start_ota_validation_watchdog();
   esp_task_wdt_reset();
   pipecat_init_webrtc();
