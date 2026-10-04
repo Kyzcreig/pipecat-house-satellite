@@ -69,6 +69,20 @@ if("$ENV{PIPECAT_NACK}" STREQUAL "1")
   add_compile_definitions(PIPECAT_NACK=1)
 endif()
 
+# GADGET-3 (t_2a5f2312): Muse-pattern fast Wi-Fi re-join. On a link loss,
+# reconnect at once to the cached BSSID on its channel (WIFI_FAST_SCAN, no
+# backoff), refusing it below PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR dBm (-75);
+# one failure falls back to all-channel by-signal with the 1 s backoff. DARK by
+# default (measure-first card; ships only on the 20-kick verdict) — set
+# PIPECAT_WIFI_FAST_REJOIN=1 at configure time to build the arm.
+if("$ENV{PIPECAT_WIFI_FAST_REJOIN}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_WIFI_FAST_REJOIN=1)
+endif()
+if(NOT "$ENV{PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR}" STREQUAL "")
+  add_compile_definitions(
+    PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR=$ENV{PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR})
+endif()
+
 # Gap-resume window (ms): a FULL playback-ring drain followed by a refill
 # within this window is counted as a mid-speech gap (`gap_resumes` in
 # /playback/stats) instead of silently re-arming as end-of-utterance.

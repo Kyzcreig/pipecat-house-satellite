@@ -309,7 +309,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   const esp_app_desc_t *app = esp_app_get_description();
   int64_t uptime_s = esp_timer_get_time() / 1000000LL;
   bool app_valid = ota_state_is_valid_for_status(state);
-  char body[640];
+  char body[768];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
@@ -319,7 +319,10 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
            "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u,"
            "\"crash_boots\":%u,\"slot_flipped\":%u,"
-           "\"audio_stack_free\":%lu,\"uplink_frames\":%lu}",
+           "\"audio_stack_free\":%lu,\"uplink_frames\":%lu,"
+           "\"wifi_fast_rejoin\":%s,\"wifi_disconnects\":%u,"
+           "\"wifi_fast_rejoins\":%u,\"wifi_fallback_rejoins\":%u,"
+           "\"wifi_rejoin_last_ms\":%u}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
            PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME,
@@ -328,7 +331,12 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            (unsigned)pipecat_net_watchdog_deadline_s(),
            (unsigned)pipecat_crash_boots(), (unsigned)pipecat_slot_flipped(),
            (unsigned long)pipecat_audio_publisher_stack_free(),
-           (unsigned long)pipecat_uplink_frames_sent());
+           (unsigned long)pipecat_uplink_frames_sent(),
+           pipecat_wifi_fast_rejoin_enabled() ? "true" : "false",
+           (unsigned)pipecat_wifi_disconnects(),
+           (unsigned)pipecat_wifi_fast_rejoins(),
+           (unsigned)pipecat_wifi_fallback_rejoins(),
+           (unsigned)pipecat_wifi_rejoin_last_ms());
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);

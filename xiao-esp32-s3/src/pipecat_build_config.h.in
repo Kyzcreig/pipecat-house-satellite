@@ -30,3 +30,9 @@
 #ifndef PIPECAT_XVF_AEC_FILTER
 #define PIPECAT_XVF_AEC_FILTER 0  // #13 GET /xvf/aec_filter: built, never flashed, needs its own card
 #endif
+#ifndef PIPECAT_WIFI_FAST_REJOIN
+#define PIPECAT_WIFI_FAST_REJOIN 0  // GADGET-3 cached-BSSID fast re-join (t_2a5f2312): bench arm only until the 20-kick verdict
+#endif
+#ifndef PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR
+#define PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR -75  // dBm; the pinned fast path refuses a weaker AP and falls back
+#endif
