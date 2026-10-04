@@ -1039,15 +1039,16 @@ static esp_err_t playback_stats_handler(httpd_req_t *req) {
   // ~110 bytes, formatted into its own scratch after the ack-beep fragment.
   constexpr size_t kLinkHealthCapacity = 128;
 #if PIPECAT_DECIM_COMP
-  constexpr size_t kBodyCapacity = 2528;  // +decim_comp_* fields (t_1ce88efe)
+  constexpr size_t kBodyCapacity = 2400;  // +decim_comp_* fields (t_1ce88efe)
 #else
-  constexpr size_t kBodyCapacity = 2328;
+  constexpr size_t kBodyCapacity = 2200;
 #endif
   // Wake-ACK beep fragment (t_69ffa409): the response body grows by
   // kAckBeepCapacity, and the fragment is formatted into its own
-  // kAckBeepCapacity scratch after the body.
+  // kAckBeepCapacity scratch after the body. Same shape for link health.
   constexpr size_t kAckBeepCapacity = 400;
-  constexpr size_t kBodyTotal = kBodyCapacity + kAckBeepCapacity;
+  constexpr size_t kBodyTotal =
+      kBodyCapacity + kAckBeepCapacity + kLinkHealthCapacity;
   char *scratch = (char *)malloc(kRttSamplesCapacity + kBodyTotal +
                                  kAckBeepCapacity + kLinkHealthCapacity);
   if (scratch == nullptr) {
