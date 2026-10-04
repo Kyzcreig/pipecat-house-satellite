@@ -6,18 +6,20 @@ there) against a room satellite running a PIPECAT_REDIAL=1 build, through the
 legs the vault note's pass criterion names (Muse/Clanker comparison note,
 shortlist #2, line 151) plus the sat#27 repro Apollo attached to this card:
 
-  S. ``--story SECONDS``    chained /announce chunks so downlink media flows
-                            continuously for SECONDS (the UPLINK-STALL /
+  S. ``--story SECONDS``    chained SILENT /test-tone chunks (20 Hz at volume
+                            0.0: zero PCM, still Opus RTP) so downlink media
+                            flows continuously for SECONDS (the UPLINK-STALL /
                             t_56a17737 "long story" shape: ping gaps under
-                            sustained TTS). Reads the sat#27 /ota/status fields
+                            sustained downlink). Reads the sat#27 /ota/status fields
                             server_ping_rx / server_ping_gap_max_ms /
                             media_liveness_holds before and after; pass = no
                             reboot during the story.
   A. ``--hub-restarts N``   `systemctl --user restart <unit>` N times; per
                             restart the clock runs from the restart command to
                             the first `/playback/stats` `frames` increment
-                            after a `/test-tone` lands on the re-dialed peer
-                            (audio actually flowing, not just CONNECTED). Also
+                            after a SILENT `/test-tone` lands on the re-dialed
+                            peer (audio path actually flowing, not just
+                            CONNECTED; the room hears nothing). Also
                             records trigger -> CONNECTED from the device's own
                             `redial` telemetry.
   B. ``--redial-cycles N``  POST /webrtc/redial on the satellite N times (hub
@@ -33,6 +35,12 @@ run; leg B heap flat (first-10 vs last-10 mean of heap_free_int within
 ``--baseline``: the same leg A clock against a NON-redial build (today's
 golden), where the re-offer is a reboot. Produces the "before" row of the
 table with the same instrument; the redial-only checks are skipped.
+
+EVERYTHING THIS SCRIPT PLAYS IS SILENT (Apollo ruling 11:50 PT 10-04: no
+audible soak on the kitchen; re-dial drills need no acoustics). The satellite's
+`frames` counter is the oracle, verified 11:48 PT: idle = flat, a 2 s tone at
+volume 0.0 = +84 frames within 3 s. aiortc 1.14 does not enable Opus DTX, so
+zero PCM is still a full RTP stream.
 
 Plain mode (no --apply) prints the plan and the current device/hub state and
 exits 0. Start/stop lines to the home chat, the acoustic room lock, the OTA
@@ -51,7 +59,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import zoneinfo
 from pathlib import Path
@@ -64,26 +71,7 @@ ROOMS = {
     # bench .97 is OFF LIMITS for audio/reboots until S2 (Apollo 09:25 PT 10-04)
 }
 
-STORY = [
-    "Here is a short story for the kitchen. Once upon a time, in a small house at the edge of a quiet town, "
-    "there lived a clockmaker who could not sleep. Every night at midnight she would climb the narrow stairs "
-    "to her workshop, light a single lamp, and listen to the hundred clocks ticking out of time with one another.",
-    "She had tried for years to make them agree. She oiled their gears, replaced their springs, and set them "
-    "all by the church bell on Sunday morning. By Monday evening they had drifted apart again, each one "
-    "keeping its own stubborn version of the hour, and she had come to think of them as a small, argumentative family.",
-    "One winter a traveler knocked at her door with a pocket watch that had stopped at a quarter past three. "
-    "He said it had belonged to his grandfather, who had been a lighthouse keeper, and that it had stopped on "
-    "the night of the great storm and never run since. He did not expect her to fix it. He only wanted it cleaned.",
-    "The clockmaker opened the case and found, pressed between the movement and the back plate, a tiny folded "
-    "note. It read: the light must never go out. She sat for a long while with the watch in her palm, then "
-    "set it on the bench beside the lamp and began, very slowly, to take it apart.",
-    "By morning the watch was running. She had not meant to repair it, but her hands had done what they always "
-    "did. When the traveler returned she handed it back without a word about the note, and he held it to his ear "
-    "and smiled, and said it sounded exactly like the sea.",
-    "After he left she wound every clock in the workshop and set them all to a quarter past three. For one "
-    "minute the whole room ticked in perfect agreement, a hundred small hearts beating together, and the "
-    "clockmaker, for the first time in years, went downstairs and slept until noon. The end.",
-]
+STORY_CHUNK_MS = 10000  # one silent /test-tone chunk; re-posted every ~9.5 s
 
 
 def _get(url: str, timeout: float = 3.0) -> dict | None:
@@ -157,12 +145,9 @@ class Bench:
     def restart_hub(self) -> None:
         subprocess.run(["systemctl", "--user", "restart", self.unit], check=True, timeout=60)
 
-    def test_tone(self) -> dict | None:
-        return _post(f"{self.hub}/test-tone?freq=880&ms=300&volume=0.3")
-
-    def announce(self, text: str) -> dict | None:
-        q = urllib.parse.urlencode({"text": text})
-        return _post(f"{self.hub}/announce?{q}", timeout=25.0)
+    # SILENT by construction: volume=0.0 -> zero PCM -> still Opus RTP.
+    def test_tone(self, ms: int = 300) -> dict | None:
+        return _post(f"{self.hub}/test-tone?freq=20&ms={ms}&volume=0.0", timeout=8.0)
 
 
 def now_pt() -> dt.datetime:
@@ -184,7 +169,7 @@ def wait_for(pred, timeout_s: float, period_s: float = 0.25) -> float | None:
 
 
 def leg_story(b: Bench, seconds: float, ledger: dict) -> None:
-    """Continuous downlink media for `seconds` via chained /announce chunks."""
+    """Continuous SILENT downlink media for `seconds` via chained zero-volume tones."""
     before = b.liveness() or {}
     frames0 = (b.stats() or {}).get("frames", -1)
     t0 = time.monotonic()
@@ -193,26 +178,24 @@ def leg_story(b: Bench, seconds: float, ledger: dict) -> None:
     gap_max = 0.0
     last_ok_end = t0
     while time.monotonic() - t0 < seconds:
-        text = STORY[i % len(STORY)]
-        r = b.announce(text)
+        r = b.test_tone(ms=STORY_CHUNK_MS)
         now = time.monotonic()
         if r and r.get("ok"):
-            est = 0.6 + len(text) / 16.0  # reply_gate.estimate_speech_s
             gap_max = max(gap_max, now - last_ok_end)
-            chunks.append({"i": i, "t_s": round(now - t0, 1), "est_s": round(est, 1),
-                           "bytes": r.get("bytes"), "engine": r.get("engine")})
+            fr = (b.stats() or {}).get("frames", -1)
+            chunks.append({"i": i, "t_s": round(now - t0, 1), "bytes": r.get("bytes"), "frames": fr})
             print(json.dumps(chunks[-1]), flush=True)
-            time.sleep(max(0.0, est - 1.0))
+            time.sleep(STORY_CHUNK_MS / 1000.0 - 0.5)  # re-post just before the chunk ends
             last_ok_end = time.monotonic()
             i += 1
         else:
-            reason = (r or {}).get("reason") or (r or {}).get("busy_reason") or "no_response"
+            reason = (r or {}).get("reason") or (r or {}).get("error") or "no_response"
             chunks.append({"i": i, "t_s": round(now - t0, 1), "deferred": reason})
             time.sleep(1.5)
     after = b.liveness() or {}
     frames1 = (b.stats() or {}).get("frames", -1)
     ledger["story"] = {
-        "seconds": round(time.monotonic() - t0, 1), "chunks_ok": sum(1 for c in chunks if "est_s" in c),
+        "seconds": round(time.monotonic() - t0, 1), "chunks_ok": sum(1 for c in chunks if "bytes" in c),
         "chunks_deferred": sum(1 for c in chunks if "deferred" in c), "inter_chunk_gap_max_s": round(gap_max, 2),
         "frames_delta": frames1 - frames0 if frames0 >= 0 and frames1 >= 0 else None,
         "liveness_before": before, "liveness_after": after, "chunks": chunks,
@@ -344,7 +327,8 @@ def verdict(ledger: dict, heap_slack: int, baseline: bool) -> dict:
         v["story_media_holds_delta"] = (
             (la.get("media_liveness_holds") or 0) - (lb.get("media_liveness_holds") or 0)
             if la.get("media_liveness_holds") is not None else None)
-        v["pass_story_no_reboot"] = not st["rebooted"] and st["chunks_ok"] > 0
+        v["story_frames_delta"] = st["frames_delta"]
+        v["pass_story_no_reboot"] = not st["rebooted"] and st["chunks_ok"] > 0 and (st["frames_delta"] or 0) > 0
     hr = ledger.get("hub_restarts") or []
     if hr:
         ff = [s["first_frames_s"] for s in hr if s["first_frames_s"] is not None]
@@ -395,7 +379,7 @@ def verdict(ledger: dict, heap_slack: int, baseline: bool) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--room", default="kitchen", choices=sorted(ROOMS))
-    ap.add_argument("--story", type=float, default=0.0, help="leg S: continuous /announce media for N s (sat#27 repro)")
+    ap.add_argument("--story", type=float, default=0.0, help="leg S: continuous SILENT downlink media for N s (sat#27 repro)")
     ap.add_argument("--hub-restarts", type=int, default=10)
     ap.add_argument("--redial-cycles", type=int, default=50)
     ap.add_argument("--timeout", type=float, default=90.0, help="per-event wait (s)")

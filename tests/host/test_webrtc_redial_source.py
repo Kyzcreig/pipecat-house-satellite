@@ -71,8 +71,19 @@ order = [
     teardown.index("pipecat_rtvi_detach();"),
     teardown.index("peer_connection = NULL;"),
     teardown.index("peer_connection_destroy(old);"),
+    # Downlink seq/RED dedupe table forgotten AFTER the old decoder is gone
+    # (kitchen 2026-10-04 11:49: the re-created decoder reused the freed
+    # address and every packet of the new stream was a "late" drop).
+    teardown.index("rtp_seq_state_reset();"),
 ]
 assert order == sorted(order), order
+RTP = (ROOT / "xiao-esp32-s3" / "components" / "peer" / "rtp.c").read_text()
+assert "static struct {" in RTP and "} s_rtp_seq_state[RTP_SEQ_SLOTS];" in RTP, "seq table must be file-scope"
+reset = function_body(RTP, "void rtp_seq_state_reset(void)")
+assert "memset(s_rtp_seq_state, 0, sizeof(s_rtp_seq_state));" in reset
+assert RTP.rindex("#if PIPECAT_REDIAL", 0, RTP.index("void rtp_seq_state_reset(void)")) > 0, "reset is flag-gated"
+decode = function_body(RTP, "static int rtp_decode_generic(RtpDecoder *rtp_decoder, uint8_t *buf,")
+assert "static struct" not in decode, "no function-static seq table left behind"
 
 # Publisher handoff is the atomic pointer + in_send bracket, not a task kill.
 detach = function_body(WEBRTC, "static void pipecat_audio_publisher_detach()")

@@ -14,6 +14,10 @@
 #include "peer_connection.h"
 #include "server_liveness.h"
 
+#if PIPECAT_REDIAL
+extern "C" void rtp_seq_state_reset(void);  // components/peer/rtp.c
+#endif
+
 #ifdef PIPECAT_NACK
 #include <esp_timer.h>
 
@@ -460,6 +464,11 @@ static void pipecat_webrtc_teardown() {
   // dtls: mbedtls ssl/conf/cert/pkey/drbg + srtp sessions freed;
   // agent: both UDP sockets closed; then the ~100 KiB struct itself.
   peer_connection_destroy(old);
+  // The downlink seq/RED dedupe table (rtp.c) is keyed by RtpDecoder address
+  // and the next create() reuses the freed block: without this every packet
+  // of the new stream is a "late" drop (kitchen 2026-10-04 11:49, first live
+  // re-dial: packets_received +201, late_drops +201, frames +0).
+  rtp_seq_state_reset();
 }
 
 // A dial attempt failed (no answer, or answered but never CONNECTED).
