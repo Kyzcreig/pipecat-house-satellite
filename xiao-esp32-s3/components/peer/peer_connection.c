@@ -401,6 +401,16 @@ int peer_connection_loop(PeerConnection *pc) {
           if (ret > 0) {
             sctp_incoming_data(&pc->sctp, (char *)pc->temp_buf, ret);
           }
+#ifdef PIPECAT_REDIAL
+          // t_db77e56b: the hub's pc.close() sends a DTLS close_notify after
+          // its SCTP ABORT. Upstream ignores it and the peer sits COMPLETED
+          // until the 30 s keepalive timeout; surface it as CLOSED so the
+          // firmware can re-offer at once.
+          else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+            LOGI("DTLS close_notify from remote");
+            STATE_CHANGED(pc, PEER_CONNECTION_CLOSED);
+          }
+#endif
 
         } else if (rtp_packet_validate(pc->agent_buf, pc->agent_ret)) {
           LOGD("Got RTP packet");

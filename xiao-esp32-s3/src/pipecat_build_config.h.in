@@ -30,3 +30,17 @@
 #ifndef PIPECAT_XVF_AEC_FILTER
 #define PIPECAT_XVF_AEC_FILTER 0  // #13 GET /xvf/aec_filter: built, never flashed, needs its own card
 #endif
+#ifndef PIPECAT_WIFI_FAST_REJOIN
+#define PIPECAT_WIFI_FAST_REJOIN 0  // GADGET-3 cached-BSSID fast re-join (t_2a5f2312): PASS 2026-10-04; the golden build env sets it to 1
+#endif
+#ifndef PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR
+#define PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR -75  // dBm; the pinned fast path refuses a weaker AP and falls back
+#endif
+
+// Re-offer to the hub without esp_restart() (GADGET-2, t_db77e56b). DEFAULT
+// OFF: the live firmware reboots to re-offer; PIPECAT_REDIAL=1 tears down and
+// recreates the PeerConnection instead (webrtc_redial.h). Adopt only on the
+// bench measurement (median re-offer < 10 s, 0 fault_boots, flat heap/50).
+#ifndef PIPECAT_REDIAL
+#define PIPECAT_REDIAL 0
+#endif

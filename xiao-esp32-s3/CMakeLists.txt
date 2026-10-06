@@ -76,12 +76,39 @@ if("$ENV{PIPECAT_NACK}" STREQUAL "1")
   add_compile_definitions(PIPECAT_NACK=1)
 endif()
 
+# GADGET-3 (t_2a5f2312): Muse-pattern fast Wi-Fi re-join. On a link loss,
+# reconnect at once to the cached BSSID on its channel (WIFI_FAST_SCAN, no
+# backoff), refusing it below PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR dBm (-75);
+# one failure falls back to all-channel by-signal with the 1 s backoff. Measured
+# 2026-10-04 on the kitchen (23 UniFi kicks, device clock): median 1574 ms, p95
+# 1612 ms, near AP 23/23 vs 2556 ms on the stock path -> PASS (docs/decisions/
+# 2026-10-04-gadget3-wifi-fast-rejoin.md in pipecat-house-voice). Default OFF
+# like PIPECAT_DUAL_STREAM: the golden build sets PIPECAT_WIFI_FAST_REJOIN=1 in
+# its build environment (golden bump, Apollo GO), so the manifest records it.
+if("$ENV{PIPECAT_WIFI_FAST_REJOIN}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_WIFI_FAST_REJOIN=1)
+endif()
+if(NOT "$ENV{PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR}" STREQUAL "")
+  add_compile_definitions(
+    PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR=$ENV{PIPECAT_WIFI_FAST_REJOIN_RSSI_FLOOR})
+endif()
+
 # Gap-resume window (ms): a FULL playback-ring drain followed by a refill
 # within this window is counted as a mid-speech gap (`gap_resumes` in
 # /playback/stats) instead of silently re-arming as end-of-utterance.
 # Default 750ms (in media.cpp); pure instrumentation, no behavior change.
 if(NOT "$ENV{PIPECAT_GAP_RESUME_MS}" STREQUAL "")
   add_compile_definitions(PIPECAT_GAP_RESUME_MS=$ENV{PIPECAT_GAP_RESUME_MS})
+endif()
+
+# Re-offer without esp_restart() (GADGET-2, t_db77e56b): on a hub-closed peer,
+# stale heartbeat or POST /webrtc/redial, tear down + recreate the libpeer
+# PeerConnection and POST a fresh offer; XVF/I2S/LED/mdns/OTA stay up.
+# esp_restart() remains the fallback after 40 failed re-dials. Also reaches
+# components/peer (DTLS close_notify -> CLOSED). DEFAULT OFF; set
+# PIPECAT_REDIAL=1 at configure time.
+if("$ENV{PIPECAT_REDIAL}" STREQUAL "1")
+  add_compile_definitions(PIPECAT_REDIAL=1)
 endif()
 
 set(WIFI_SSID_VALUE "$ENV{WIFI_SSID}")

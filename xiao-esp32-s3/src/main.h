@@ -14,6 +14,14 @@
 // Wifi
 extern void pipecat_init_wifi();
 extern bool pipecat_wifi_connected();
+// Re-join instrumentation (t_2a5f2312): link losses since boot, how the last
+// re-join happened (pinned fast path vs all-channel), and its DISCONNECTED ->
+// GOT_IP wall time in ms. Read on /ota/status.
+extern uint32_t pipecat_wifi_disconnects();
+extern uint32_t pipecat_wifi_fast_rejoins();
+extern uint32_t pipecat_wifi_fallback_rejoins();
+extern uint32_t pipecat_wifi_rejoin_last_ms();
+extern bool pipecat_wifi_fast_rejoin_enabled();
 
 // WebRTC / Media
 extern void pipecat_init_audio_capture();
@@ -85,6 +93,18 @@ extern bool pipecat_ota_server_started();
 extern void pipecat_init_webrtc();
 extern void pipecat_webrtc_loop();
 extern volatile bool pipecat_webrtc_connected;
+#if PIPECAT_REDIAL
+// Re-offer without esp_restart() (t_db77e56b). See webrtc_redial.h.
+#include <esp_http_server.h>
+
+#include "webrtc_redial.h"
+extern bool pipecat_webrtc_redial_tick(bool watchdog_expired);
+extern void pipecat_webrtc_note_attempt_failed(PipecatRedialTrigger why);
+extern void pipecat_webrtc_request_redial();
+extern esp_err_t pipecat_webrtc_register_http(httpd_handle_t server);
+extern size_t pipecat_webrtc_redial_json(char *out, size_t capacity);
+extern void pipecat_rtvi_detach();
+#endif
 extern void pipecat_webrtc_note_server_ping();
 extern void pipecat_webrtc_note_server_media();
 extern bool pipecat_webrtc_server_heartbeat_fresh();

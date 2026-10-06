@@ -2,7 +2,7 @@ set(COMMON_SRC "webrtc.cpp" "main.cpp" "http.cpp")
 
 # Never-flashed features are default-off (t_4f8fe707, see ../CMakeLists.txt).
 # Source order matches main's list so an all-on build links identically.
-set(TARGET_SRC "wifi.cpp" "media.cpp" "ota.cpp" "rtvi.cpp" "rtvi_callbacks.cpp" "prebuffer_ctl.c" "ack_beep.c")
+set(TARGET_SRC "wifi.cpp" "media.cpp" "ota.cpp" "rtvi.cpp" "rtvi_callbacks.cpp" "prebuffer_ctl.c" "ack_beep.c" "link_health.cpp")
 if("$ENV{PIPECAT_DECIM_COMP}" STREQUAL "1")
 	list(APPEND TARGET_SRC "decim_comp.c")
 endif()
