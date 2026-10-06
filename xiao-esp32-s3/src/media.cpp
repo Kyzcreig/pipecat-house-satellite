@@ -530,8 +530,13 @@ static const TuneEntry kTuneEntries[] = {
      TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, 1.0f, false},
     {"mic_gain", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
      TuneTarget::XVF_FLOAT, false, false, 0.0f, 0.0f, PIPECAT_MIC_GAIN, false},
+    // Default -30 == the baked boot value in configure_xvf3800_dsp_profile()
+    // (kept in lockstep by tests/host/test_xvf_nvs_source.py). Measured on the
+    // kitchen 2026-10-04 (t_bfdf7151): at 12 the AEC never converged (0/64
+    // playback polls, clean-lane echo p95 1329); at -30 it converged 62/62
+    // with echo p95 200. -32 is the XMOS default; -30 is the measured minimum.
     {"sys_delay", XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY,
-     TuneTarget::XVF_INT32, false, true, -64.0f, 256.0f, 12.0f, false},
+     TuneTarget::XVF_INT32, false, true, -64.0f, 256.0f, -30.0f, false},
     // AEC high-pass filter corner. XMOS XVF3800 v3.2.1 control appendix:
     // 0=Off, 1=70Hz, 2=125Hz, 3=150Hz, 4=180Hz; device default on125 == our
     // baked profile value 2 (configure_xvf3800_dsp_profile). Persistent so the
@@ -1285,7 +1290,14 @@ static void configure_xvf3800_dsp_profile() {
       xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_REF_GAIN, 1.0f));
   record(xvf_write_float(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_MIC_GAIN,
                          PIPECAT_MIC_GAIN));
-  record(xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, 12));
+  // AEC far-end/mic alignment. 12 (the old value) was never measured; the
+  // 2026-10-04 kitchen sweep (t_bfdf7151, golden cd45607) found the AEC
+  // never converged at 12 (AECCONVERGED 0/64 playback polls, clean-lane echo
+  // RMS p50/p95 144/1329) and converged 62/62 at -30 (echo 30/200, 6.6x lower
+  // p95). -32 is the XMOS default; -30 is the measured minimum. Same value as
+  // the kTuneEntries sys_delay default above (test-pinned lockstep).
+  record(
+      xvf_write_int32(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_SYS_DELAY, -30));
 
   // Keep adaptive beamforming/AEC active and align the far-end reference gain
   // with the host playback path. Per-build override is useful when speaker
