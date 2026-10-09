@@ -32,7 +32,8 @@
 #define OTA_NVS_NAMESPACE "ota"
 #define OTA_NVS_SHA_KEY "last_sha"
 #define OTA_NVS_LABEL_KEY "last_label"
-// Human label set by satellitectl (PRD §5.3); reported on /ota/status.label, never trusted.
+// Human label set by satellitectl (PRD §5.3); reported on /ota/status.label,
+// never trusted.
 #define OTA_NVS_SAT_LABEL_KEY "sat_label"
 #define DSP_NVS_NAMESPACE "xvf_dsp"
 
@@ -318,9 +319,11 @@ const char *pipecat_ota_running_sha() {
 static void load_sat_label(char *out, size_t capacity) {
   out[0] = '\0';
   nvs_handle_t nvs;
-  if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
+  if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK)
+    return;
   size_t len = capacity;
-  if (nvs_get_str(nvs, OTA_NVS_SAT_LABEL_KEY, out, &len) != ESP_OK) out[0] = '\0';
+  if (nvs_get_str(nvs, OTA_NVS_SAT_LABEL_KEY, out, &len) != ESP_OK)
+    out[0] = '\0';
   nvs_close(nvs);
 }
 
@@ -375,10 +378,10 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"wifi_fast_rejoins\":%u,\"wifi_fallback_rejoins\":%u,"
            "\"wifi_rejoin_last_ms\":%u,%s}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
-           sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
-           sat_id, pipecat_sta_mac_str(), label_json, PIPECAT_SMALLWEBRTC_URL,
-           pipecat_hostname(),
-           pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
+           sha_hex, uptime_s, app->version, pipecat_xvf3800_version(), sat_id,
+           pipecat_sta_mac_str(), label_json, PIPECAT_SMALLWEBRTC_URL,
+           pipecat_hostname(), pipecat_reset_reason_name(),
+           (unsigned)pipecat_boot_fault_count(),
            (unsigned)pipecat_boots_since_poweron(),
            (unsigned)pipecat_net_watchdog_deadline_s(),
            (unsigned)pipecat_crash_boots(), (unsigned)pipecat_slot_flipped(),

@@ -103,7 +103,8 @@ void pipecat_http_request(char *offer, char *answer) {
   }
   // Fleet identity (t_54916498 P4, PRD §5.3): request_data {mac, fw_sha256,
   // fw_version, boot_count}. The hub's front door cross-checks mac against the
-  // ARP entry of this TCP connection and routes by it; nothing here names a room.
+  // ARP entry of this TCP connection and routes by it; nothing here names a
+  // room.
 #ifndef LINUX_BUILD
   {
     char rd[256];
@@ -114,7 +115,8 @@ void pipecat_http_request(char *offer, char *answer) {
     cJSON *j_rd = (n > 0 && (size_t)n < sizeof(rd)) ? cJSON_Parse(rd) : NULL;
     if (j_rd == NULL || !cJSON_AddItemToObject(j_offer, "request_data", j_rd)) {
       cJSON_Delete(j_rd);
-      ESP_LOGW(LOG_TAG, "request_data omitted (identity falls back to ARP only)");
+      ESP_LOGW(LOG_TAG,
+               "request_data omitted (identity falls back to ARP only)");
     }
   }
 #endif

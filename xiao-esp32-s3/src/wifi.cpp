@@ -229,8 +229,8 @@ void pipecat_init_wifi() {
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-  // Fleet identity (t_54916498 P4): the STA MAC is what ARP sees at the hub, and
-  // the default hostname derives from it so the image carries no room name.
+  // Fleet identity (t_54916498 P4): the STA MAC is what ARP sees at the hub,
+  // and the default hostname derives from it so the image carries no room name.
   ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_sta_mac));
   pipecat_mac_format(s_sta_mac, s_sta_mac_str, sizeof(s_sta_mac_str));
   if (PIPECAT_MDNS_HOSTNAME[0] == '\0') {

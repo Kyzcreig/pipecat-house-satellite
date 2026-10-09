@@ -43,17 +43,21 @@ static inline size_t pipecat_json_escape(const char *src, char *out,
   size_t n = 0;
   for (const char *p = src; p && *p; ++p) {
     unsigned char c = (unsigned char)*p;
-    if (c < 0x20) continue;
+    if (c < 0x20)
+      continue;
     if (c == '"' || c == '\\') {
-      if (n + 2 >= capacity) break;
+      if (n + 2 >= capacity)
+        break;
       out[n++] = '\\';
       out[n++] = (char)c;
     } else {
-      if (n + 1 >= capacity) break;
+      if (n + 1 >= capacity)
+        break;
       out[n++] = (char)c;
     }
   }
-  if (capacity) out[n < capacity ? n : capacity - 1] = '\0';
+  if (capacity)
+    out[n < capacity ? n : capacity - 1] = '\0';
   return n;
 }
 
