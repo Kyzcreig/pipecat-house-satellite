@@ -14,6 +14,14 @@
 // Wifi
 extern void pipecat_init_wifi();
 extern bool pipecat_wifi_connected();
+// Fleet identity (t_54916498 P4): lowercase colon MAC of the STA interface
+// (valid after pipecat_init_wifi) and the effective hostname
+// (PIPECAT_MDNS_HOSTNAME when baked, else xvf3800-<last 3 MAC bytes>).
+extern const char *pipecat_sta_mac_str();
+extern const char *pipecat_hostname();
+// The running image sha as /ota/status reports it (cached after the first
+// call).
+extern const char *pipecat_ota_running_sha();
 // Re-join instrumentation (t_2a5f2312): link losses since boot, how the last
 // re-join happened (pinned fast path vs all-channel), and its DISCONNECTED ->
 // GOT_IP wall time in ms. Read on /ota/status.

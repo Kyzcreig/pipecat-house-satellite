@@ -11,10 +11,11 @@ export PATH="$USER_HOME/.platformio/tools/tool-cmake/bin:$USER_HOME/.platformio/
 export WIFI_SSID="${WIFI_SSID:-Wi-Fight this Feeling}"
 export PIPECAT_SMALLWEBRTC_URL="${PIPECAT_SMALLWEBRTC_URL:-http://192.168.1.78:7860/api/offer}"
 export PIPECAT_BENCH_SEND_TONE="${PIPECAT_BENCH_SEND_TONE:-1}"
-# Default "scratch": "bench" is the real .97 satellite key since 2026-09-30 (t_b5299572).
-export PIPECAT_SATELLITE_ID="${PIPECAT_SATELLITE_ID:-scratch}"
-export PIPECAT_MDNS_HOSTNAME="${PIPECAT_MDNS_HOSTNAME:-${PIPECAT_SATELLITE_ID}-xvf3800}"
-export PIPECAT_MDNS_INSTANCE="${PIPECAT_MDNS_INSTANCE:-${PIPECAT_SATELLITE_ID} XVF3800 Voice Satellite}"
+# Fleet image (t_54916498 P4): no id baked by default; the board identifies by MAC and
+# names itself xvf3800-<mac3>. Set PIPECAT_SATELLITE_ID only for a legacy per-room image.
+export PIPECAT_SATELLITE_ID="${PIPECAT_SATELLITE_ID:-}"
+export PIPECAT_MDNS_HOSTNAME="${PIPECAT_MDNS_HOSTNAME:-${PIPECAT_SATELLITE_ID:+${PIPECAT_SATELLITE_ID}-xvf3800}}"
+export PIPECAT_MDNS_INSTANCE="${PIPECAT_MDNS_INSTANCE:-${PIPECAT_SATELLITE_ID:+${PIPECAT_SATELLITE_ID} XVF3800 Voice Satellite}}"
 export PIPECAT_AEC_FAR_EXTGAIN_DB="${PIPECAT_AEC_FAR_EXTGAIN_DB:-0.0f}"
 
 if [[ -z "${WIFI_PASSWORD:-}" ]]; then

@@ -10,9 +10,13 @@
 #include <string.h>
 
 #include "boot_guard.h"
+#include "fleet_identity.h"
 #include "main.h"
 
 static volatile bool g_wifi_connected = false;
+static uint8_t s_sta_mac[6] = {};
+static char s_sta_mac_str[PIPECAT_MAC_STR_LEN] = "00:00:00:00:00:00";
+static char s_hostname[64] = "xvf3800";
 
 // Reconnect FOREVER with backoff (t_2e80e072). The stock handler gave up after
 // 5 retries (~4 s): a satellite that booted while the AP was still
@@ -220,16 +224,25 @@ void pipecat_init_wifi() {
   ESP_ERROR_CHECK(esp_netif_init());
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   assert(sta_netif);
-  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, PIPECAT_MDNS_HOSTNAME));
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+  // Fleet identity (t_54916498 P4): the STA MAC is what ARP sees at the hub,
+  // and the default hostname derives from it so the image carries no room name.
+  ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_sta_mac));
+  pipecat_mac_format(s_sta_mac, s_sta_mac_str, sizeof(s_sta_mac_str));
+  if (PIPECAT_MDNS_HOSTNAME[0] == '\0') {
+    pipecat_mac_hostname(s_sta_mac, s_hostname, sizeof(s_hostname));
+  } else {
+    strlcpy(s_hostname, PIPECAT_MDNS_HOSTNAME, sizeof(s_hostname));
+  }
+  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, s_hostname));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s as %s", WIFI_SSID,
-           PIPECAT_MDNS_HOSTNAME);
+  ESP_LOGI(LOG_TAG, "Connecting to WiFi SSID: %s as %s (mac %s)", WIFI_SSID,
+           s_hostname, s_sta_mac_str);
   wifi_config_t wifi_config;
   memset(&wifi_config, 0, sizeof(wifi_config));
   strncpy((char *)wifi_config.sta.ssid, (char *)WIFI_SSID,
@@ -259,6 +272,14 @@ void pipecat_init_wifi() {
 
 bool pipecat_wifi_connected() {
   return g_wifi_connected;
+}
+
+const char *pipecat_sta_mac_str() {
+  return s_sta_mac_str;
+}
+
+const char *pipecat_hostname() {
+  return s_hostname;
 }
 
 uint32_t pipecat_wifi_disconnects() {
