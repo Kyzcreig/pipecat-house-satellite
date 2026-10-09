@@ -120,17 +120,18 @@ set(PIPECAT_MDNS_INSTANCE_VALUE "$ENV{PIPECAT_MDNS_INSTANCE}")
 set(PIPECAT_AEC_FAR_EXTGAIN_DB_VALUE "$ENV{PIPECAT_AEC_FAR_EXTGAIN_DB}")
 set(PIPECAT_AGC_DESIRED_LEVEL_VALUE "$ENV{PIPECAT_AGC_DESIRED_LEVEL}")
 
-# Unset id -> "scratch". "bench" is a REAL satellite key since 2026-09-30 (the board
-# formerly keyed "theater", t_b5299572); an unconfigured build must not impersonate it.
-if("${PIPECAT_SATELLITE_ID_VALUE}" STREQUAL "")
-  set(PIPECAT_SATELLITE_ID_VALUE "scratch")
-endif()
-
-if("${PIPECAT_MDNS_HOSTNAME_VALUE}" STREQUAL "")
+# Fleet image (Satellite Fleet v2 P4, t_54916498, PRD §5.3): the id is NOT part of
+# the build. Unset -> "" and the firmware identifies itself by its STA MAC: the
+# default mDNS hostname is xvf3800-<last 3 MAC bytes>, /ota/status.satellite_id
+# reads the NVS label or "fleet", and the offer carries request_data.mac. A
+# per-room id is still accepted for the legacy per-room images (migration window,
+# R-6 rollback successors); "bench" is a REAL satellite key since 2026-09-30
+# (t_b5299572), so an unconfigured build must never default to a room name.
+if("${PIPECAT_MDNS_HOSTNAME_VALUE}" STREQUAL "" AND NOT "${PIPECAT_SATELLITE_ID_VALUE}" STREQUAL "")
   set(PIPECAT_MDNS_HOSTNAME_VALUE "${PIPECAT_SATELLITE_ID_VALUE}-xvf3800")
 endif()
 
-if("${PIPECAT_MDNS_INSTANCE_VALUE}" STREQUAL "")
+if("${PIPECAT_MDNS_INSTANCE_VALUE}" STREQUAL "" AND NOT "${PIPECAT_SATELLITE_ID_VALUE}" STREQUAL "")
   set(PIPECAT_MDNS_INSTANCE_VALUE "${PIPECAT_SATELLITE_ID_VALUE} XVF3800 Voice Satellite")
 endif()
 

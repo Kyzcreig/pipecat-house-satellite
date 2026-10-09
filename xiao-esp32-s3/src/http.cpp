@@ -4,7 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fleet_identity.h"
 #include "main.h"
+#ifndef LINUX_BUILD
+#include "esp_app_desc.h"
+#endif
 
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -97,6 +101,23 @@ void pipecat_http_request(char *offer, char *answer) {
     ESP_LOGE(LOG_TAG, "Unable to create JSON offer");
     return;
   }
+  // Fleet identity (t_54916498 P4, PRD §5.3): request_data {mac, fw_sha256,
+  // fw_version, boot_count}. The hub's front door cross-checks mac against the
+  // ARP entry of this TCP connection and routes by it; nothing here names a room.
+#ifndef LINUX_BUILD
+  {
+    char rd[256];
+    int n = pipecat_request_data_json(
+        pipecat_sta_mac_str(), pipecat_ota_running_sha(),
+        esp_app_get_description()->version, pipecat_boots_since_poweron(), rd,
+        sizeof(rd));
+    cJSON *j_rd = (n > 0 && (size_t)n < sizeof(rd)) ? cJSON_Parse(rd) : NULL;
+    if (j_rd == NULL || !cJSON_AddItemToObject(j_offer, "request_data", j_rd)) {
+      cJSON_Delete(j_rd);
+      ESP_LOGW(LOG_TAG, "request_data omitted (identity falls back to ARP only)");
+    }
+  }
+#endif
 
   ESP_LOGD(LOG_TAG, "OFFER\n%s", offer);
 

@@ -13,6 +13,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "fleet_identity.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "link_health.h"
@@ -31,6 +32,8 @@
 #define OTA_NVS_NAMESPACE "ota"
 #define OTA_NVS_SHA_KEY "last_sha"
 #define OTA_NVS_LABEL_KEY "last_label"
+// Human label set by satellitectl (PRD §5.3); reported on /ota/status.label, never trusted.
+#define OTA_NVS_SAT_LABEL_KEY "sat_label"
 #define DSP_NVS_NAMESPACE "xvf_dsp"
 
 #ifndef MIN
@@ -297,15 +300,41 @@ static void reboot_task(void *arg) {
   esp_restart();
 }
 
+// The running image's sha as /ota/status reports it (upload sha when the NVS
+// binding is for this slot, else the partition validation hash). Computed once:
+// hashing the partition takes ~1 s and the offer path must not pay it.
+static char s_running_sha[65] = {};
+
+const char *pipecat_ota_running_sha() {
+  if (s_running_sha[0] == '\0') {
+    if (!load_uploaded_sha_for_running(s_running_sha, sizeof(s_running_sha))) {
+      running_partition_sha(s_running_sha, sizeof(s_running_sha));
+    }
+  }
+  return s_running_sha;
+}
+
+// /ota/status.label: the optional NVS human label (§5.3). "" when unset.
+static void load_sat_label(char *out, size_t capacity) {
+  out[0] = '\0';
+  nvs_handle_t nvs;
+  if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
+  size_t len = capacity;
+  if (nvs_get_str(nvs, OTA_NVS_SAT_LABEL_KEY, out, &len) != ESP_OK) out[0] = '\0';
+  nvs_close(nvs);
+}
+
 static esp_err_t ota_status_handler(httpd_req_t *req) {
   const esp_partition_t *running = esp_ota_get_running_partition();
   esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
   get_running_ota_state(&state);
 
   char sha_hex[65] = {};
-  if (!load_uploaded_sha_for_running(sha_hex, sizeof(sha_hex))) {
-    running_partition_sha(sha_hex, sizeof(sha_hex));
-  }
+  strlcpy(sha_hex, pipecat_ota_running_sha(), sizeof(sha_hex));
+  char label[33] = {};
+  load_sat_label(label, sizeof(label));
+  char label_json[80];
+  pipecat_json_escape(label, label_json, sizeof(label_json));
 
   const esp_app_desc_t *app = esp_app_get_description();
   int64_t uptime_s = esp_timer_get_time() / 1000000LL;
@@ -321,12 +350,20 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   // the hub already polls. ~110 bytes; body 896 (wifi fields) -> 1024 for it.
   char link_json[128];
   pipecat_link_health_json(link_json, sizeof(link_json));
-  char body[1024];
+  // Fleet identity (t_54916498 P4, §5.3): mac is THE identity (the hub asserts
+  // it), offer_url is the baked hub address `check` compares to hub_host, label
+  // is the optional NVS human name. satellite_id stays through the migration
+  // window: the baked id when one was built in, else the label, else "fleet".
+  const char *sat_id = PIPECAT_SATELLITE_ID[0] ? PIPECAT_SATELLITE_ID
+                       : label[0]              ? label
+                                               : "fleet";
+  char body[1280];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
            ",\"firmware_version\":\"%s\",\"xvf_version\":\"%s\","
-           "\"satellite_id\":\"%s\","
+           "\"satellite_id\":\"%s\",\"mac\":\"%s\",\"label\":\"%s\","
+           "\"offer_url\":\"%s\","
            "\"mdns_hostname\":\"%s.local\","
            "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
            "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u,"
@@ -339,7 +376,8 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"wifi_rejoin_last_ms\":%u,%s}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(),
-           PIPECAT_SATELLITE_ID, PIPECAT_MDNS_HOSTNAME,
+           sat_id, pipecat_sta_mac_str(), label_json, PIPECAT_SMALLWEBRTC_URL,
+           pipecat_hostname(),
            pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
            (unsigned)pipecat_boots_since_poweron(),
            (unsigned)pipecat_net_watchdog_deadline_s(),
@@ -483,23 +521,31 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
 
 void pipecat_init_mdns() {
   ESP_ERROR_CHECK(mdns_init());
-  ESP_ERROR_CHECK(mdns_hostname_set(PIPECAT_MDNS_HOSTNAME));
-  ESP_ERROR_CHECK(mdns_instance_name_set(PIPECAT_MDNS_INSTANCE));
+  // Fleet identity (t_54916498 P4): hostname = baked PIPECAT_MDNS_HOSTNAME when
+  // a per-room build set one, else xvf3800-<last 3 MAC bytes> (§5.3). Human
+  // names live in AGH, generated from the manifest; the hub never trusts mDNS.
+  const char *host = pipecat_hostname();
+  static char instance[96];
+  if (PIPECAT_MDNS_INSTANCE[0]) {
+    strlcpy(instance, PIPECAT_MDNS_INSTANCE, sizeof(instance));
+  } else {
+    snprintf(instance, sizeof(instance), "XVF3800 Voice Satellite %s",
+             pipecat_sta_mac_str());
+  }
+  ESP_ERROR_CHECK(mdns_hostname_set(host));
+  ESP_ERROR_CHECK(mdns_instance_name_set(instance));
   mdns_txt_item_t service_txt[] = {
-      {"satellite_id", PIPECAT_SATELLITE_ID},
+      {"mac", pipecat_sta_mac_str()},
       {"fw", "pipecat-house-satellite"},
       {"role", "xvf3800"},
   };
-  // ESP_ERROR_CHECK stringifies its argument into the image; this layout keeps
-  // that string (and so the image) identical to the live 5e6717e build.
   // clang-format off
-  ESP_ERROR_CHECK(mdns_service_add(PIPECAT_MDNS_INSTANCE, "_http", "_tcp",
+  ESP_ERROR_CHECK(mdns_service_add(instance, "_http", "_tcp",
                                    OTA_HTTP_PORT, service_txt,
                                    sizeof(service_txt) / sizeof(service_txt[0])));
   // clang-format on
   g_mdns_started = true;
-  ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)", PIPECAT_MDNS_HOSTNAME,
-           PIPECAT_MDNS_INSTANCE);
+  ESP_LOGI(LOG_TAG, "mDNS registered: %s.local (%s)", host, instance);
 }
 
 // POST /xvf/tune?param=<name>&value=<float>[&persist=0]. Persistent allowlisted

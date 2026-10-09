@@ -74,14 +74,19 @@ idf.py --preview set-target esp32s3
 idf.py build
 ```
 
-The XIAO/XVF3800 target accepts these production build knobs:
+The XIAO/XVF3800 target accepts these production build knobs. Since Satellite Fleet v2
+(t_54916498 P4) the production image is **room-agnostic**: leave `PIPECAT_SATELLITE_ID`
+unset, dial the hub front door on `:7870`, and the board identifies itself by its Wi-Fi
+STA MAC (`request_data.mac` on the offer, `mac` on `/ota/status`, mDNS
+`xvf3800-<last 3 MAC bytes>.local`). The id knobs remain for the legacy per-room images:
 
 ```
+PIPECAT_SMALLWEBRTC_URL=http://192.168.1.216:7870/api/offer   # fleet image
+PIPECAT_AEC_FAR_EXTGAIN_DB=12.0f
+# legacy per-room image only:
 PIPECAT_SATELLITE_ID=bench
 PIPECAT_MDNS_HOSTNAME=bench-xvf3800
 PIPECAT_MDNS_INSTANCE="Bench XVF3800 Voice Satellite"
-PIPECAT_AEC_FAR_EXTGAIN_DB=0.0f
-PIPECAT_SMALLWEBRTC_URL=http://192.168.1.78:7860/api/offer
 ```
 
 At boot the firmware disables Wi-Fi power save, advertises the satellite as
