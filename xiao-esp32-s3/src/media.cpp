@@ -1175,7 +1175,7 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
         uint32_t bits = load_le32(p);
         float f = 0.0f;
         memcpy(&f, &bits, sizeof(f));
-        used += isfinite(f)
+        used += std::isfinite(f)
                     ? snprintf(out + used, out_len - used, "%.9g%s",
                                (double)f, sep)
                     : snprintf(out + used, out_len - used, "null%s", sep);
