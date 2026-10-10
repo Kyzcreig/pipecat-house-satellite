@@ -33,8 +33,8 @@ perl -0pi -e 's/set\(TARGET_SRC "wifi.cpp"/set(TARGET_SRC "opus_gapfill.c" "wifi
 check "opus_gapfill.c compiled unconditionally"
 perl -0pi -e 's/#define OPUS_ENCODER_BITRATE 30000/#define OPUS_ENCODER_BITRATE 64000/' "$MEDIA"
 check "default uplink bitrate no longer the live 30k"
-perl -0pi -e 's/  config.max_uri_handlers = 9;/  config.max_uri_handlers = 10;/' "$OTA"
-check "default httpd slots no longer the live 9"
+perl -0pi -e 's/  config.max_uri_handlers = 10;/  config.max_uri_handlers = 11;/' "$OTA"
+check "default httpd slots no longer the live 10 (9 + /xvf/dump)"
 perl -0pi -e 's/(#else\n    int fec_size = opus_decode\(opus_decoder, data, size, decoder_buffer,\n\s+PCM_SAMPLES_PER_FRAME, 1 \/\* decode_fec \*\/\);\n)    s_pending_gap = 0;\n/    s_pending_gap = 0;\n$1/' "$MEDIA"
 check "live FEC arm reordered (s_pending_gap before the decode)"
 

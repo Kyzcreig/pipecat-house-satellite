@@ -962,9 +962,12 @@ struct DumpEntry {
   uint8_t count;
 };
 
-#define XVF_DUMP_PP(n, c, t, k) {"PP_" #n, XVF_RESID_PP, c, DumpType::t, k}
-#define XVF_DUMP_AEC(n, c, t, k) {"AEC_" #n, XVF_RESID_AEC, c, DumpType::t, k}
-#define XVF_DUMP_AM(n, c, t, k) {n, XVF_RESID_AUDIO_MGR, c, DumpType::t, k}
+#define XVF_DUMP_PP(n, c, t, k) \
+  { "PP_" #n, XVF_RESID_PP, c, DumpType::t, k }
+#define XVF_DUMP_AEC(n, c, t, k) \
+  { "AEC_" #n, XVF_RESID_AEC, c, DumpType::t, k }
+#define XVF_DUMP_AM(n, c, t, k) \
+  { n, XVF_RESID_AUDIO_MGR, c, DumpType::t, k }
 
 static const DumpEntry kDumpEntries[] = {
     // RESID 17 post-processor
@@ -1171,9 +1174,9 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
   const size_t len = elem * e.count;
   uint8_t payload[XVF_READ_MAX_PAYLOAD] = {};
   esp_err_t ret = len > sizeof(payload) ? ESP_ERR_INVALID_SIZE
-                  : !xvf3800_present    ? ESP_ERR_NOT_SUPPORTED
-                                        : xvf_read_bytes(e.resid, e.cmd,
-                                                         payload, len);
+                  : !xvf3800_present
+                      ? ESP_ERR_NOT_SUPPORTED
+                      : xvf_read_bytes(e.resid, e.cmd, payload, len);
   // One retry on a bus timeout (t_d355a513): 3 dumps 12 s apart showed 1-2
   // random rows/dump timing out (LED-task contention on the shared bus), which
   // would flip dsp_fingerprint on noise. A real unsupported row is not a
@@ -1217,11 +1220,10 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
     out[used] = 0;
     return true;
   }
-  used += snprintf(out + used, out_len - used, "\"v\":%s",
-                   e.count > 1 ? "[" : "");
-  for (size_t i = 0; i < e.count && used > 0 &&
-                     static_cast<size_t>(used) < out_len;
-       i++) {
+  used +=
+      snprintf(out + used, out_len - used, "\"v\":%s", e.count > 1 ? "[" : "");
+  for (size_t i = 0;
+       i < e.count && used > 0 && static_cast<size_t>(used) < out_len; i++) {
     const char *sep = i + 1 < e.count ? "," : "";
     const uint8_t *p = payload + i * elem;
     switch (e.type) {
@@ -1229,10 +1231,10 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
         uint32_t bits = load_le32(p);
         float f = 0.0f;
         memcpy(&f, &bits, sizeof(f));
-        used += std::isfinite(f)
-                    ? snprintf(out + used, out_len - used, "%.9g%s",
-                               (double)f, sep)
-                    : snprintf(out + used, out_len - used, "null%s", sep);
+        used +=
+            std::isfinite(f)
+                ? snprintf(out + used, out_len - used, "%.9g%s", (double)f, sep)
+                : snprintf(out + used, out_len - used, "null%s", sep);
         break;
       }
       case DumpType::INT32:
@@ -1248,8 +1250,8 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
                          (unsigned)(p[0] | (p[1] << 8)), sep);
         break;
       default:
-        used += snprintf(out + used, out_len - used, "%u%s", (unsigned)p[0],
-                         sep);
+        used +=
+            snprintf(out + used, out_len - used, "%u%s", (unsigned)p[0], sep);
         break;
     }
   }

@@ -861,10 +861,10 @@ static esp_err_t xvf_dump_stream(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/json");
   const size_t n = pipecat_xvf_dump_count();
   int used = snprintf(line, sizeof(line),
-                      "{\"ok\":true,\"satellite_id\":\"%s\",\"xvf_version\":\"%s\","
-                      "\"count\":%u,\"regs\":{",
-                      PIPECAT_SATELLITE_ID, pipecat_xvf3800_version(),
-                      (unsigned)n);
+                      "{\"ok\":true,\"mac\":\"%s\",\"hostname\":\"%s\","
+                      "\"xvf_version\":\"%s\",\"count\":%u,\"regs\":{",
+                      pipecat_sta_mac_str(), pipecat_hostname(),
+                      pipecat_xvf3800_version(), (unsigned)n);
   if (used <= 0 || static_cast<size_t>(used) >= sizeof(line) ||
       httpd_resp_send_chunk(req, line, used) != ESP_OK) {
     return ESP_FAIL;
@@ -876,7 +876,8 @@ static esp_err_t xvf_dump_stream(httpd_req_t *req) {
   unsigned fp_rows = 0;
   for (size_t i = 0; i < n; i++) {
     if (!pipecat_xvf_dump_row(i, line, sizeof(line) - 1)) {
-      snprintf(line, sizeof(line), "\"row%u\":{\"err\":\"render\"}", (unsigned)i);
+      snprintf(line, sizeof(line), "\"row%u\":{\"err\":\"render\"}",
+               (unsigned)i);
     }
     if (!pipecat_xvf_dump_row_volatile(i)) {
       if (fp_rows++ > 0) {
@@ -936,10 +937,9 @@ static esp_err_t xvf_dump_handler(httpd_req_t *req) {
   bool expected = false;
   if ((done != 0 && now - done < kXvfDumpCooldownUs) ||
       !g_xvf_dump_busy.compare_exchange_strong(expected, true)) {
-    const int64_t wait_us =
-        done != 0 && now - done < kXvfDumpCooldownUs
-            ? kXvfDumpCooldownUs - (now - done)
-            : kXvfDumpCooldownUs;
+    const int64_t wait_us = done != 0 && now - done < kXvfDumpCooldownUs
+                                ? kXvfDumpCooldownUs - (now - done)
+                                : kXvfDumpCooldownUs;
     char retry[8];
     snprintf(retry, sizeof(retry), "%lld",
              (long long)((wait_us + 999999) / 1000000));
@@ -1337,15 +1337,15 @@ void pipecat_init_ota_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = OTA_HTTP_PORT;
   config.ctrl_port = 32768;
+  // +1 on both arms for GET /xvf/dump (t_a527ebfa).
 #if PIPECAT_XVF_AEC_FILTER
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 11;
 #else
-  config.max_uri_handlers = 9;
+  config.max_uri_handlers = 10;
 #endif
 #if PIPECAT_REDIAL
   config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
 #endif
-  config.max_uri_handlers += 1;  // GET /xvf/dump (t_a527ebfa)
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
