@@ -40,3 +40,25 @@ jobs:
           test $(grep -cE "^ *# \"-(Wall|Werror|Wextra)\"$" $IDF_PATH/tools/cmake/build.cmake) -eq 3 && \
           idf.py set-target esp32s3 && idf.py build'
       shell: bash
+
+  reproducible:
+    # Fleet v2 IMAGE-SHA (t_1d4f0294): one commit must give ONE image sha256, so
+    # the manifest can pin firmware.image_sha256 and parity can grade bytes, not
+    # the version string. Builds the fleet-image config twice (different abs
+    # path, different time, fresh container from the pinned toolchain digest)
+    # and fails on any byte difference.
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Build twice, diff
+      run: bash scripts/repro_build_check.sh "$RUNNER_TEMP/repro"
+    - name: Keep both images
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: repro-images
+        path: ${{ runner.temp }}/repro/
+        if-no-files-found: ignore

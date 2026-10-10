@@ -194,6 +194,25 @@ if("${PIPECAT_BUILD_GIT_SHA_VALUE}" STREQUAL "")
 endif()
 message(STATUS "pipecat build identity: ${PIPECAT_BUILD_GIT_SHA_VALUE} dirty=${PIPECAT_BUILD_GIT_DIRTY_VALUE}")
 
+# Reproducible image (t_1d4f0294, Fleet v2 IMAGE-SHA): one commit + one build env = one
+# sha256. sdkconfig.defaults sets CONFIG_APP_REPRODUCIBLE_BUILD (no build date/time in
+# esp_app_desc, IDF/project/component paths prefix-mapped). Two leaks remain that IDF
+# cannot see, both closed here:
+#  - PROJECT_VER (/ota/status firmware_version) came from `git describe`, which reads tags:
+#    the same commit gave "1105646" or "golden/2026-10-05-3-gca81711" or "1" (no .git)
+#    depending on the checkout. It is now the 7-char build sha unless -DPROJECT_VER is given.
+#  - srtp/libopus/libpeer live OUTSIDE this project dir (../esp32-s3-box-3), so their
+#    __FILE__ and debug paths kept the absolute checkout path. Map the repo root too.
+if(NOT DEFINED PROJECT_VER AND NOT "${PIPECAT_BUILD_GIT_SHA_VALUE}" STREQUAL "unknown")
+  string(SUBSTRING "${PIPECAT_BUILD_GIT_SHA_VALUE}" 0 7 PROJECT_VER)
+  if(PIPECAT_BUILD_GIT_DIRTY_VALUE)
+    string(APPEND PROJECT_VER "-dirty")
+  endif()
+endif()
+get_filename_component(PIPECAT_REPO_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+add_compile_options("-fmacro-prefix-map=${PIPECAT_REPO_ROOT}=/PIPECAT_REPO"
+                    "-fdebug-prefix-map=${PIPECAT_REPO_ROOT}=/PIPECAT_REPO")
+
 foreach(secret_var
     WIFI_SSID_VALUE
     WIFI_PASSWORD_VALUE
