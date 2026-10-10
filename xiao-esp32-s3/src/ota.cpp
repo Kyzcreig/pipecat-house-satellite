@@ -834,6 +834,41 @@ static esp_err_t xvf_read_handler(httpd_req_t *req) {
   return httpd_resp_sendstr(req, body);
 }
 
+// GET /xvf/dump — FULL read-only register dump (t_a527ebfa): every readable
+// row of the XVF3800 host control map that fits one I2C read, streamed as one
+// JSON object {"xvf_version":..,"satellite_id":..,"count":N,"regs":{...}}.
+// Rows the image does not implement carry "err" instead of "v". ~120 I2C
+// reads, well under a second; nothing is written.
+static esp_err_t xvf_dump_handler(httpd_req_t *req) {
+  char line[256];
+  httpd_resp_set_type(req, "application/json");
+  const size_t n = pipecat_xvf_dump_count();
+  int used = snprintf(line, sizeof(line),
+                      "{\"ok\":true,\"satellite_id\":\"%s\",\"xvf_version\":\"%s\","
+                      "\"count\":%u,\"regs\":{",
+                      PIPECAT_SATELLITE_ID, pipecat_xvf3800_version(),
+                      (unsigned)n);
+  if (used <= 0 || static_cast<size_t>(used) >= sizeof(line) ||
+      httpd_resp_send_chunk(req, line, used) != ESP_OK) {
+    return ESP_FAIL;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!pipecat_xvf_dump_row(i, line, sizeof(line) - 1)) {
+      snprintf(line, sizeof(line), "\"row%u\":{\"err\":\"render\"}", (unsigned)i);
+    }
+    if (i + 1 < n) {
+      strlcat(line, ",", sizeof(line));
+    }
+    if (httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN) != ESP_OK) {
+      return ESP_FAIL;
+    }
+  }
+  if (httpd_resp_send_chunk(req, "}}", 2) != ESP_OK) {
+    return ESP_FAIL;
+  }
+  return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 // GET /xvf/beam — phase-independent, point-in-time XVF beam telemetry.
 static esp_err_t xvf_beam_handler(httpd_req_t *req) {
   PipecatXvfBeamTelemetry telemetry = {};
@@ -1221,6 +1256,7 @@ void pipecat_init_ota_server() {
 #if PIPECAT_REDIAL
   config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
 #endif
+  config.max_uri_handlers += 1;  // GET /xvf/dump (t_a527ebfa)
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1269,6 +1305,12 @@ void pipecat_init_ota_server() {
       .handler = xvf_beam_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t dump_uri = {
+      .uri = "/xvf/dump",
+      .method = HTTP_GET,
+      .handler = xvf_dump_handler,
+      .user_ctx = NULL,
+  };
 #if PIPECAT_XVF_AEC_FILTER
   httpd_uri_t aec_filter_uri = {
       .uri = "/xvf/aec_filter",
@@ -1296,6 +1338,7 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &params_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &read_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &beam_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &dump_uri));
 #if PIPECAT_XVF_AEC_FILTER
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &aec_filter_uri));
 #endif
