@@ -1100,6 +1100,52 @@ size_t pipecat_xvf_dump_count() {
   return sizeof(kDumpEntries) / sizeof(kDumpEntries[0]);
 }
 
+// Live telemetry rows (t_d355a513): values that move on their own between two
+// back-to-back dumps of an untouched chip (measured: 3 dumps 12 s apart on
+// bench + theater, 10-10 02:30). /xvf/dump lists them under "volatile" and
+// keeps them OUT of dsp_fingerprint, so the fingerprint names the chip's
+// CONFIGURATION state.
+static const char *const kDumpVolatile[] = {
+    "PP_AGCGAIN",
+    "PP_CURRENT_IDLE_TIME",
+    "PP_MIN_IDLE_TIME",
+    "AEC_AECPATHCHANGE",
+    "AEC_AECCONVERGED",
+    "AEC_RT60",
+    "AEC_AZIMUTH_VALUES",
+    "AEC_CURRENT_IDLE_TIME",
+    "AEC_MIN_IDLE_TIME",
+    "AEC_SPENERGY_VALUES",
+    "AUDIO_MGR_CURRENT_IDLE_TIME",
+    "AUDIO_MGR_MIN_IDLE_TIME",
+    "MAX_CONTROL_TIME",
+    "I2S_CURRENT_IDLE_TIME",
+    "I2S_MIN_IDLE_TIME",
+    "AUDIO_MGR_SELECTED_AZIMUTHS",
+    "DOA_VALUE",
+    "GPI_READ_VALUES",
+    "GPI_VALUE",
+    "GPI_EVENT_PENDING",
+    "GPI_VALUE_ALL",
+    "GPI_EVENT_PENDING_ALL",
+};
+
+bool pipecat_xvf_dump_row_volatile(size_t index) {
+  if (index >= pipecat_xvf_dump_count()) {
+    return false;
+  }
+  for (const char *name : kDumpVolatile) {
+    if (strcmp(name, kDumpEntries[index].name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char *pipecat_xvf_dump_row_name(size_t index) {
+  return index < pipecat_xvf_dump_count() ? kDumpEntries[index].name : nullptr;
+}
+
 // Render row `index` as `"NAME":{"resid":R,"cmd":C,"v":<value|[..]>}` or
 // `"NAME":{"resid":R,"cmd":C,"err":"<esp err>"}` into out. Returns false when
 // index is out of range or out is too small.
@@ -1128,6 +1174,14 @@ bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
                   : !xvf3800_present    ? ESP_ERR_NOT_SUPPORTED
                                         : xvf_read_bytes(e.resid, e.cmd,
                                                          payload, len);
+  // One retry on a bus timeout (t_d355a513): 3 dumps 12 s apart showed 1-2
+  // random rows/dump timing out (LED-task contention on the shared bus), which
+  // would flip dsp_fingerprint on noise. A real unsupported row is not a
+  // timeout and is reported on the first try.
+  if (ret == ESP_ERR_TIMEOUT) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+    ret = xvf_read_bytes(e.resid, e.cmd, payload, len);
+  }
   int used = snprintf(out, out_len, "\"%s\":{\"resid\":%u,\"cmd\":%u,", e.name,
                       (unsigned)e.resid, (unsigned)e.cmd);
   if (used < 0 || static_cast<size_t>(used) >= out_len) {

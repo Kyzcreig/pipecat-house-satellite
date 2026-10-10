@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -839,7 +841,22 @@ static esp_err_t xvf_read_handler(httpd_req_t *req) {
 // JSON object {"xvf_version":..,"satellite_id":..,"count":N,"regs":{...}}.
 // Rows the image does not implement carry "err" instead of "v". ~120 I2C
 // reads, well under a second; nothing is written.
-static esp_err_t xvf_dump_handler(httpd_req_t *req) {
+//
+// t_d355a513 additions:
+//  - "volatile":[names] lists the live-telemetry rows (idle times, azimuths,
+//    AGC gain); "dsp_fingerprint" = sha256 hex of the CANONICAL serialisation
+//    of every OTHER row: '{' + those rows' rendered members (byte-identical to
+//    what "regs" carries) joined by ',' + '}'. Two chips with the same
+//    configuration state produce the same fingerprint; the hub recomputes it
+//    from the dump (pcv satellitectl xvf-diff) to prove the contract.
+//  - Rate limit: one dump in flight, 10 s cooldown after the previous one
+//    finished -> 429 + Retry-After. Bounds the I2C load a polling loop can put
+//    on the shared control bus (the LED task and /xvf/* use the same bus).
+static constexpr int64_t kXvfDumpCooldownUs = 10LL * 1000 * 1000;
+static std::atomic<bool> g_xvf_dump_busy{false};
+static std::atomic<int64_t> g_xvf_dump_done_us{0};
+
+static esp_err_t xvf_dump_stream(httpd_req_t *req) {
   char line[256];
   httpd_resp_set_type(req, "application/json");
   const size_t n = pipecat_xvf_dump_count();
@@ -852,21 +869,93 @@ static esp_err_t xvf_dump_handler(httpd_req_t *req) {
       httpd_resp_send_chunk(req, line, used) != ESP_OK) {
     return ESP_FAIL;
   }
+  mbedtls_sha256_context fp;
+  mbedtls_sha256_init(&fp);
+  mbedtls_sha256_starts(&fp, false);
+  mbedtls_sha256_update(&fp, reinterpret_cast<const unsigned char *>("{"), 1);
+  unsigned fp_rows = 0;
   for (size_t i = 0; i < n; i++) {
     if (!pipecat_xvf_dump_row(i, line, sizeof(line) - 1)) {
       snprintf(line, sizeof(line), "\"row%u\":{\"err\":\"render\"}", (unsigned)i);
+    }
+    if (!pipecat_xvf_dump_row_volatile(i)) {
+      if (fp_rows++ > 0) {
+        mbedtls_sha256_update(&fp, reinterpret_cast<const unsigned char *>(","),
+                              1);
+      }
+      mbedtls_sha256_update(&fp, reinterpret_cast<const unsigned char *>(line),
+                            strlen(line));
     }
     if (i + 1 < n) {
       strlcat(line, ",", sizeof(line));
     }
     if (httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN) != ESP_OK) {
+      mbedtls_sha256_free(&fp);
       return ESP_FAIL;
     }
   }
-  if (httpd_resp_send_chunk(req, "}}", 2) != ESP_OK) {
+  mbedtls_sha256_update(&fp, reinterpret_cast<const unsigned char *>("}"), 1);
+  unsigned char digest[32];
+  mbedtls_sha256_finish(&fp, digest);
+  mbedtls_sha256_free(&fp);
+  if (httpd_resp_send_chunk(req, "},\"volatile\":[", HTTPD_RESP_USE_STRLEN) !=
+      ESP_OK) {
+    return ESP_FAIL;
+  }
+  bool first = true;
+  for (size_t i = 0; i < n; i++) {
+    if (!pipecat_xvf_dump_row_volatile(i)) {
+      continue;
+    }
+    const char *name = pipecat_xvf_dump_row_name(i);
+    used = snprintf(line, sizeof(line), "%s\"%s\"", first ? "" : ",",
+                    name ? name : "?");
+    first = false;
+    if (used <= 0 || static_cast<size_t>(used) >= sizeof(line) ||
+        httpd_resp_send_chunk(req, line, used) != ESP_OK) {
+      return ESP_FAIL;
+    }
+  }
+  char hex[65];
+  for (size_t i = 0; i < sizeof(digest); i++) {
+    snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+  }
+  used = snprintf(line, sizeof(line),
+                  "],\"fingerprint_rows\":%u,\"dsp_fingerprint\":\"%s\"}",
+                  fp_rows, hex);
+  if (used <= 0 || static_cast<size_t>(used) >= sizeof(line) ||
+      httpd_resp_send_chunk(req, line, used) != ESP_OK) {
     return ESP_FAIL;
   }
   return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+static esp_err_t xvf_dump_handler(httpd_req_t *req) {
+  const int64_t now = esp_timer_get_time();
+  const int64_t done = g_xvf_dump_done_us.load();
+  bool expected = false;
+  if ((done != 0 && now - done < kXvfDumpCooldownUs) ||
+      !g_xvf_dump_busy.compare_exchange_strong(expected, true)) {
+    const int64_t wait_us =
+        done != 0 && now - done < kXvfDumpCooldownUs
+            ? kXvfDumpCooldownUs - (now - done)
+            : kXvfDumpCooldownUs;
+    char retry[8];
+    snprintf(retry, sizeof(retry), "%lld",
+             (long long)((wait_us + 999999) / 1000000));
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_set_hdr(req, "Retry-After", retry);
+    httpd_resp_set_type(req, "application/json");
+    char body[96];
+    snprintf(body, sizeof(body),
+             "{\"ok\":false,\"error\":\"rate_limited\",\"retry_after_s\":%s}",
+             retry);
+    return httpd_resp_sendstr(req, body);
+  }
+  esp_err_t ret = xvf_dump_stream(req);
+  g_xvf_dump_done_us.store(esp_timer_get_time());
+  g_xvf_dump_busy.store(false);
+  return ret;
 }
 
 // GET /xvf/beam — phase-independent, point-in-time XVF beam telemetry.

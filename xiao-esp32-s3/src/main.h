@@ -65,6 +65,10 @@ extern esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
 // JSON member per row (`"NAME":{...}`, no trailing comma). Read-only.
 extern size_t pipecat_xvf_dump_count();
 extern bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len);
+// Live-telemetry row (idle times, azimuths, AGC gain...): excluded from the
+// dump's dsp_fingerprint (t_d355a513).
+extern bool pipecat_xvf_dump_row_volatile(size_t index);
+extern const char *pipecat_xvf_dump_row_name(size_t index);
 // AEC filter coefficients for one (far, mic) pair (t_c1bfa4f6). Returns
 // ESP_OK when the sequence ran; result->status says whether it succeeded.
 // ESP_ERR_NOT_SUPPORTED = no XVF3800. See xvf_aec_filter.h.
