@@ -133,8 +133,23 @@ assert r'\"persisted\"' in tune_handler
 
 # Boot replay is non-fatal, uses the same tune/readback path, and precedes WebRTC.
 replay_body = function_body(OTA, "void pipecat_replay_xvf_params()")
-assert "pipecat_xvf_tune(param, stored_value, &result)" in replay_body
-assert "restore_dsp_default(param)" in replay_body
+retry_body = function_body(OTA, "static esp_err_t replay_dsp_param(")
+assert "replay_dsp_param(param, stored_value, &result)" in replay_body
+assert "pipecat_xvf_tune(param, stored_value, result)" in retry_body
+assert "kReplayAttempts" in retry_body and "vTaskDelay" in retry_body
+# t_24b971e7: a TRANSIENT replay failure (readback ESP_ERR_TIMEOUT) must never
+# overwrite a valid stored value with the baked default. Only an invalid stored
+# value restores the bake.
+failed_branch = replay_body[
+    replay_body.index("esp_err_t tune_ret = replay_dsp_param(") :
+    replay_body.index("applied++;")
+]
+assert "restore_dsp_default" not in failed_branch, failed_branch
+invalid_branch = replay_body[
+    replay_body.index("if (load_ret != ESP_OK || !isfinite(stored_value))") :
+    replay_body.index("PipecatXvfTuneResult result = {};")
+]
+assert "restore_dsp_default(param)" in invalid_branch
 restore_body = function_body(OTA, "static void restore_dsp_default(")
 assert "pipecat_xvf_param_default(param, &default_value)" in restore_body
 assert '"nvs_dsp: %lu params applied"' in replay_body
