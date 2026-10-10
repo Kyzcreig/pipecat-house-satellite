@@ -83,10 +83,10 @@ def test_default_arms_are_the_live_behaviour() -> None:
         MEDIA,
     ), "XVF read payload: default arm must be the live 31"
     assert re.search(
-        r"#if PIPECAT_XVF_AEC_FILTER\n  config.max_uri_handlers = 10;\n#else\n"
-        r"  config.max_uri_handlers = 9;\n#endif",
+        r"#if PIPECAT_XVF_AEC_FILTER\n  config.max_uri_handlers = 11;\n#else\n"
+        r"  config.max_uri_handlers = 10;\n#endif",
         OTA,
-    ), "httpd slots: default arm must be the live 9"
+    ), "httpd slots: default arm must be the live 9 + /xvf/dump (t_a527ebfa)"
     reg = OTA.index("httpd_register_uri_handler(g_ota_server, &aec_filter_uri)")
     assert OTA.rfind("#if PIPECAT_XVF_AEC_FILTER", 0, reg) > OTA.rfind("#endif", 0, reg)
     assert re.search(

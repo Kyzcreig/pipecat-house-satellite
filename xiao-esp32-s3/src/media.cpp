@@ -943,6 +943,324 @@ esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
   return ret;
 }
 
+// FULL register dump (t_a527ebfa). Every READABLE row of the XVF3800 host
+// control map (Obsidian "XVF3800 - Complete Device Reference", 150 rows / 11
+// RESIDs) whose payload fits one I2C read (<= XVF_READ_MAX_PAYLOAD bytes).
+// Read-only: pipecat_xvf_dump_row() only issues xvf_read_bytes(). Rows the
+// running 1.0.7 image does not implement return a non-OK status and are
+// reported as {"err":...} rather than aborting the dump. Excluded on purpose:
+// WO rows, the 60-byte TEST_CONTROL block, DFU_UPLOAD (130 B), the paged
+// AEC/NL-model/EQ coefficient reads (SPECIAL_CMD_*_COEFFS need a selector
+// write first) and AEC_MIC_ARRAY_GEO (48 B > one read).
+enum class DumpType : uint8_t { FLOAT, INT32, UINT32, UINT8, UINT16, CHAR };
+
+struct DumpEntry {
+  const char *name;
+  uint8_t resid;
+  uint8_t cmd;
+  DumpType type;
+  uint8_t count;
+};
+
+#define XVF_DUMP_PP(n, c, t, k) \
+  { "PP_" #n, XVF_RESID_PP, c, DumpType::t, k }
+#define XVF_DUMP_AEC(n, c, t, k) \
+  { "AEC_" #n, XVF_RESID_AEC, c, DumpType::t, k }
+#define XVF_DUMP_AM(n, c, t, k) \
+  { n, XVF_RESID_AUDIO_MGR, c, DumpType::t, k }
+
+static const DumpEntry kDumpEntries[] = {
+    // RESID 17 post-processor
+    XVF_DUMP_PP(AGCONOFF, 10, INT32, 1),
+    XVF_DUMP_PP(AGCMAXGAIN, 11, FLOAT, 1),
+    XVF_DUMP_PP(AGCDESIREDLEVEL, 12, FLOAT, 1),
+    XVF_DUMP_PP(AGCGAIN, 13, FLOAT, 1),
+    XVF_DUMP_PP(AGCTIME, 14, FLOAT, 1),
+    XVF_DUMP_PP(AGCFASTTIME, 15, FLOAT, 1),
+    XVF_DUMP_PP(AGCALPHAFASTGAIN, 16, FLOAT, 1),
+    XVF_DUMP_PP(AGCALPHASLOW, 17, FLOAT, 1),
+    XVF_DUMP_PP(AGCALPHAFAST, 18, FLOAT, 1),
+    XVF_DUMP_PP(LIMITONOFF, 19, INT32, 1),
+    XVF_DUMP_PP(LIMITPLIMIT, 20, FLOAT, 1),
+    XVF_DUMP_PP(MIN_NS, 21, FLOAT, 1),
+    XVF_DUMP_PP(MIN_NN, 22, FLOAT, 1),
+    XVF_DUMP_PP(ECHOONOFF, 23, INT32, 1),
+    XVF_DUMP_PP(GAMMA_E, 24, FLOAT, 1),
+    XVF_DUMP_PP(GAMMA_ETAIL, 25, FLOAT, 1),
+    XVF_DUMP_PP(GAMMA_ENL, 26, FLOAT, 1),
+    XVF_DUMP_PP(NLATTENONOFF, 27, INT32, 1),
+    XVF_DUMP_PP(NLAEC_MODE, 28, INT32, 1),
+    XVF_DUMP_PP(MGSCALE, 29, FLOAT, 3),
+    XVF_DUMP_PP(FMIN_SPEINDEX, 30, FLOAT, 1),
+    XVF_DUMP_PP(DTSENSITIVE, 31, INT32, 1),
+    XVF_DUMP_PP(ATTNS_MODE, 32, INT32, 1),
+    XVF_DUMP_PP(ATTNS_NOMINAL, 33, FLOAT, 1),
+    XVF_DUMP_PP(ATTNS_SLOPE, 34, FLOAT, 1),
+    XVF_DUMP_PP(CURRENT_IDLE_TIME, 70, UINT32, 1),
+    XVF_DUMP_PP(MIN_IDLE_TIME, 71, UINT32, 1),
+    XVF_DUMP_PP(NLMODEL_NROW_NCOL, 90, INT32, 2),
+    XVF_DUMP_PP(NLMODEL_BAND, 95, UINT8, 1),
+    XVF_DUMP_PP(EQUALIZATION_NUM_BANDS, 96, INT32, 1),
+    // RESID 20 GPO / board
+    {"GPO_READ_VALUES", XVF_RESID_GPO, 0, DumpType::UINT8, 5},
+    {"GPO_PIN_ACTIVE_LEVEL", XVF_RESID_GPO, 4, DumpType::UINT32, 1},
+    {"GPO_PIN_PWM_DUTY", XVF_RESID_GPO, 5, DumpType::UINT8, 1},
+    {"GPO_PIN_FLASH_MASK", XVF_RESID_GPO, 6, DumpType::UINT32, 1},
+    {"LED_EFFECT", XVF_RESID_GPO, 12, DumpType::UINT8, 1},
+    {"LED_BRIGHTNESS", XVF_RESID_GPO, 13, DumpType::UINT8, 1},
+    {"LED_GAMMIFY", XVF_RESID_GPO, 14, DumpType::UINT8, 1},
+    {"LED_SPEED", XVF_RESID_GPO, 15, DumpType::UINT8, 1},
+    {"LED_COLOR", XVF_RESID_GPO, 16, DumpType::UINT32, 1},
+    {"LED_DOA_COLOR", XVF_RESID_GPO, 17, DumpType::UINT32, 2},
+    {"DOA_VALUE", XVF_RESID_GPO, 18, DumpType::UINT16, 2},
+    // RESID 21 USB diag
+    {"USB_D2H_BUFFER_STABLE", 21, 5, DumpType::UINT8, 1},
+    {"USB_H2D_BUFFER_STABLE", 21, 6, DumpType::UINT8, 1},
+    // RESID 33 AEC / SHF
+    XVF_DUMP_AEC(AECPATHCHANGE, 0, INT32, 1),
+    XVF_DUMP_AEC(HPFONOFF, 1, INT32, 1),
+    XVF_DUMP_AEC(AECSILENCELEVEL, 2, FLOAT, 2),
+    XVF_DUMP_AEC(AECCONVERGED, 3, INT32, 1),
+    XVF_DUMP_AEC(AECEMPHASISONOFF, 4, INT32, 1),
+    XVF_DUMP_AEC(FAR_EXTGAIN, 5, FLOAT, 1),
+    XVF_DUMP_AEC(PCD_COUPLINGI, 6, FLOAT, 1),
+    XVF_DUMP_AEC(PCD_MINTHR, 7, FLOAT, 1),
+    XVF_DUMP_AEC(PCD_MAXTHR, 8, FLOAT, 1),
+    XVF_DUMP_AEC(RT60, 9, FLOAT, 1),
+    XVF_DUMP_AEC(ASROUTONOFF, 35, INT32, 1),
+    XVF_DUMP_AEC(ASROUTGAIN, 36, FLOAT, 1),
+    XVF_DUMP_AEC(FIXEDBEAMSONOFF, 37, INT32, 1),
+    XVF_DUMP_AEC(FIXEDBEAMNOISETHR, 38, FLOAT, 2),
+    {"SHF_BYPASS", XVF_RESID_AEC, 70, DumpType::UINT8, 1},
+    XVF_DUMP_AEC(NUM_MICS, 71, INT32, 1),
+    XVF_DUMP_AEC(NUM_FARENDS, 72, INT32, 1),
+    XVF_DUMP_AEC(MIC_ARRAY_TYPE, 73, INT32, 1),
+    XVF_DUMP_AEC(AZIMUTH_VALUES, 75, FLOAT, 4),
+    XVF_DUMP_AEC(CURRENT_IDLE_TIME, 77, UINT32, 1),
+    XVF_DUMP_AEC(MIN_IDLE_TIME, 78, UINT32, 1),
+    XVF_DUMP_AEC(SPENERGY_VALUES, 80, FLOAT, 4),
+    XVF_DUMP_AEC(FIXEDBEAMSAZIMUTH_VALUES, 81, FLOAT, 2),
+    XVF_DUMP_AEC(FIXEDBEAMSELEVATION_VALUES, 82, FLOAT, 2),
+    XVF_DUMP_AEC(FIXEDBEAMSGATING, 83, UINT8, 1),
+    {"SPECIAL_CMD_AEC_FILTER_LENGTH", XVF_RESID_AEC, 93, DumpType::INT32, 1},
+    // RESID 35 audio manager / I2S
+    XVF_DUMP_AM("AUDIO_MGR_MIC_GAIN", 0, FLOAT, 1),
+    XVF_DUMP_AM("AUDIO_MGR_REF_GAIN", 1, FLOAT, 1),
+    XVF_DUMP_AM("AUDIO_MGR_CURRENT_IDLE_TIME", 2, INT32, 1),
+    XVF_DUMP_AM("AUDIO_MGR_MIN_IDLE_TIME", 3, INT32, 1),
+    XVF_DUMP_AM("MAX_CONTROL_TIME", 5, INT32, 1),
+    XVF_DUMP_AM("I2S_CURRENT_IDLE_TIME", 7, INT32, 1),
+    XVF_DUMP_AM("I2S_MIN_IDLE_TIME", 8, INT32, 1),
+    XVF_DUMP_AM("I2S_INPUT_PACKED", 10, UINT8, 1),
+    XVF_DUMP_AM("AUDIO_MGR_SELECTED_AZIMUTHS", 11, FLOAT, 2),
+    XVF_DUMP_AM("AUDIO_MGR_SELECTED_CHANNELS", 12, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_PACKED", 13, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_UPSAMPLE", 14, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_L", 15, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_L_PK0", 16, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_L_PK1", 17, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_L_PK2", 18, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_R", 19, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_R_PK0", 20, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_R_PK1", 21, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_R_PK2", 22, UINT8, 2),
+    XVF_DUMP_AM("AUDIO_MGR_OP_ALL", 23, UINT8, 12),
+    XVF_DUMP_AM("I2S_INACTIVE", 24, UINT8, 1),
+    XVF_DUMP_AM("AUDIO_MGR_FAR_END_DSP_ENABLE", 25, UINT8, 1),
+    XVF_DUMP_AM("AUDIO_MGR_SYS_DELAY", 26, INT32, 1),
+    XVF_DUMP_AM("I2S_DAC_DSP_ENABLE", 27, UINT8, 1),
+    // RESID 36 GPI
+    {"GPI_READ_VALUES", 36, 0, DumpType::UINT8, 3},
+    {"GPI_INDEX", 36, 1, DumpType::UINT8, 1},
+    {"GPI_EVENT_CONFIG", 36, 2, DumpType::UINT8, 1},
+    {"GPI_ACTIVE_LEVEL", 36, 3, DumpType::UINT8, 1},
+    {"GPI_VALUE", 36, 4, DumpType::UINT8, 1},
+    {"GPI_EVENT_PENDING", 36, 5, DumpType::UINT8, 1},
+    {"GPI_VALUE_ALL", 36, 6, DumpType::UINT32, 1},
+    {"GPI_EVENT_PENDING_ALL", 36, 7, DumpType::UINT32, 1},
+    // RESID 48 application / build metadata (CHAR rows capped at 30 B)
+    {"VERSION", 48, 0, DumpType::UINT8, 3},
+    {"BLD_MSG", 48, 1, DumpType::CHAR, 30},
+    {"BLD_HOST", 48, 2, DumpType::CHAR, 30},
+    {"BLD_REPO_HASH", 48, 3, DumpType::CHAR, 30},
+    {"BLD_MODIFIED", 48, 4, DumpType::CHAR, 6},
+    {"BOOT_STATUS", 48, 5, DumpType::CHAR, 3},
+    {"TEST_CORE_BURN", 48, 6, DumpType::UINT8, 1},
+    {"USB_BIT_DEPTH", 48, 8, DumpType::UINT8, 2},
+    // RESID 49 PLL
+    {"PLL_LOCK_STATUS", 49, 0, DumpType::INT32, 1},
+    // RESID 240 DFU
+    {"DFU_GETSTATUS", XVF_RESID_DFU_CONTROLLER, 3, DumpType::UINT8, 5},
+    {"DFU_GETSTATE", XVF_RESID_DFU_CONTROLLER, 5, DumpType::UINT8, 1},
+    {"DFU_TRANSFERBLOCK", XVF_RESID_DFU_CONTROLLER, 65, DumpType::UINT8, 2},
+    {"DFU_GETVERSION", XVF_RESID_DFU_CONTROLLER, XVF_CMD_DFU_GETVERSION,
+     DumpType::UINT8, 3},
+    // RESID 241 configuration telemetry
+    {"CONFIGURATION_VNR_VALUE", 241, 0, DumpType::UINT8, 1},
+};
+
+size_t pipecat_xvf_dump_count() {
+  return sizeof(kDumpEntries) / sizeof(kDumpEntries[0]);
+}
+
+// Live telemetry rows (t_d355a513): values that move on their own between two
+// back-to-back dumps of an untouched chip (measured: 3 dumps 12 s apart on
+// bench + theater, 10-10 02:30). /xvf/dump lists them under "volatile" and
+// keeps them OUT of dsp_fingerprint, so the fingerprint names the chip's
+// CONFIGURATION state.
+static const char *const kDumpVolatile[] = {
+    "PP_AGCGAIN",
+    "PP_CURRENT_IDLE_TIME",
+    "PP_MIN_IDLE_TIME",
+    "AEC_AECPATHCHANGE",
+    "AEC_AECCONVERGED",
+    "AEC_RT60",
+    "AEC_AZIMUTH_VALUES",
+    "AEC_CURRENT_IDLE_TIME",
+    "AEC_MIN_IDLE_TIME",
+    "AEC_SPENERGY_VALUES",
+    "AUDIO_MGR_CURRENT_IDLE_TIME",
+    "AUDIO_MGR_MIN_IDLE_TIME",
+    "MAX_CONTROL_TIME",
+    "I2S_CURRENT_IDLE_TIME",
+    "I2S_MIN_IDLE_TIME",
+    "AUDIO_MGR_SELECTED_AZIMUTHS",
+    "DOA_VALUE",
+    "GPI_READ_VALUES",
+    "GPI_VALUE",
+    "GPI_EVENT_PENDING",
+    "GPI_VALUE_ALL",
+    "GPI_EVENT_PENDING_ALL",
+};
+
+bool pipecat_xvf_dump_row_volatile(size_t index) {
+  if (index >= pipecat_xvf_dump_count()) {
+    return false;
+  }
+  for (const char *name : kDumpVolatile) {
+    if (strcmp(name, kDumpEntries[index].name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char *pipecat_xvf_dump_row_name(size_t index) {
+  return index < pipecat_xvf_dump_count() ? kDumpEntries[index].name : nullptr;
+}
+
+// Render row `index` as `"NAME":{"resid":R,"cmd":C,"v":<value|[..]>}` or
+// `"NAME":{"resid":R,"cmd":C,"err":"<esp err>"}` into out. Returns false when
+// index is out of range or out is too small.
+bool pipecat_xvf_dump_row(size_t index, char *out, size_t out_len) {
+  if (index >= pipecat_xvf_dump_count() || out == nullptr || out_len == 0) {
+    return false;
+  }
+  const DumpEntry &e = kDumpEntries[index];
+  size_t elem = 1;
+  switch (e.type) {
+    case DumpType::FLOAT:
+    case DumpType::INT32:
+    case DumpType::UINT32:
+      elem = 4;
+      break;
+    case DumpType::UINT16:
+      elem = 2;
+      break;
+    default:
+      elem = 1;
+      break;
+  }
+  const size_t len = elem * e.count;
+  uint8_t payload[XVF_READ_MAX_PAYLOAD] = {};
+  esp_err_t ret = len > sizeof(payload) ? ESP_ERR_INVALID_SIZE
+                  : !xvf3800_present
+                      ? ESP_ERR_NOT_SUPPORTED
+                      : xvf_read_bytes(e.resid, e.cmd, payload, len);
+  // One retry on a bus timeout (t_d355a513): 3 dumps 12 s apart showed 1-2
+  // random rows/dump timing out (LED-task contention on the shared bus), which
+  // would flip dsp_fingerprint on noise. A real unsupported row is not a
+  // timeout and is reported on the first try.
+  if (ret == ESP_ERR_TIMEOUT) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+    ret = xvf_read_bytes(e.resid, e.cmd, payload, len);
+  }
+  int used = snprintf(out, out_len, "\"%s\":{\"resid\":%u,\"cmd\":%u,", e.name,
+                      (unsigned)e.resid, (unsigned)e.cmd);
+  if (used < 0 || static_cast<size_t>(used) >= out_len) {
+    return false;
+  }
+  if (ret != ESP_OK) {
+    used += snprintf(out + used, out_len - used, "\"err\":\"%s\"}",
+                     esp_err_to_name(ret));
+    return used > 0 && static_cast<size_t>(used) < out_len;
+  }
+  if (e.type == DumpType::CHAR) {
+    // Build strings are NUL-padded ASCII; stop at the first NUL and escape
+    // anything that would break JSON.
+    used += snprintf(out + used, out_len - used, "\"v\":\"");
+    for (size_t i = 0; i < len && payload[i] != 0 && used > 0 &&
+                       static_cast<size_t>(used) + 2 < out_len;
+         i++) {
+      char c = static_cast<char>(payload[i]);
+      if (c == '"' || c == '\\') {
+        out[used++] = '\\';
+        out[used++] = c;
+      } else if (c < 0x20 || c > 0x7e) {
+        out[used++] = '?';
+      } else {
+        out[used++] = c;
+      }
+    }
+    if (static_cast<size_t>(used) + 3 >= out_len) {
+      return false;
+    }
+    out[used++] = '"';
+    out[used++] = '}';
+    out[used] = 0;
+    return true;
+  }
+  used +=
+      snprintf(out + used, out_len - used, "\"v\":%s", e.count > 1 ? "[" : "");
+  for (size_t i = 0;
+       i < e.count && used > 0 && static_cast<size_t>(used) < out_len; i++) {
+    const char *sep = i + 1 < e.count ? "," : "";
+    const uint8_t *p = payload + i * elem;
+    switch (e.type) {
+      case DumpType::FLOAT: {
+        uint32_t bits = load_le32(p);
+        float f = 0.0f;
+        memcpy(&f, &bits, sizeof(f));
+        used +=
+            std::isfinite(f)
+                ? snprintf(out + used, out_len - used, "%.9g%s", (double)f, sep)
+                : snprintf(out + used, out_len - used, "null%s", sep);
+        break;
+      }
+      case DumpType::INT32:
+        used += snprintf(out + used, out_len - used, "%ld%s",
+                         (long)static_cast<int32_t>(load_le32(p)), sep);
+        break;
+      case DumpType::UINT32:
+        used += snprintf(out + used, out_len - used, "%lu%s",
+                         (unsigned long)load_le32(p), sep);
+        break;
+      case DumpType::UINT16:
+        used += snprintf(out + used, out_len - used, "%u%s",
+                         (unsigned)(p[0] | (p[1] << 8)), sep);
+        break;
+      default:
+        used +=
+            snprintf(out + used, out_len - used, "%u%s", (unsigned)p[0], sep);
+        break;
+    }
+  }
+  if (used > 0 && static_cast<size_t>(used) < out_len) {
+    used += snprintf(out + used, out_len - used, "%s}", e.count > 1 ? "]" : "");
+  }
+  return used > 0 && static_cast<size_t>(used) < out_len;
+}
+
 #if PIPECAT_XVF_AEC_FILTER
 // AEC filter-coefficient read (t_c1bfa4f6). Sequence + rationale live in
 // xvf_aec_filter.h. The ONLY writes are the XMOS read-sequence selectors
