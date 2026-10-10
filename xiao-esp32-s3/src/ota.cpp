@@ -223,6 +223,39 @@ static void restore_dsp_default(const char *param) {
   }
 }
 
+// Boot replay of one stored value with retries (t_24b971e7). An XVF control
+// read gives up after XVF_CONTROL_RETRIES x 1 ms of CTRL_WAIT, and right after
+// boot about 1 read in 20 does (bench, 2026-10-10). The write itself usually
+// landed, but tune() reports applied=0. The old code then wrote the BAKED
+// default over the stored value, so the unit ran asr_gain 1 / dtsensitive 15
+// until the 15-min reconciler re-asserted NVS (seen on kitchen, theater and
+// bench). A transient failure therefore retries the STORED value. The baked
+// fallback stays only for a stored value that is itself invalid.
+static constexpr int kReplayAttempts = 5;
+static constexpr int kReplayRetryDelayMs = 20;
+
+static esp_err_t replay_dsp_param(const char *param, float stored_value,
+                                  PipecatXvfTuneResult *result) {
+  esp_err_t ret = ESP_FAIL;
+  for (int attempt = 1; attempt <= kReplayAttempts; attempt++) {
+    ret = pipecat_xvf_tune(param, stored_value, result);
+    if (ret == ESP_OK && result->applied) {
+      if (attempt > 1) {
+        ESP_LOGW(LOG_TAG, "nvs_dsp: %s replay applied on attempt %d/%d", param,
+                 attempt, kReplayAttempts);
+      }
+      return ESP_OK;
+    }
+    if (ret == ESP_ERR_INVALID_ARG || ret == ESP_ERR_NOT_FOUND) {
+      return ret;  // not transient: retrying cannot help
+    }
+    ESP_LOGW(LOG_TAG, "nvs_dsp: %s replay attempt %d/%d: %s applied=%d", param,
+             attempt, kReplayAttempts, esp_err_to_name(ret), result->applied);
+    vTaskDelay(pdMS_TO_TICKS(kReplayRetryDelayMs));
+  }
+  return ret == ESP_OK ? ESP_ERR_INVALID_RESPONSE : ret;
+}
+
 void pipecat_replay_xvf_params() {
   uint32_t applied = 0;
   nvs_handle_t nvs;
@@ -254,14 +287,16 @@ void pipecat_replay_xvf_params() {
     }
 
     PipecatXvfTuneResult result = {};
-    esp_err_t tune_ret = pipecat_xvf_tune(param, stored_value, &result);
-    if (tune_ret != ESP_OK || !result.applied) {
+    esp_err_t tune_ret = replay_dsp_param(param, stored_value, &result);
+    if (tune_ret != ESP_OK) {
+      // Never overwrite a valid stored value with the bake: the chip may well
+      // hold the stored value already (write landed, readback timed out), and
+      // the reconciler re-asserts NVS either way.
       ESP_LOGE(LOG_TAG,
-               "nvs_dsp: %s replay %.6g FAILED: %s applied=%d; restoring "
-               "baked default",
-               param, (double)stored_value, esp_err_to_name(tune_ret),
-               result.applied);
-      restore_dsp_default(param);
+               "nvs_dsp: %s replay %.6g FAILED after %d attempts: %s "
+               "applied=%d; live value unverified",
+               param, (double)stored_value, kReplayAttempts,
+               esp_err_to_name(tune_ret), result.applied);
       continue;
     }
 
