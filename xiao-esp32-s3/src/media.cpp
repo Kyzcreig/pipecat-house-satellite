@@ -597,13 +597,14 @@ static const TuneEntry kTuneEntries[] = {
     // (<=50ms) renders at the new level.
     {"led_brightness", 0, 0, TuneTarget::LED_BRIGHTNESS, false, true, 0.0f,
      255.0f, static_cast<float>(PIPECAT_LED_BRIGHTNESS), false},
-    // XMOS LED post-stage (t_61530bca). The chip applies LED_BRIGHTNESS (0..255,
-    // factory 127) and, when LED_GAMMIFY=1, a gamma curve to the 48-byte ring
-    // payload AFTER the ESP32 scaler above. Measured 2026-10-11 on the bench
-    // via the bedroom camera: with gammify on, every ESP32 level <= ~30% rendered
-    // at the same floor as 0, which is why 60/15/5 looked alike to Ace. VOLATILE
-    // (no NVS key, reconciler-free, xvf_dsp key-set untouched): the XMOS resets
-    // to factory on power loss, and the hub re-applies what it wants per room.
+    // XMOS LED post-stage (t_61530bca). The chip applies LED_BRIGHTNESS
+    // (0..255, factory 127) and, when LED_GAMMIFY=1, a gamma curve to the
+    // 48-byte ring payload AFTER the ESP32 scaler above. Measured 2026-10-11 on
+    // the bench via the bedroom camera: with gammify on, every ESP32 level <=
+    // ~30% rendered at the same floor as 0, which is why 60/15/5 looked alike
+    // to Ace. VOLATILE (no NVS key, reconciler-free, xvf_dsp key-set
+    // untouched): the XMOS resets to factory on power loss, and the hub
+    // re-applies what it wants per room.
     {"xmos_led_brightness", XVF_RESID_GPO, XVF_CMD_GPO_LED_BRIGHTNESS,
      TuneTarget::XVF_UINT8, false, true, 0.0f, 255.0f, 127.0f, false},
     {"xmos_led_gammify", XVF_RESID_GPO, XVF_CMD_GPO_LED_GAMMIFY,
