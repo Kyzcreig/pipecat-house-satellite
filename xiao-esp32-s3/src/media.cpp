@@ -201,6 +201,14 @@ static constexpr uint8_t XVF_RESID_GPO = 20;
 static constexpr uint8_t XVF_CMD_GPO_READ_VALUES = 0;
 static constexpr uint8_t XVF_CMD_GPO_WRITE_VALUE = 1;
 static constexpr uint8_t XVF_CMD_GPO_LED_RING_VALUE = 18;
+// XMOS-side LED post-stage (GPO servicer, uint8 each). These sit AFTER the
+// 48-byte ring payload the ESP32 pushes: the chip scales every LED by
+// LED_BRIGHTNESS and, with LED_GAMMIFY=1, gamma-encodes the result before the
+// WS2812 drive. Exposed over /xvf/tune as xmos_led_brightness /
+// xmos_led_gammify (t_61530bca) so the post-stage can be measured and set
+// without a reflash.
+static constexpr uint8_t XVF_CMD_GPO_LED_BRIGHTNESS = 13;
+static constexpr uint8_t XVF_CMD_GPO_LED_GAMMIFY = 14;
 static constexpr uint8_t XVF_GPO_MUTE_PIN = 30;  // GPIO 30 = mic mute
 static constexpr uint8_t XVF_LED_COUNT = 12;
 
@@ -422,6 +430,20 @@ static esp_err_t xvf_write_int32(uint8_t resid, uint8_t cmd, int32_t value) {
   return xvf_write_bytes(resid, cmd, payload, sizeof(payload));
 }
 
+// One-byte XMOS register (TuneTarget::XVF_UINT8): write 1 byte, read 1 byte.
+static esp_err_t xvf_write_uint8(uint8_t resid, uint8_t cmd, uint8_t value) {
+  return xvf_write_bytes(resid, cmd, &value, 1);
+}
+
+static esp_err_t xvf_read_uint8(uint8_t resid, uint8_t cmd, float *value) {
+  uint8_t byte = 0;
+  esp_err_t ret = xvf_read_bytes(resid, cmd, &byte, 1);
+  if (ret == ESP_OK) {
+    *value = static_cast<float>(byte);
+  }
+  return ret;
+}
+
 static esp_err_t xvf_write_float(uint8_t resid, uint8_t cmd, float value) {
   uint8_t payload[sizeof(value)];
   uint32_t bits = 0;
@@ -498,6 +520,9 @@ enum class TuneTarget : uint8_t {
   XVF_INT32,
   DAC_ATTEN,
   LED_BRIGHTNESS,  // ESP32-side ring scalar, own NVS namespace (not xvf_dsp)
+  // One-byte XMOS register (uint8 write, uint8 readback). Used for the GPO
+  // LED post-stage (LED_BRIGHTNESS 20/13, LED_GAMMIFY 20/14).
+  XVF_UINT8,
   // One slot of a two-float XVF register (fixed-beam azimuth pair 33/81):
   // read-modify-write of the pair, readback of the slot. pair_slot picks it.
   XVF_FLOAT_PAIR_SLOT,
@@ -572,6 +597,17 @@ static const TuneEntry kTuneEntries[] = {
     // (<=50ms) renders at the new level.
     {"led_brightness", 0, 0, TuneTarget::LED_BRIGHTNESS, false, true, 0.0f,
      255.0f, static_cast<float>(PIPECAT_LED_BRIGHTNESS), false},
+    // XMOS LED post-stage (t_61530bca). The chip applies LED_BRIGHTNESS (0..255,
+    // factory 127) and, when LED_GAMMIFY=1, a gamma curve to the 48-byte ring
+    // payload AFTER the ESP32 scaler above. Measured 2026-10-11 on the bench
+    // via the bedroom camera: with gammify on, every ESP32 level <= ~30% rendered
+    // at the same floor as 0, which is why 60/15/5 looked alike to Ace. VOLATILE
+    // (no NVS key, reconciler-free, xvf_dsp key-set untouched): the XMOS resets
+    // to factory on power loss, and the hub re-applies what it wants per room.
+    {"xmos_led_brightness", XVF_RESID_GPO, XVF_CMD_GPO_LED_BRIGHTNESS,
+     TuneTarget::XVF_UINT8, false, true, 0.0f, 255.0f, 127.0f, false},
+    {"xmos_led_gammify", XVF_RESID_GPO, XVF_CMD_GPO_LED_GAMMIFY,
+     TuneTarget::XVF_UINT8, false, true, 0.0f, 1.0f, 1.0f, false},
     // Fixed beams (t_a6061357, paired-capture #8): aim both beamformer beams
     // at known talker azimuths instead of auto-steering. VOLATILE on purpose:
     // the baked boot profile writes FIXEDBEAMSONOFF=0 (auto), so a reboot is
@@ -696,6 +732,11 @@ esp_err_t pipecat_xvf_read_param(const char *param, float *readback,
     *readback_valid = true;
     return ESP_OK;
   }
+  if (entry->target == TuneTarget::XVF_UINT8) {
+    esp_err_t u8_ret = xvf_read_uint8(entry->resid, entry->cmd, readback);
+    *readback_valid = u8_ret == ESP_OK;
+    return u8_ret;
+  }
   if (entry->target == TuneTarget::XVF_FLOAT_PAIR_SLOT) {
     esp_err_t pair_ret = xvf_read_float_pair_slot(entry->resid, entry->cmd,
                                                   entry->pair_slot, readback);
@@ -765,22 +806,30 @@ esp_err_t pipecat_xvf_tune(const char *param, float value,
   }
   bool is_float = entry->target == TuneTarget::XVF_FLOAT;
   bool is_pair_slot = entry->target == TuneTarget::XVF_FLOAT_PAIR_SLOT;
+  bool is_uint8 = entry->target == TuneTarget::XVF_UINT8;
   esp_err_t ret;
   if (is_pair_slot) {
     ret = xvf_write_float_pair_slot(entry->resid, entry->cmd, entry->pair_slot,
                                     applied_value);
   } else if (is_float) {
     ret = xvf_write_float(entry->resid, entry->cmd, applied_value);
+  } else if (is_uint8) {
+    ret = xvf_write_uint8(entry->resid, entry->cmd,
+                          static_cast<uint8_t>(applied_value));
   } else {
     ret = xvf_write_int32(entry->resid, entry->cmd,
                           static_cast<int32_t>(applied_value));
   }
   if (ret == ESP_OK) {
-    ret = is_pair_slot
-              ? xvf_read_float_pair_slot(entry->resid, entry->cmd,
-                                         entry->pair_slot, &result->readback)
-              : xvf_read_scalar(entry->resid, entry->cmd, is_float,
-                                &result->readback);
+    if (is_pair_slot) {
+      ret = xvf_read_float_pair_slot(entry->resid, entry->cmd, entry->pair_slot,
+                                     &result->readback);
+    } else if (is_uint8) {
+      ret = xvf_read_uint8(entry->resid, entry->cmd, &result->readback);
+    } else {
+      ret = xvf_read_scalar(entry->resid, entry->cmd, is_float,
+                            &result->readback);
+    }
   }
   if (ret == ESP_OK) {
     result->readback_valid = true;
