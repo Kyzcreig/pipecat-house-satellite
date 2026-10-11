@@ -48,7 +48,7 @@ mutant "new knob read only by readback + an accessor used in a status print" rin
 # 4. An XVF register knob whose write was dropped from the generic branch (the
 #    tune path reads back but never writes): every generic knob loses its sink.
 mutant "generic XVF branch writes nothing (readback-only tune)" agc_maxgain \
-  's{    ret = xvf_write_float\(entry->resid, entry->cmd, applied_value\);}{    ret = ESP_OK;}; s{    ret = xvf_write_int32\(entry->resid, entry->cmd,\n\s+static_cast<int32_t>\(applied_value\)\);}{    ret = ESP_OK;}; s{    ret = xvf_write_float_pair_slot\(entry->resid, entry->cmd, entry->pair_slot,\n\s+applied_value\);}{    ret = ESP_OK;}'
+  's{    ret = xvf_write_float\(entry->resid, entry->cmd, applied_value\);}{    ret = ESP_OK;}; s{    ret = xvf_write_int32\(entry->resid, entry->cmd,\n\s+static_cast<int32_t>\(applied_value\)\);}{    ret = ESP_OK;}; s{    ret = xvf_write_float_pair_slot\(entry->resid, entry->cmd, entry->pair_slot,\n\s+applied_value\);}{    ret = ESP_OK;}; s{    ret = xvf_write_uint8\(entry->resid, entry->cmd,\n\s+static_cast<uint8_t>\(applied_value\)\);}{    ret = ESP_OK;}'
 
 echo
 if [ "$fails" -eq 0 ]; then
