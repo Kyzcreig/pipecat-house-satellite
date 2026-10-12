@@ -35,6 +35,7 @@ PERSISTENT_PARAMS = {
     "min_ns",
     "dac_atten",
     "hpf_onoff",
+    "attns_mode",
 }
 table_start = MEDIA.index("static const TuneEntry kTuneEntries[]")
 table_end = MEDIA.index("\n};", table_start)
@@ -80,6 +81,17 @@ assert re.search(
 # silently overridden on every boot.
 profile_body = function_body(MEDIA, "static void configure_xvf3800_dsp_profile()")
 assert "xvf_write_int32(XVF_RESID_AEC, XVF_CMD_AEC_HPFONOFF, 2)" in re.sub(
+    r"\s+", " ", profile_body
+)
+# attns_mode (PP 17/32, t_5e4ffc35): fleet value 1 (Apollo 2026-10-11). The
+# baked boot write, the table replay default and the reconciler pin agree on 1.
+assert "XVF_CMD_PP_ATTNS_MODE = 32" in MEDIA
+assert re.search(
+    r'\{"attns_mode",\s*XVF_RESID_PP,\s*XVF_CMD_PP_ATTNS_MODE,\s*'
+    r"TuneTarget::XVF_INT32,\s*true,\s*true,\s*0\.0f,\s*1\.0f,\s*1\.0f,\s*false\}",
+    table,
+), "attns_mode tune-table row drifted"
+assert "xvf_write_int32(XVF_RESID_PP, XVF_CMD_PP_ATTNS_MODE, 1)" in re.sub(
     r"\s+", " ", profile_body
 )
 # sys_delay (AUDIO_MGR 35/26) is VOLATILE (persistent=false: no NVS key, no
