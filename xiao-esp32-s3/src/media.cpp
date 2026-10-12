@@ -573,6 +573,13 @@ static const TuneEntry kTuneEntries[] = {
      false, true, 0.0f, 1.0f, 1.0f, false},
     {"nlatten_onoff", XVF_RESID_PP, XVF_CMD_PP_NLATTENONOFF,
      TuneTarget::XVF_INT32, false, true, 0.0f, 1.0f, 1.0f, false},
+    // PP_ATTNS_MODE (t_5e4ffc35, Apollo ruling 2026-10-11 17:40: fleet = 1).
+    // The baked boot write below is 1, yet the two August-2026 boards read 0
+    // on the same image (/xvf/dump 2026-10-11), so the bake alone does not
+    // hold it. Persistent: NVS replay re-asserts after boot and the reconciler
+    // owns it like the other PP params. Default == the bake (lockstep test).
+    {"attns_mode", XVF_RESID_PP, XVF_CMD_PP_ATTNS_MODE, TuneTarget::XVF_INT32,
+     true, true, 0.0f, 1.0f, 1.0f, false},
     // XMOS-documented PP ranges/defaults. One table keeps HTTP, persistence,
     // boot replay, and introspection in lockstep.
     {"gamma_e", XVF_RESID_PP, XVF_CMD_PP_GAMMA_E, TuneTarget::XVF_FLOAT, true,
