@@ -1,11 +1,10 @@
+#include <cJSON.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
-
-#include <cJSON.h>
 
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -472,9 +471,10 @@ static esp_err_t hub_url_reply(httpd_req_t *req) {
   char *body = dns + kDns;
   pipecat_json_escape(pipecat_hub_url_nvs(), nvs_json, kNvsJson);
   pipecat_dns_servers_str(dns, kDns);
-  const bool dial_nvs = pipecat_hub_url_nvs()[0] != '\0' &&
-                        (strcmp(pipecat_hub_url_source_name(), "nvs") == 0 ||
-                         strcmp(pipecat_hub_url_source_name(), "re-probing") == 0);
+  const bool dial_nvs =
+      pipecat_hub_url_nvs()[0] != '\0' &&
+      (strcmp(pipecat_hub_url_source_name(), "nvs") == 0 ||
+       strcmp(pipecat_hub_url_source_name(), "re-probing") == 0);
   snprintf(body, kBody,
            "{\"url\":\"%s\",\"source\":\"%s\",\"hub_url_source\":\"%s\","
            "\"baked_url\":\"%s\",\"nvs_url\":\"%s\",\"url_failures\":%u,"
@@ -501,8 +501,9 @@ static esp_err_t hub_url_post_handler(httpd_req_t *req) {
   // stack (4 KB httpd task).
   constexpr int kRawCap = 512;
   if (req->content_len <= 0 || req->content_len >= kRawCap) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "{\"error\":\"body must be JSON {\\\"url\\\":...} under 512 bytes\"}");
+    httpd_resp_send_err(
+        req, HTTPD_400_BAD_REQUEST,
+        "{\"error\":\"body must be JSON {\\\"url\\\":...} under 512 bytes\"}");
     return ESP_FAIL;
   }
   char *raw = (char *)calloc(1, kRawCap);
@@ -515,7 +516,8 @@ static esp_err_t hub_url_post_handler(httpd_req_t *req) {
     int n = httpd_req_recv(req, raw + got, req->content_len - got);
     if (n <= 0) {
       free(raw);
-      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"short body\"}");
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "{\"error\":\"short body\"}");
       return ESP_FAIL;
     }
     got += n;
@@ -527,8 +529,9 @@ static esp_err_t hub_url_post_handler(httpd_req_t *req) {
   if (j == nullptr || j_url == nullptr || !cJSON_IsString(j_url) ||
       j_url->valuestring == nullptr) {
     cJSON_Delete(j);
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "{\"error\":\"expected JSON {\\\"url\\\":\\\"http://...\\\"}\"}");
+    httpd_resp_send_err(
+        req, HTTPD_400_BAD_REQUEST,
+        "{\"error\":\"expected JSON {\\\"url\\\":\\\"http://...\\\"}\"}");
     return ESP_FAIL;
   }
   esp_err_t ret;

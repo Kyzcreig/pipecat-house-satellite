@@ -2,10 +2,9 @@
 // (host-tested against a loopback fake resolver), BSD-socket I/O below.
 #include "hub_dns.h"
 
-#include <string.h>
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -202,8 +201,8 @@ HubDnsResult hub_dns_parse_response(const uint8_t *buf, size_t len,
     off += 10;
     if (off + rdlen > len)
       return HubDnsResult::kMismatch;
-    const bool owner_ok = strlen(owner) == strlen(want) &&
-                          name_eq_ci(owner, want, strlen(want));
+    const bool owner_ok =
+        strlen(owner) == strlen(want) && name_eq_ci(owner, want, strlen(want));
     if (cls == 1 && owner_ok && type == 5) {  // CNAME: chase within message
       char target[kHubDnsMaxName + 1];
       if (get_name(buf, len, off, target, sizeof(target)) == 0)
@@ -270,14 +269,16 @@ HubDnsResult hub_dns_query_server(const char *name, uint32_t server_ip,
       socklen_t from_len = sizeof(from);
       struct timeval before;
       gettimeofday(&before, nullptr);
-      int n = recvfrom(fd, r, sizeof(r), 0, (struct sockaddr *)&from, &from_len);
+      int n =
+          recvfrom(fd, r, sizeof(r), 0, (struct sockaddr *)&from, &from_len);
       struct timeval after;
       gettimeofday(&after, nullptr);
       const long spent_ms = (after.tv_sec - before.tv_sec) * 1000L +
                             (after.tv_usec - before.tv_usec) / 1000L;
-      remaining_ms = spent_ms >= (long)remaining_ms
-                         ? 0
-                         : remaining_ms - (uint32_t)(spent_ms < 0 ? 0 : spent_ms);
+      remaining_ms =
+          spent_ms >= (long)remaining_ms
+              ? 0
+              : remaining_ms - (uint32_t)(spent_ms < 0 ? 0 : spent_ms);
       if (n < 0)
         break;  // timeout (or socket error): next try
       // Provenance 1: the datagram must come from the queried server:port.
@@ -287,8 +288,8 @@ HubDnsResult hub_dns_query_server(const char *name, uint32_t server_ip,
         continue;
       }
       uint8_t rcode = 0xff;
-      HubDnsResult v = hub_dns_parse_response(r, (size_t)n, txid, name, out_ip,
-                                              &rcode);
+      HubDnsResult v =
+          hub_dns_parse_response(r, (size_t)n, txid, name, out_ip, &rcode);
       if (v == HubDnsResult::kMismatch) {
         diag->discarded++;
         continue;

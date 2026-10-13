@@ -23,10 +23,10 @@
 // `baked_fallback` and the ladder's next dial is baked again (pass-3 R6).
 
 enum class HubUrlState : uint8_t {
-  kBaked = 0,        // NVS empty: dial the baked URL
-  kNvs,              // NVS override in use
-  kBakedFallback,    // override demoted (sticky); dial baked; preflight timer
-  kReprobing,        // one cutover dial on the override in flight
+  kBaked = 0,      // NVS empty: dial the baked URL
+  kNvs,            // NVS override in use
+  kBakedFallback,  // override demoted (sticky); dial baked; preflight timer
+  kReprobing,      // one cutover dial on the override in flight
 };
 
 enum class HubUrlEvent : uint8_t {

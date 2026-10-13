@@ -154,8 +154,7 @@ void pipecat_http_request(char *offer, char *answer) {
     // are transport-class and never demote an override.
     if (err != ESP_OK) {
       pipecat_hub_url_note_result(HubUrlEvent::kTransportErr);
-    } else if (status_code == 400 || status_code == 404 ||
-               status_code == 405) {
+    } else if (status_code == 400 || status_code == 404 || status_code == 405) {
       pipecat_hub_url_note_result(HubUrlEvent::kHttp4xxUrl);
     } else if (status_code == 401 || status_code == 403) {
       pipecat_hub_url_note_result(HubUrlEvent::kHttp403);

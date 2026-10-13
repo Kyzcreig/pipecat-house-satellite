@@ -1,11 +1,10 @@
 // Hub URL runtime: see hub_url.h. Spec v1.3 §4.2 / §7 items 2, 5 (t_056748fb).
 #include "hub_url.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 

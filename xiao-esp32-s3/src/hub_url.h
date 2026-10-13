@@ -45,8 +45,9 @@ int pipecat_hub_url_set(const char *url);
 int pipecat_hub_url_erase();
 
 // Introspection for GET /hub/url and /ota/status.
-const char *pipecat_hub_url_source_name();  // baked|nvs|baked_fallback|re-probing
-const char *pipecat_hub_url_nvs();           // "" when unset
+const char *
+pipecat_hub_url_source_name();      // baked|nvs|baked_fallback|re-probing
+const char *pipecat_hub_url_nvs();  // "" when unset
 const char *pipecat_hub_url_baked();
 uint32_t pipecat_hub_url_failures();
 uint32_t pipecat_hub_url_resolver_timeouts();
