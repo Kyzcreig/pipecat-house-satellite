@@ -5,6 +5,8 @@
 
 #include <atomic>
 
+#include <cJSON.h>
+
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -18,6 +20,8 @@
 #include "fleet_identity.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hub_dns.h"
+#include "hub_url.h"
 #include "link_health.h"
 #include "main.h"
 #include "mbedtls/sha256.h"
@@ -390,6 +394,10 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   // the hub already polls. ~110 bytes; body 896 (wifi fields) -> 1024 for it.
   char link_json[128];
   pipecat_link_health_json(link_json, sizeof(link_json));
+  // Hub URL discovery (t_056748fb, spec §7 item 5): hub_url_source,
+  // url_failures, resolver_timeouts, dns_servers (R5). ~110 bytes.
+  char hub_json[160];
+  pipecat_hub_url_status_json(hub_json, sizeof(hub_json));
   // Fleet identity (t_54916498 P4, §5.3): mac is THE identity (the hub asserts
   // it), offer_url is the baked hub address `check` compares to hub_host, label
   // is the optional NVS human name. satellite_id stays through the migration
@@ -397,7 +405,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   const char *sat_id = PIPECAT_SATELLITE_ID[0] ? PIPECAT_SATELLITE_ID
                        : label[0]              ? label
                                                : "fleet";
-  char body[1280];
+  char body[1536];
   snprintf(body, sizeof(body),
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
@@ -413,7 +421,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"server_ping_age_ms\":%lu,\"media_liveness_holds\":%lu,"
            "\"wifi_fast_rejoin\":%s,\"wifi_disconnects\":%u,"
            "\"wifi_fast_rejoins\":%u,\"wifi_fallback_rejoins\":%u,"
-           "\"wifi_rejoin_last_ms\":%u,%s}",
+           "\"wifi_rejoin_last_ms\":%u,%s,%s}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(), sat_id,
            pipecat_sta_mac_str(), label_json, PIPECAT_SMALLWEBRTC_URL,
@@ -430,10 +438,99 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            (unsigned)pipecat_wifi_disconnects(),
            (unsigned)pipecat_wifi_fast_rejoins(),
            (unsigned)pipecat_wifi_fallback_rejoins(),
-           (unsigned)pipecat_wifi_rejoin_last_ms(), link_json);
+           (unsigned)pipecat_wifi_rejoin_last_ms(), link_json, hub_json);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
+}
+
+// GET/POST/DELETE /hub/url (t_056748fb, spec §4.2 B-2). POST body
+// {"url":"http://host[:port]/path"} (<= HUB_URL_MAX_LEN bytes, http only) ->
+// NVS + redial; {"url":""} or DELETE erases -> baked + redial. Non-JSON,
+// https, an oversize or malformed URL -> 400. Reply mirrors GET.
+static esp_err_t hub_url_reply(httpd_req_t *req) {
+  char nvs_json[HUB_URL_MAX_LEN * 2 + 4];
+  pipecat_json_escape(pipecat_hub_url_nvs(), nvs_json, sizeof(nvs_json));
+  char dns[40];
+  pipecat_dns_servers_str(dns, sizeof(dns));
+  const bool dial_nvs = pipecat_hub_url_nvs()[0] != '\0' &&
+                        (strcmp(pipecat_hub_url_source_name(), "nvs") == 0 ||
+                         strcmp(pipecat_hub_url_source_name(), "re-probing") == 0);
+  char body[640];
+  snprintf(body, sizeof(body),
+           "{\"url\":\"%s\",\"source\":\"%s\",\"hub_url_source\":\"%s\","
+           "\"baked_url\":\"%s\",\"nvs_url\":\"%s\",\"url_failures\":%u,"
+           "\"resolver_timeouts\":%u,\"cutovers_failed\":%u,"
+           "\"dns_servers\":\"%s\"}",
+           dial_nvs ? nvs_json : pipecat_hub_url_baked(),
+           pipecat_hub_url_source_name(), pipecat_hub_url_source_name(),
+           pipecat_hub_url_baked(), nvs_json,
+           (unsigned)pipecat_hub_url_failures(),
+           (unsigned)pipecat_hub_url_resolver_timeouts(),
+           (unsigned)pipecat_hub_url_cutovers_failed(), dns);
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t hub_url_get_handler(httpd_req_t *req) {
+  return hub_url_reply(req);
+}
+
+static esp_err_t hub_url_post_handler(httpd_req_t *req) {
+  // The JSON wrapper around a 200-byte URL stays well under 512.
+  char raw[512];
+  if (req->content_len <= 0 || req->content_len >= (int)sizeof(raw)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "{\"error\":\"body must be JSON {\\\"url\\\":...} under 512 bytes\"}");
+    return ESP_FAIL;
+  }
+  int got = 0;
+  while (got < req->content_len) {
+    int n = httpd_req_recv(req, raw + got, req->content_len - got);
+    if (n <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"short body\"}");
+      return ESP_FAIL;
+    }
+    got += n;
+  }
+  raw[got] = '\0';
+  cJSON *j = cJSON_Parse(raw);
+  const cJSON *j_url = j ? cJSON_GetObjectItem(j, "url") : nullptr;
+  if (j == nullptr || j_url == nullptr || !cJSON_IsString(j_url) ||
+      j_url->valuestring == nullptr) {
+    cJSON_Delete(j);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "{\"error\":\"expected JSON {\\\"url\\\":\\\"http://...\\\"}\"}");
+    return ESP_FAIL;
+  }
+  esp_err_t ret;
+  if (j_url->valuestring[0] == '\0') {
+    ret = pipecat_hub_url_erase();
+  } else {
+    ret = pipecat_hub_url_set(j_url->valuestring);
+  }
+  cJSON_Delete(j);
+  if (ret == ESP_ERR_INVALID_ARG) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "{\"error\":\"url must be http://host[:port]/path, "
+                        "<= 200 bytes, no https\"}");
+    return ESP_FAIL;
+  }
+  if (ret != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "{\"error\":\"nvs write failed\"}");
+    return ESP_FAIL;
+  }
+  return hub_url_reply(req);
+}
+
+static esp_err_t hub_url_delete_handler(httpd_req_t *req) {
+  if (pipecat_hub_url_erase() != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "{\"error\":\"nvs erase failed\"}");
+    return ESP_FAIL;
+  }
+  return hub_url_reply(req);
 }
 
 static esp_err_t ota_rollback_handler(httpd_req_t *req) {
@@ -1381,6 +1478,7 @@ void pipecat_init_ota_server() {
 #if PIPECAT_REDIAL
   config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
 #endif
+  config.max_uri_handlers += 3;  // GET/POST/DELETE /hub/url (t_056748fb)
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1466,8 +1564,29 @@ void pipecat_init_ota_server() {
 #if PIPECAT_XVF_AEC_FILTER
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &aec_filter_uri));
 #endif
+  httpd_uri_t hub_url_get = {
+      .uri = "/hub/url",
+      .method = HTTP_GET,
+      .handler = hub_url_get_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t hub_url_post = {
+      .uri = "/hub/url",
+      .method = HTTP_POST,
+      .handler = hub_url_post_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t hub_url_delete = {
+      .uri = "/hub/url",
+      .method = HTTP_DELETE,
+      .handler = hub_url_delete_handler,
+      .user_ctx = NULL,
+  };
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &stats_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &selftest_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &hub_url_get));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &hub_url_post));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &hub_url_delete));
 #if PIPECAT_REDIAL
   ESP_ERROR_CHECK(pipecat_webrtc_register_http(g_ota_server));
 #endif

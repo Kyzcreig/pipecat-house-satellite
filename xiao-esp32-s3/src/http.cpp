@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "fleet_identity.h"
+#include "hub_url.h"
 #include "main.h"
 #ifndef LINUX_BUILD
 #include "esp_app_desc.h"
@@ -79,12 +80,23 @@ void pipecat_http_request(char *offer, char *answer) {
   esp_http_client_config_t config;
   memset(&config, 0, sizeof(esp_http_client_config_t));
 
-  config.url = PIPECAT_SMALLWEBRTC_URL;
+  // Hub URL policy (t_056748fb): baked `.ace` name unless NVS overrides it;
+  // the override host is resolved through the designated resolver and a
+  // non-A verdict means no dial this round (the event is already recorded).
+  // This is the ONLY assignment to config.url (test_http_url_source.py).
+  char url_buf[HUB_URL_MAX_LEN + 1];
+  if (!pipecat_hub_url(url_buf, sizeof(url_buf))) {
+    ESP_LOGW(LOG_TAG, "hub/url: override host unresolved; no dial this round");
+    memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
+    return;
+  }
+  config.url = url_buf;
   config.event_handler = http_event_handler;
   config.timeout_ms = HTTP_TIMEOUT_MS;
   config.user_data = answer;
 
-  ESP_LOGI(LOG_TAG, "Connecting to %s", config.url);
+  ESP_LOGI(LOG_TAG, "Connecting to %s (source=%s)", config.url,
+           pipecat_hub_url_source_name());
 
   cJSON *j_offer = cJSON_CreateObject();
   if (j_offer == NULL) {
@@ -137,6 +149,21 @@ void pipecat_http_request(char *offer, char *answer) {
   if (err != ESP_OK || status_code != 200) {
     ESP_LOGE(LOG_TAG, "Error perform http request %s (status %d)",
              esp_err_to_name(err), status_code);
+    // Classification by the ladder, never by errno (spec §7 item 3): only
+    // 400/404/405 are URL-class; 401/403, 5xx and every transport error
+    // are transport-class and never demote an override.
+    if (err != ESP_OK) {
+      pipecat_hub_url_note_result(HubUrlEvent::kTransportErr);
+    } else if (status_code == 400 || status_code == 404 ||
+               status_code == 405) {
+      pipecat_hub_url_note_result(HubUrlEvent::kHttp4xxUrl);
+    } else if (status_code == 401 || status_code == 403) {
+      pipecat_hub_url_note_result(HubUrlEvent::kHttp403);
+    } else if (status_code >= 500) {
+      pipecat_hub_url_note_result(HubUrlEvent::kHttp5xx);
+    } else {
+      pipecat_hub_url_note_result(HubUrlEvent::kTransportErr);
+    }
     memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
     free(j_offer_str);
     esp_http_client_cleanup(client);
@@ -147,6 +174,7 @@ void pipecat_http_request(char *offer, char *answer) {
   cJSON *j_response = cJSON_Parse((const char *)answer);
   if (j_response == NULL) {
     ESP_LOGE(LOG_TAG, "Error parsing HTTP response");
+    pipecat_hub_url_note_result(HubUrlEvent::kMalformed200);
     memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
     esp_http_client_cleanup(client);
     return;
@@ -155,6 +183,7 @@ void pipecat_http_request(char *offer, char *answer) {
   cJSON *j_answer = cJSON_GetObjectItem(j_response, "sdp");
   if (j_answer == NULL || j_answer->valuestring == NULL) {
     ESP_LOGE(LOG_TAG, "Unable to find `sdp` field in response");
+    pipecat_hub_url_note_result(HubUrlEvent::kMalformed200);
     memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER + 1);
     cJSON_Delete(j_response);
     esp_http_client_cleanup(client);
