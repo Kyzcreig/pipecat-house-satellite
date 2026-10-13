@@ -87,7 +87,9 @@ handler = function_body(OTA, "static esp_err_t xvf_aec_filter_handler(")
 assert "pipecat_xvf_read_aec_filter(" in handler
 assert '"application/octet-stream"' in handler
 registered = len(re.findall(r"httpd_register_uri_handler\(", OTA))
-slots = int(re.search(r"config\.max_uri_handlers = (\d+);", OTA).group(1))
+slots = int(re.search(r"config\.max_uri_handlers = (\d+);", OTA).group(1)) + sum(
+    int(n) for n in re.findall(r"config\.max_uri_handlers \+= (\d+);", OTA)
+)  # the AEC arm's base + /webrtc/redial + /hub/url (t_056748fb)
 assert registered <= slots, (registered, slots)
 assert re.search(r'\.uri = "/xvf/aec_filter",\s*\.method = HTTP_GET', OTA)
 assert '"xvf_aec_filter.cpp"' in CMAKE

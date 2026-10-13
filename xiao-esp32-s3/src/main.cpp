@@ -17,6 +17,7 @@
 #include <freertos/task.h>
 
 #include "boot_guard.h"
+#include "hub_url.h"
 #include "link_health.h"
 #include "nvs_flash.h"
 
@@ -254,6 +255,9 @@ extern "C" void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+  // Hub URL (t_056748fb): NVS `hub/url` override or the baked `.ace` name.
+  // nvs_flash_erase() above leaves it empty -> baked (I-2).
+  pipecat_hub_url_init();
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   peer_init();
@@ -292,6 +296,7 @@ extern "C" void app_main(void) {
     esp_task_wdt_reset();
     pipecat_webrtc_loop();
     pipecat_validate_ota_if_healthy();
+    pipecat_hub_url_tick();  // baked_fallback preflight (pass-3 R6)
     const bool heartbeat_fresh = pipecat_webrtc_server_heartbeat_fresh();
     const bool reconnect_deadline = reconnect_watchdog.update(
         pipecat_webrtc_connected, heartbeat_fresh, TICK_INTERVAL);

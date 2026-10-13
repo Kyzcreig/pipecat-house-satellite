@@ -27,7 +27,8 @@ stats = OTA[OTA.index("static esp_err_t playback_stats_handler"):OTA.index("void
 assert "pipecat_link_health_json(" in status, "/ota/status lost link health"
 assert "pipecat_link_health_json(" in stats, "/playback/stats lost link health"
 # /ota/status body was 640 bytes (768 after #27 liveness, 896 after #29 wifi); the fragment is ~110, so the buffer grew.
-m = re.search(r"char body\[(\d+)\]", status)
+# t_056748fb moved the body to the heap (4 KB httpd stack); the capacity is a named constant.
+m = re.search(r"char body\[(\d+)\]", status) or re.search(r"kStatusBodyCapacity = (\d+);", status)
 assert m and int(m.group(1)) >= 1024, "/ota/status body too small for the fragment"
 # /playback/stats formats the fragment into its own scratch and sizes the malloc for it.
 assert "kLinkHealthCapacity" in stats and "+ kLinkHealthCapacity)" in stats

@@ -10,6 +10,7 @@
 #include <esp_timer.h>
 #include <string.h>
 
+#include "hub_url.h"
 #include "main.h"
 #include "peer_connection.h"
 #include "server_liveness.h"
@@ -336,6 +337,9 @@ static void pipecat_onconnectionstatechange_task(PeerConnectionState state,
   } else if (state == PEER_CONNECTION_CONNECTED) {
 #ifndef LINUX_BUILD
     pipecat_webrtc_connected = true;
+    // Hub URL policy (t_056748fb): CONNECTED on the dialed URL resets the
+    // URL-class counter; from re-probing it is the cutover's success.
+    pipecat_hub_url_note_result(HubUrlEvent::kConnected);
 #if PIPECAT_REDIAL
     s_connected_at_ms = redial_now_ms();
     s_offer_sent_ms = 0;  // attempt landed; connect-timeout disarmed
@@ -543,6 +547,8 @@ bool pipecat_webrtc_redial_tick(bool watchdog_expired) {
     s_redial_policy.note_connected_for(now - s_connected_at_ms);
   } else if (s_offer_sent_ms != 0 &&
              now - s_offer_sent_ms > PipecatRedialPolicy::kConnectTimeoutMs) {
+    // Answered but never CONNECTED: transport-class (pass-2 R5).
+    pipecat_hub_url_note_result(HubUrlEvent::kNeverConnected);
     pipecat_webrtc_note_attempt_failed(PipecatRedialTrigger::kConnectTimeout);
     return true;
   }
