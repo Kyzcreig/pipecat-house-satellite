@@ -405,8 +405,15 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   const char *sat_id = PIPECAT_SATELLITE_ID[0] ? PIPECAT_SATELLITE_ID
                        : label[0]              ? label
                                                : "fleet";
-  char body[1536];
-  snprintf(body, sizeof(body),
+  // Heap, not stack: the httpd task runs on 4 KB and the hub fields pushed
+  // the stack body over it (bench panic 2026-10-13 04:13Z, t_056748fb).
+  constexpr size_t kStatusBodyCapacity = 1536;
+  char *body = (char *)calloc(1, kStatusBodyCapacity);
+  if (body == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    return ESP_FAIL;
+  }
+  snprintf(body, kStatusBodyCapacity,
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
            ",\"firmware_version\":\"%s\",\"xvf_version\":\"%s\","
@@ -441,7 +448,9 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            (unsigned)pipecat_wifi_rejoin_last_ms(), link_json, hub_json);
 
   httpd_resp_set_type(req, "application/json");
-  return httpd_resp_sendstr(req, body);
+  esp_err_t ret = httpd_resp_sendstr(req, body);
+  free(body);
+  return ret;
 }
 
 // GET/POST/DELETE /hub/url (t_056748fb, spec §4.2 B-2). POST body
@@ -449,15 +458,24 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
 // NVS + redial; {"url":""} or DELETE erases -> baked + redial. Non-JSON,
 // https, an oversize or malformed URL -> 400. Reply mirrors GET.
 static esp_err_t hub_url_reply(httpd_req_t *req) {
-  char nvs_json[HUB_URL_MAX_LEN * 2 + 4];
-  pipecat_json_escape(pipecat_hub_url_nvs(), nvs_json, sizeof(nvs_json));
-  char dns[40];
-  pipecat_dns_servers_str(dns, sizeof(dns));
+  // One heap block for every buffer (4 KB httpd stack, see ota_status_handler).
+  constexpr size_t kNvsJson = HUB_URL_MAX_LEN * 2 + 4;
+  constexpr size_t kDns = 40;
+  constexpr size_t kBody = 768;
+  char *scratch = (char *)calloc(1, kNvsJson + kDns + kBody);
+  if (scratch == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+    return ESP_FAIL;
+  }
+  char *nvs_json = scratch;
+  char *dns = scratch + kNvsJson;
+  char *body = dns + kDns;
+  pipecat_json_escape(pipecat_hub_url_nvs(), nvs_json, kNvsJson);
+  pipecat_dns_servers_str(dns, kDns);
   const bool dial_nvs = pipecat_hub_url_nvs()[0] != '\0' &&
                         (strcmp(pipecat_hub_url_source_name(), "nvs") == 0 ||
                          strcmp(pipecat_hub_url_source_name(), "re-probing") == 0);
-  char body[640];
-  snprintf(body, sizeof(body),
+  snprintf(body, kBody,
            "{\"url\":\"%s\",\"source\":\"%s\",\"hub_url_source\":\"%s\","
            "\"baked_url\":\"%s\",\"nvs_url\":\"%s\",\"url_failures\":%u,"
            "\"resolver_timeouts\":%u,\"cutovers_failed\":%u,"
@@ -469,7 +487,9 @@ static esp_err_t hub_url_reply(httpd_req_t *req) {
            (unsigned)pipecat_hub_url_resolver_timeouts(),
            (unsigned)pipecat_hub_url_cutovers_failed(), dns);
   httpd_resp_set_type(req, "application/json");
-  return httpd_resp_sendstr(req, body);
+  esp_err_t ret = httpd_resp_sendstr(req, body);
+  free(scratch);
+  return ret;
 }
 
 static esp_err_t hub_url_get_handler(httpd_req_t *req) {
@@ -477,17 +497,24 @@ static esp_err_t hub_url_get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t hub_url_post_handler(httpd_req_t *req) {
-  // The JSON wrapper around a 200-byte URL stays well under 512.
-  char raw[512];
-  if (req->content_len <= 0 || req->content_len >= (int)sizeof(raw)) {
+  // The JSON wrapper around a 200-byte URL stays well under 512. Heap, not
+  // stack (4 KB httpd task).
+  constexpr int kRawCap = 512;
+  if (req->content_len <= 0 || req->content_len >= kRawCap) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                         "{\"error\":\"body must be JSON {\\\"url\\\":...} under 512 bytes\"}");
+    return ESP_FAIL;
+  }
+  char *raw = (char *)calloc(1, kRawCap);
+  if (raw == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
     return ESP_FAIL;
   }
   int got = 0;
   while (got < req->content_len) {
     int n = httpd_req_recv(req, raw + got, req->content_len - got);
     if (n <= 0) {
+      free(raw);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"short body\"}");
       return ESP_FAIL;
     }
@@ -495,6 +522,7 @@ static esp_err_t hub_url_post_handler(httpd_req_t *req) {
   }
   raw[got] = '\0';
   cJSON *j = cJSON_Parse(raw);
+  free(raw);
   const cJSON *j_url = j ? cJSON_GetObjectItem(j, "url") : nullptr;
   if (j == nullptr || j_url == nullptr || !cJSON_IsString(j_url) ||
       j_url->valuestring == nullptr) {

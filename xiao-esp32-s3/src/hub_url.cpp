@@ -303,7 +303,7 @@ void pipecat_hub_url_tick() {
   if (!start)
     return;
   __atomic_store_n(&s_preflight, kPfRunning, __ATOMIC_SEQ_CST);
-  if (xTaskCreate(preflight_task, "hub_preflight", 6144, nullptr, 3, nullptr) !=
+  if (xTaskCreate(preflight_task, "hub_preflight", 8192, nullptr, 3, nullptr) !=
       pdPASS) {
     __atomic_store_n(&s_preflight, kPfIdle, __ATOMIC_SEQ_CST);
     portENTER_CRITICAL(&s_lock);

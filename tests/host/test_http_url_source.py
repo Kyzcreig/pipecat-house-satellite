@@ -74,7 +74,12 @@ def test_ota_surface() -> None:
     status = OTA[OTA.index("static esp_err_t ota_status_handler"):]
     status = status[: status.index("static esp_err_t hub_url_reply")]
     assert "pipecat_hub_url_status_json(hub_json, sizeof(hub_json));" in status
-    assert "char body[1536];" in status, "/ota/status body grew for the hub fields"
+    assert "constexpr size_t kStatusBodyCapacity = 1536;" in status
+    assert re.search(r"char body\[\d+\]", status) is None, "/ota/status body must be heap (4 KB httpd stack)"
+    reply = OTA[OTA.index("static esp_err_t hub_url_reply"):OTA.index("static esp_err_t hub_url_get_handler")]
+    assert re.search(r"char \w+\[[^\]]+\];", reply) is None, "hub_url_reply buffers must be heap"
+    post = OTA[OTA.index("static esp_err_t hub_url_post_handler"):OTA.index("static esp_err_t hub_url_delete_handler")]
+    assert re.search(r"char \w+\[[^\]]+\];", post) is None, "POST body buffer must be heap"
     for key in ("hub_url_source", "url_failures", "resolver_timeouts", "dns_servers"):
         assert f'\\"{key}\\":' in HUB, key
     for key in ("source", "hub_url_source", "url_failures", "resolver_timeouts",
