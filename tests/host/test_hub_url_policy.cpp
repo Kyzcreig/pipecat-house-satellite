@@ -12,10 +12,10 @@ using E = HubUrlEvent;
 using S = HubUrlState;
 
 static const E kUrlClass[] = {E::kResolverNxdomain, E::kHttp4xxUrl};
-static const E kTransportClass[] = {
-    E::kResolverTimeout, E::kResolverServfail, E::kResolverNodata,
-    E::kTransportErr,    E::kHttp403,          E::kHttp5xx,
-    E::kMalformed200,    E::kNeverConnected};
+static const E kTransportClass[] = {E::kResolverTimeout, E::kResolverServfail,
+                                    E::kResolverNodata,  E::kTransportErr,
+                                    E::kHttp403,         E::kHttp5xx,
+                                    E::kMalformed200,    E::kNeverConnected};
 
 static void test_classification_is_total() {
   for (E e : kUrlClass) {

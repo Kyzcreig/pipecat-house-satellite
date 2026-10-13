@@ -19,17 +19,17 @@
 // from the bound socket (designated) or from a SECOND socket (forged source).
 
 enum class Mode {
-  kA,            // RCODE 0, one A RR for the queried name
-  kNxdomain,     // RCODE 3
-  kNodata,       // RCODE 0, no RRs
-  kServfail,     // RCODE 2
-  kTruncated,    // TC=1 with RCODE 3
-  kWrongTxid,    // RCODE 3 with txid+1 (then silence)
-  kWrongName,    // RCODE 3 echoing a different question name
-  kForgedSource, // RCODE 3 sent from another socket/port (then silence)
-  kSilent,       // never answers
-  kForgedThenA,  // forged NXDOMAIN first, then a real A from the server
-  kCname,        // CNAME to other.name + A for other.name
+  kA,             // RCODE 0, one A RR for the queried name
+  kNxdomain,      // RCODE 3
+  kNodata,        // RCODE 0, no RRs
+  kServfail,      // RCODE 2
+  kTruncated,     // TC=1 with RCODE 3
+  kWrongTxid,     // RCODE 3 with txid+1 (then silence)
+  kWrongName,     // RCODE 3 echoing a different question name
+  kForgedSource,  // RCODE 3 sent from another socket/port (then silence)
+  kSilent,        // never answers
+  kForgedThenA,   // forged NXDOMAIN first, then a real A from the server
+  kCname,         // CNAME to other.name + A for other.name
 };
 
 struct Fake {
@@ -221,14 +221,15 @@ static HubDnsResult run(Mode mode, uint32_t *ip, HubDnsDiag *diag,
   Fake f;
   fake_start(&f, mode);
   long t0 = now_ms();
-  HubDnsResult r =
-      hub_dns_query_server("voice-hub-staging.ace", 0x7f000001, f.port, ip, diag);
+  HubDnsResult r = hub_dns_query_server("voice-hub-staging.ace", 0x7f000001,
+                                        f.port, ip, diag);
   *elapsed_ms = now_ms() - t0;
   fake_stop(&f);
   return r;
 }
 
-// --- pure wire tests ----------------------------------------------------------
+// --- pure wire tests
+// ----------------------------------------------------------
 
 static void test_build_query() {
   uint8_t b[512];
@@ -237,7 +238,10 @@ static void test_build_query() {
   assert(b[0] == 0xbe && b[1] == 0xef);
   assert(b[2] == 0x01 && b[3] == 0x00);  // RD=1, QR=0
   assert(b[5] == 1);                     // QDCOUNT
-  assert(memcmp(b + 12, "\x09voice-hub\x03" "ace\x00", 15) == 0);
+  assert(memcmp(b + 12,
+                "\x09voice-hub\x03"
+                "ace\x00",
+                15) == 0);
   assert(b[n - 4] == 0 && b[n - 3] == 1 && b[n - 2] == 0 && b[n - 1] == 1);
   assert(hub_dns_build_query("", 1, b, sizeof(b)) == 0);
   assert(hub_dns_build_query("a..b", 1, b, sizeof(b)) == 0);
@@ -286,17 +290,20 @@ static void test_parse_provenance() {
   // RCODEs.
   rn = build_response(q, qn, Mode::kNxdomain, r);
   assert(hub_dns_parse_response(r, rn, 0x1234, "voice-hub.ace", &ip, &rcode) ==
-         HubDnsResult::kNxdomain && rcode == 3);
+             HubDnsResult::kNxdomain &&
+         rcode == 3);
   rn = build_response(q, qn, Mode::kServfail, r);
   assert(hub_dns_parse_response(r, rn, 0x1234, "voice-hub.ace", &ip, &rcode) ==
-         HubDnsResult::kServfail && rcode == 2);
+             HubDnsResult::kServfail &&
+         rcode == 2);
   rn = build_response(q, qn, Mode::kNodata, r);
   assert(hub_dns_parse_response(r, rn, 0x1234, "voice-hub.ace", &ip, &rcode) ==
          HubDnsResult::kNodata);
   rn = build_response(q, qn, Mode::kCname, r);
   ip = 0;
   assert(hub_dns_parse_response(r, rn, 0x1234, "voice-hub.ace", &ip, &rcode) ==
-         HubDnsResult::kAOk && ip == 0xc0a80159u);
+             HubDnsResult::kAOk &&
+         ip == 0xc0a80159u);
   // An A RR for a DIFFERENT owner (no CNAME) is not our answer -> NODATA.
   rn = build_response(q, qn, Mode::kNodata, r);
   {
@@ -331,7 +338,8 @@ static void test_private_ipv4() {
   assert(!hub_dns_is_private_ipv4(0x01010101u));
 }
 
-// --- socket tests against the fake ----------------------------------------------
+// --- socket tests against the fake
+// ----------------------------------------------
 
 static void test_designated_answers() {
   uint32_t ip = 0;
