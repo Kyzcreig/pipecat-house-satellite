@@ -49,6 +49,11 @@ const char *
 pipecat_hub_url_source_name();      // baked|nvs|baked_fallback|re-probing
 const char *pipecat_hub_url_nvs();  // "" when unset
 const char *pipecat_hub_url_baked();
+// The URL the NEXT dial uses as configured (nvs while the policy dials it,
+// else baked; no IP substitution). /ota/status `offer_url` and /hub/url `url`
+// report THIS, so the fleet drift `check` compares what the unit dials to
+// hub_host (Apollo r1 on PR #41).
+const char *pipecat_hub_url_effective();
 uint32_t pipecat_hub_url_failures();
 uint32_t pipecat_hub_url_resolver_timeouts();
 uint32_t pipecat_hub_url_cutovers_failed();
