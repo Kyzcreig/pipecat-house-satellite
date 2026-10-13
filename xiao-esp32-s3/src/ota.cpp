@@ -455,7 +455,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
-  free(body);
+  free(offer_json);  // the one block; `body` is an interior pointer
   return ret;
 }
 

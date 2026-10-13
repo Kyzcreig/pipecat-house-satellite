@@ -108,6 +108,10 @@ def test_offer_url_is_effective() -> None:
     args = re.search(r"label_json,\s*offer_json,\s*PIPECAT_SMALLWEBRTC_URL,", status)
     assert args, "offer_url arg must be offer_json (effective), baked_url PIPECAT_SMALLWEBRTC_URL"
     assert status.count("PIPECAT_SMALLWEBRTC_URL") == 1, "the baked macro feeds baked_url only"
+    # ONE calloc, freed by its base pointer. a56fb07 freed the interior `body`
+    # pointer and the bench panicked on the first GET (2026-10-13 05:40:32Z).
+    assert status.count("calloc(") == 1
+    assert "free(offer_json);" in status and "free(body)" not in status
     # /hub/url `url` is the SAME value (same accessor), never derived from the state name.
     assert "pipecat_json_escape(pipecat_hub_url_effective(), url_json, kNvsJson);" in reply
     assert re.search(r'"\{\\"url\\":\\"%s\\",[^;]*?\n\s*url_json,', reply), "/hub/url url arg must be url_json"
