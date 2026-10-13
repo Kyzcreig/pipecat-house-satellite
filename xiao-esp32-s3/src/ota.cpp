@@ -398,26 +398,33 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
   char hub_json[160];
   pipecat_hub_url_status_json(hub_json, sizeof(hub_json));
   // Fleet identity (t_54916498 P4, §5.3): mac is THE identity (the hub asserts
-  // it), offer_url is the baked hub address `check` compares to hub_host, label
-  // is the optional NVS human name. satellite_id stays through the migration
-  // window: the baked id when one was built in, else the label, else "fleet".
+  // it), offer_url is the EFFECTIVE hub address the next dial uses (nvs while
+  // the policy dials it, else baked) so `check` compares it to hub_host;
+  // baked_url beside it is the build-time name for the golden guard (Apollo r1
+  // on PR #41, t_056748fb). label is the optional NVS human name. satellite_id
+  // stays through the migration window: the baked id when one was built in,
+  // else the label, else "fleet".
   const char *sat_id = PIPECAT_SATELLITE_ID[0] ? PIPECAT_SATELLITE_ID
                        : label[0]              ? label
                                                : "fleet";
   // Heap, not stack: the httpd task runs on 4 KB and the hub fields pushed
   // the stack body over it (bench panic 2026-10-13 04:13Z, t_056748fb).
+  // +(2*HUB_URL_MAX_LEN+4) for the escaped effective URL, then the body.
+  constexpr size_t kOfferJson = HUB_URL_MAX_LEN * 2 + 4;
   constexpr size_t kStatusBodyCapacity = 1536;
-  char *body = (char *)calloc(1, kStatusBodyCapacity);
-  if (body == nullptr) {
+  char *offer_json = (char *)calloc(1, kOfferJson + kStatusBodyCapacity);
+  if (offer_json == nullptr) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
     return ESP_FAIL;
   }
+  char *body = offer_json + kOfferJson;
+  pipecat_json_escape(pipecat_hub_url_effective(), offer_json, kOfferJson);
   snprintf(body, kStatusBodyCapacity,
            "{\"booted_slot\":\"%s\",\"app_valid\":%s,"
            "\"ota_state\":\"%s\",\"sha256\":\"%s\",\"uptime_s\":%" PRId64
            ",\"firmware_version\":\"%s\",\"xvf_version\":\"%s\","
            "\"satellite_id\":\"%s\",\"mac\":\"%s\",\"label\":\"%s\","
-           "\"offer_url\":\"%s\","
+           "\"offer_url\":\"%s\",\"baked_url\":\"%s\","
            "\"mdns_hostname\":\"%s.local\","
            "\"reset_reason\":\"%s\",\"boot_fault_count\":%u,"
            "\"boots_since_poweron\":%u,\"net_watchdog_s\":%u,"
@@ -430,9 +437,9 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
            "\"wifi_rejoin_last_ms\":%u,%s,%s}",
            running->label, app_valid ? "true" : "false", ota_state_name(state),
            sha_hex, uptime_s, app->version, pipecat_xvf3800_version(), sat_id,
-           pipecat_sta_mac_str(), label_json, PIPECAT_SMALLWEBRTC_URL,
-           pipecat_hostname(), pipecat_reset_reason_name(),
-           (unsigned)pipecat_boot_fault_count(),
+           pipecat_sta_mac_str(), label_json, offer_json,
+           PIPECAT_SMALLWEBRTC_URL, pipecat_hostname(),
+           pipecat_reset_reason_name(), (unsigned)pipecat_boot_fault_count(),
            (unsigned)pipecat_boots_since_poweron(),
            (unsigned)pipecat_net_watchdog_deadline_s(),
            (unsigned)pipecat_crash_boots(), (unsigned)pipecat_slot_flipped(),
@@ -448,7 +455,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "application/json");
   esp_err_t ret = httpd_resp_sendstr(req, body);
-  free(body);
+  free(offer_json);  // the one block; `body` is an interior pointer
   return ret;
 }
 
@@ -461,28 +468,27 @@ static esp_err_t hub_url_reply(httpd_req_t *req) {
   constexpr size_t kNvsJson = HUB_URL_MAX_LEN * 2 + 4;
   constexpr size_t kDns = 40;
   constexpr size_t kBody = 768;
-  char *scratch = (char *)calloc(1, kNvsJson + kDns + kBody);
+  char *scratch = (char *)calloc(1, kNvsJson * 2 + kDns + kBody);
   if (scratch == nullptr) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
     return ESP_FAIL;
   }
   char *nvs_json = scratch;
-  char *dns = scratch + kNvsJson;
+  char *url_json = scratch + kNvsJson;
+  char *dns = url_json + kNvsJson;
   char *body = dns + kDns;
   pipecat_json_escape(pipecat_hub_url_nvs(), nvs_json, kNvsJson);
+  // `url` is the EFFECTIVE URL (the next dial's), the same value /ota/status
+  // reports as offer_url: nvs while the policy dials it, else baked.
+  pipecat_json_escape(pipecat_hub_url_effective(), url_json, kNvsJson);
   pipecat_dns_servers_str(dns, kDns);
-  const bool dial_nvs =
-      pipecat_hub_url_nvs()[0] != '\0' &&
-      (strcmp(pipecat_hub_url_source_name(), "nvs") == 0 ||
-       strcmp(pipecat_hub_url_source_name(), "re-probing") == 0);
   snprintf(body, kBody,
            "{\"url\":\"%s\",\"source\":\"%s\",\"hub_url_source\":\"%s\","
            "\"baked_url\":\"%s\",\"nvs_url\":\"%s\",\"url_failures\":%u,"
            "\"resolver_timeouts\":%u,\"cutovers_failed\":%u,"
            "\"dns_servers\":\"%s\"}",
-           dial_nvs ? nvs_json : pipecat_hub_url_baked(),
-           pipecat_hub_url_source_name(), pipecat_hub_url_source_name(),
-           pipecat_hub_url_baked(), nvs_json,
+           url_json, pipecat_hub_url_source_name(),
+           pipecat_hub_url_source_name(), pipecat_hub_url_baked(), nvs_json,
            (unsigned)pipecat_hub_url_failures(),
            (unsigned)pipecat_hub_url_resolver_timeouts(),
            (unsigned)pipecat_hub_url_cutovers_failed(), dns);

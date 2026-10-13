@@ -364,6 +364,13 @@ const char *pipecat_hub_url_nvs() {
 const char *pipecat_hub_url_baked() {
   return PIPECAT_SMALLWEBRTC_URL;
 }
+const char *pipecat_hub_url_effective() {
+  // Same predicate as pipecat_hub_url(): the policy dials nvs AND a value is
+  // set. Both buffers are static and NUL-terminated, so the pointer is stable.
+  return (s_policy.dials_nvs() && s_nvs_url[0] != '\0')
+             ? s_nvs_url
+             : PIPECAT_SMALLWEBRTC_URL;
+}
 uint32_t pipecat_hub_url_failures() {
   return s_policy.url_failures();
 }

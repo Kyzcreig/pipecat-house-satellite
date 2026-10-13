@@ -90,6 +90,42 @@ def test_ota_surface() -> None:
     assert "HTTPD_400_BAD_REQUEST" in OTA[OTA.index("static esp_err_t hub_url_post_handler"):]
 
 
+def test_offer_url_is_effective() -> None:
+    """/ota/status offer_url == the url /hub/url reports (Apollo r1 on PR #41).
+
+    The fleet drift `check` compares offer_url to the manifest hub_host, so a
+    unit dialing its NVS override must REPORT that URL, not the baked name.
+    Both handlers go through pipecat_hub_url_effective(); the baked name moves
+    to `baked_url` beside it (golden guard).
+    """
+    status = OTA[OTA.index("static esp_err_t ota_status_handler"):]
+    status = status[: status.index("static esp_err_t hub_url_reply")]
+    reply = OTA[OTA.index("static esp_err_t hub_url_reply"):OTA.index("static esp_err_t hub_url_get_handler")]
+    # offer_url is the escaped effective URL, immediately followed by baked_url.
+    assert "pipecat_json_escape(pipecat_hub_url_effective(), offer_json, kOfferJson);" in status
+    fmt = re.search(r'\\"offer_url\\":\\"%s\\",\\"baked_url\\":\\"%s\\",', status)
+    assert fmt, "/ota/status must report offer_url then baked_url"
+    args = re.search(r"label_json,\s*offer_json,\s*PIPECAT_SMALLWEBRTC_URL,", status)
+    assert args, "offer_url arg must be offer_json (effective), baked_url PIPECAT_SMALLWEBRTC_URL"
+    assert status.count("PIPECAT_SMALLWEBRTC_URL") == 1, "the baked macro feeds baked_url only"
+    # ONE calloc, freed by its base pointer. a56fb07 freed the interior `body`
+    # pointer and the bench panicked on the first GET (2026-10-13 05:40:32Z).
+    assert status.count("calloc(") == 1
+    assert "free(offer_json);" in status and "free(body)" not in status
+    # /hub/url `url` is the SAME value (same accessor), never derived from the state name.
+    assert "pipecat_json_escape(pipecat_hub_url_effective(), url_json, kNvsJson);" in reply
+    assert re.search(r'"\{\\"url\\":\\"%s\\",[^;]*?\n\s*url_json,', reply), "/hub/url url arg must be url_json"
+    assert 'strcmp(pipecat_hub_url_source_name(), "nvs")' not in reply
+    # The accessor uses the policy's own dial predicate, not a string compare.
+    acc = HUB[HUB.index("const char *pipecat_hub_url_effective()"):]
+    acc = acc[: acc.index("uint32_t pipecat_hub_url_failures()")]
+    assert "s_policy.dials_nvs() && s_nvs_url[0] != '\\0'" in acc
+    assert "? s_nvs_url" in acc and ": PIPECAT_SMALLWEBRTC_URL" in acc
+    dial = HUB[HUB.index("bool pipecat_hub_url(char *out, size_t cap)"):]
+    dial = dial[: dial.index("HubUrlEvent ev;")]
+    assert "s_policy.dials_nvs() && s_nvs_url[0] != '\\0'" in dial, "same predicate as the dialer"
+
+
 def test_policy_never_sees_errno() -> None:
     code = re.sub(r"//[^\n]*", "", POLICY)  # comments may name what is banned
     for tok in ("EAI_", "errno", "getaddrinfo", "h_errno"):
