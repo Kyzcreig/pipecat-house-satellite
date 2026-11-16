@@ -10,12 +10,13 @@ SRC_DIR=xiao-esp32-s3/src
 HCI=$SRC_DIR/ble_hci.c
 API=$SRC_DIR/esphome_api.c
 PROXY=$SRC_DIR/ble_proxy.cpp
+SET=$SRC_DIR/ble_proxy_settings.c
 OUT="$(mktemp -d)"
 BK="$(mktemp -d)"
-cp "$HCI" "$API" "$PROXY" "$BK/"
+cp "$HCI" "$API" "$PROXY" "$SET" "$BK/"
 restore() {
   cp "$BK/ble_hci.c" "$HCI"; cp "$BK/esphome_api.c" "$API"
-  cp "$BK/ble_proxy.cpp" "$PROXY"
+  cp "$BK/ble_proxy.cpp" "$PROXY"; cp "$BK/ble_proxy_settings.c" "$SET"
 }
 trap 'restore; rm -rf "$BK" "$OUT"' EXIT
 
@@ -25,9 +26,15 @@ build() {
     -o "$OUT/hci" &&
   "$CC" -std=c99 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
     -fno-sanitize-recover=all -I "$SRC_DIR" tests/host/test_esphome_api.c \
-    "$API" "$HCI" -o "$OUT/api"
+    "$API" "$HCI" -o "$OUT/api" &&
+  "$CC" -std=c99 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+    -fno-sanitize-recover=all -I "$SRC_DIR" tests/host/test_ble_proxy_settings.c \
+    "$SET" -o "$OUT/set"
 }
-run() { "$OUT/hci" && "$OUT/api" && python3 tests/host/test_ble_proxy_source.py; }
+run() {
+  "$OUT/hci" && "$OUT/api" && "$OUT/set" &&
+    python3 tests/host/test_ble_proxy_source.py
+}
 build || exit 1
 run || exit 1
 
@@ -68,9 +75,23 @@ mutate "$PROXY" 's/(void pipecat_ble_proxy_start\(\) \{\n  load_nvs\(\);\n)/$1  
   "controller started before the enabled gate"
 mutate "$PROXY" 's/    esp_bt_controller_mem_release\(ESP_BT_MODE_BLE\);\n//' \
   "OFF keeps the controller RAM"
+# Prism round 1 on #44 (P1 f9a136d7f284, 977995c2c2b2; P2 09effbd59d49,
+# ef8a8c874df9, 28f87717c228).
+mutate "$PROXY" 's/(  esp_err_t ret = esp_bt_controller_init\(&cfg\);\n)/  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);\n$1/' \
+  "scanner ON switches voice Wi-Fi to modem sleep"
+mutate "$PROXY" 's/mdns_service_add\(s_info.name, "_esphomelib"/mdns_service_add(nullptr, "_esphomelib"/' \
+  "_esphomelib instance not the API device name"
+mutate "$SET" 's/enabled\[1\] == .\\0./1/' \
+  "enabled=1x accepted"
+mutate "$SET" 's/v\[n\] < .0. \|\| v\[n\] > .9./0/' \
+  "non-digit timing accepted"
+mutate "$SET" 's/BleProxySettings next = \*stored;/BleProxySettings next = *running;/' \
+  "POST compares against the boot copy, not NVS"
+mutate "$SET" 's/  if \(running->enabled != stored->enabled\)\n    return true;\n//' \
+  "pending on/off flip not reported"
 
 if [ "$fails" -eq 0 ]; then
-  echo "all 11 mutations caught; ble_hci + esphome_api + ble_proxy: PASS"
+  echo "all 17 mutations caught; ble_hci + esphome_api + ble_proxy: PASS"
 else
   echo "$fails mutation(s) survived"; exit 1
 fi

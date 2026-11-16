@@ -46,6 +46,34 @@ def test_scan_is_passive_at_the_esphome_default_timing() -> None:
     assert "kDefaultWindowMs = 30;" in PROXY
 
 
+def test_scanner_never_changes_wifi_power_save() -> None:
+    # Prism P1 f9a136d7f284, refuted: on the S3 under IDF 5.5 software
+    # coexistence WIFI_PS_NONE is supported (Wi-Fi sleeps in the BLE slices
+    # anyway), so voice keeps wifi.cpp's PS_NONE with the scanner ON or OFF.
+    # MIN_MODEM would add a DTIM wait to downlink. GET reports the live mode.
+    assert "esp_wifi_set_ps(" not in PROXY
+    assert "esp_wifi_get_ps(&ps)" in PROXY
+    wifi = (SRC / "wifi.cpp").read_text()
+    assert wifi.count("esp_wifi_set_ps(") == 1
+    assert "esp_wifi_set_ps(WIFI_PS_NONE)" in wifi
+
+
+def test_esphomelib_service_named_as_api_device() -> None:
+    # Prism P1 977995c2c2b2: instance = hostname = DeviceInfo/Hello name.
+    assert 'mdns_service_add(s_info.name, "_esphomelib", "_tcp"' in PROXY
+    assert "s_info.name = pipecat_hostname();" in PROXY
+    assert '{"friendly_name", s_friendly}' in PROXY
+
+
+def test_post_goes_through_the_tested_settings_logic() -> None:
+    post = PROXY[PROXY.index("static esp_err_t ble_proxy_post("):]
+    assert "ble_proxy_settings_apply(" in post
+    assert "&s_stored" in post and "s_stored = next;" in post
+    assert "ble_proxy_settings_reboot_pending(&running, &s_stored)" in post
+    get = PROXY[PROXY.index("static esp_err_t ble_proxy_get("):PROXY.index("static esp_err_t ble_proxy_post(")]
+    assert '\\"reboot_pending\\":%s' in get and "s_stored.enabled" in get
+
+
 def test_wiring_is_behind_the_build_flag() -> None:
     m = re.search(r"#if PIPECAT_BLE_PROXY\n(.*?)#endif", MAIN[MAIN.index("pipecat_init_webrtc();"):], re.S)
     assert m and "pipecat_ble_proxy_start();" in m.group(1)

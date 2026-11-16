@@ -15,7 +15,7 @@ if("$ENV{PIPECAT_XVF_AEC_FILTER}" STREQUAL "1")
 endif()
 set(TARGET_REQUIRES app_update driver esp_timer esp_wifi esp_http_server mdns nvs_flash peer esp_psram esp-libopus esp_http_client json)
 if("$ENV{PIPECAT_BLE_PROXY}" STREQUAL "1")
-	list(APPEND TARGET_SRC "ble_proxy.cpp" "ble_hci.c" "esphome_api.c")
+	list(APPEND TARGET_SRC "ble_proxy.cpp" "ble_proxy_settings.c" "ble_hci.c" "esphome_api.c")
 	list(APPEND TARGET_REQUIRES bt esp_coex)
 endif()
 

@@ -27,6 +27,7 @@
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -37,6 +38,7 @@
 #include <string.h>
 
 #include "ble_hci.h"
+#include "ble_proxy_settings.h"
 #include "esphome_api.h"
 
 #define BLE_NVS_NAMESPACE "ble_proxy"
@@ -56,9 +58,14 @@ static constexpr uint32_t kBatchFlushMs = 100;
 static constexpr uint32_t kIdleCloseMs = 90 * 1000;  // no rx, not subscribed
 static constexpr uint32_t kRebootDelayMs = 1500;
 
+// What this boot runs with (NVS as read at boot). s_stored is what NVS holds
+// now: a POST saves there, and a reboot makes it the running copy.
 static bool s_enabled = false;  // NVS value read at boot
 static uint16_t s_interval_ms = kDefaultIntervalMs;
 static uint16_t s_window_ms = kDefaultWindowMs;
+static BleProxySettings s_stored = {false, kDefaultIntervalMs,
+                                    kDefaultWindowMs};
+static bool s_reboot_scheduled = false;
 static volatile bool s_running = false;  // scan enabled, server listening
 static const char *s_error = "";
 static size_t s_heap_before = 0, s_heap_after = 0;
@@ -96,6 +103,12 @@ static void load_nvs() {
   if (nvs_get_u16(h, BLE_NVS_WINDOW, &v) == ESP_OK)
     s_window_ms = v;
   nvs_close(h);
+  BleProxySettings boot = {s_enabled, s_interval_ms, s_window_ms};
+  if (!ble_proxy_settings_valid(&boot)) {
+    // Never written by this firmware's POST; keep the switch, reset timing.
+    s_interval_ms = kDefaultIntervalMs;
+    s_window_ms = kDefaultWindowMs;
+  }
 }
 
 static esp_err_t save_nvs(bool enabled, uint16_t interval_ms,
@@ -350,7 +363,10 @@ static void ble_proxy_task(void *) {
 static void advertise_mdns() {
   if (!pipecat_mdns_started())
     return;
-  // HA's ESPHome zeroconf flow keys the device by `mac` (12 hex digits).
+  // HA's ESPHome zeroconf flow keys the device by `mac` (12 hex digits) and
+  // takes the device name from the SRV host (pipecat_hostname().local), the
+  // name Hello/DeviceInfo return and its expected_name check compares.
+  // ESPHome names the service instance the same; friendly_name is the label.
   char mac_plain[13] = "";
   const char *m = pipecat_sta_mac_str();
   for (size_t i = 0, j = 0; m[i] && j < 12; ++i)
@@ -359,6 +375,7 @@ static void advertise_mdns() {
   mdns_txt_item_t txt[] = {
       {"mac", mac_plain},
       {"version", s_esphome_version},
+      {"friendly_name", s_friendly},
       {"platform", "ESP32"},
       {"board", "xiao-esp32-s3"},
       {"network", "wifi"},
@@ -366,7 +383,7 @@ static void advertise_mdns() {
       {"project_version", s_info.project_version},
   };
   const esp_err_t ret =
-      mdns_service_add(nullptr, "_esphomelib", "_tcp", ESPAPI_PORT, txt,
+      mdns_service_add(s_info.name, "_esphomelib", "_tcp", ESPAPI_PORT, txt,
                        sizeof(txt) / sizeof(txt[0]));
   if (ret != ESP_OK)
     ESP_LOGW(LOG_TAG, "ble_proxy: mdns _esphomelib add failed: %s",
@@ -375,6 +392,7 @@ static void advertise_mdns() {
 
 void pipecat_ble_proxy_start() {
   load_nvs();
+  s_stored = {s_enabled, s_interval_ms, s_window_ms};
   if (!s_enabled) {
     // OFF costs nothing at runtime: no controller, no task, no socket, and
     // the controller's static RAM goes back to the heap for this boot.
@@ -412,6 +430,13 @@ void pipecat_ble_proxy_start() {
   }
 
   s_heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  // Wi-Fi power save stays WIFI_PS_NONE (wifi.cpp) with the scanner ON too.
+  // On the S3 with IDF 5.5 software coexistence that is supported: Wi-Fi
+  // keeps the radio awake in its own slices and sleeps only in the BLE ones
+  // (docs api-guides/wifi.rst: in coexist mode Wi-Fi sleeps in non-Wi-Fi
+  // slices "even if" power save is NONE; the old "Should enable WiFi modem
+  // sleep" check is not in the esp32s3 libs). MIN_MODEM would add a DTIM
+  // wait to every downlink frame on top of that, so it is not used.
   esp_bt_controller_config_t cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
   esp_err_t ret = esp_bt_controller_init(&cfg);
   if (ret == ESP_OK)
@@ -447,24 +472,40 @@ void pipecat_ble_proxy_start() {
 // ---- HTTP ------------------------------------------------------------------
 
 static esp_err_t ble_proxy_get(httpd_req_t *req) {
-  char body[700];
-  snprintf(body, sizeof(body),
-           "{\"compiled\":true,\"enabled\":%s,\"running\":%s,\"error\":\"%s\","
-           "\"scan\":\"passive\",\"interval_ms\":%u,\"window_ms\":%u,"
-           "\"api_port\":%d,\"bt_mac\":\"%s\",\"client_connected\":%s,"
-           "\"client_subscribed\":%s,\"clients_total\":%u,"
-           "\"reports_rx\":%u,\"reports_sent\":%u,\"batches\":%u,"
-           "\"drop_queue\":%u,\"drop_nosub\":%u,\"hci_bad\":%u,"
-           "\"heap_internal_before_bt\":%u,\"heap_internal_after_bt\":%u,"
-           "\"heap_internal_free\":%u}",
-           s_enabled ? "true" : "false", s_running ? "true" : "false", s_error,
-           (unsigned)s_interval_ms, (unsigned)s_window_ms, ESPAPI_PORT,
-           s_bt_mac, s_client_connected ? "true" : "false",
-           s_client_subscribed ? "true" : "false", (unsigned)s_clients_total,
-           (unsigned)s_reports_rx, (unsigned)s_reports_sent,
-           (unsigned)s_batches, (unsigned)s_drop_queue, (unsigned)s_drop_nosub,
-           (unsigned)s_hci_bad, (unsigned)s_heap_before, (unsigned)s_heap_after,
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  // enabled/interval_ms/window_ms = NVS now (what the next boot runs);
+  // running_* = this boot; reboot_pending when they would run differently.
+  const BleProxySettings running = {s_enabled, s_interval_ms, s_window_ms};
+  wifi_ps_type_t ps = WIFI_PS_NONE;
+  const bool ps_ok = esp_wifi_get_ps(&ps) == ESP_OK;
+  char body[860];
+  snprintf(
+      body, sizeof(body),
+      "{\"compiled\":true,\"enabled\":%s,\"running\":%s,\"error\":\"%s\","
+      "\"scan\":\"passive\",\"interval_ms\":%u,\"window_ms\":%u,"
+      "\"running_enabled\":%s,\"running_interval_ms\":%u,"
+      "\"running_window_ms\":%u,\"reboot_pending\":%s,"
+      "\"wifi_ps\":\"%s\","
+      "\"api_port\":%d,\"bt_mac\":\"%s\",\"client_connected\":%s,"
+      "\"client_subscribed\":%s,\"clients_total\":%u,"
+      "\"reports_rx\":%u,\"reports_sent\":%u,\"batches\":%u,"
+      "\"drop_queue\":%u,\"drop_nosub\":%u,\"hci_bad\":%u,"
+      "\"heap_internal_before_bt\":%u,\"heap_internal_after_bt\":%u,"
+      "\"heap_internal_free\":%u}",
+      s_stored.enabled ? "true" : "false", s_running ? "true" : "false",
+      s_error, (unsigned)s_stored.interval_ms, (unsigned)s_stored.window_ms,
+      s_enabled ? "true" : "false", (unsigned)s_interval_ms,
+      (unsigned)s_window_ms,
+      ble_proxy_settings_reboot_pending(&running, &s_stored) ? "true" : "false",
+      !ps_ok                    ? "unknown"
+      : ps == WIFI_PS_NONE      ? "none"
+      : ps == WIFI_PS_MIN_MODEM ? "min_modem"
+                                : "max_modem",
+      ESPAPI_PORT, s_bt_mac, s_client_connected ? "true" : "false",
+      s_client_subscribed ? "true" : "false", (unsigned)s_clients_total,
+      (unsigned)s_reports_rx, (unsigned)s_reports_sent, (unsigned)s_batches,
+      (unsigned)s_drop_queue, (unsigned)s_drop_nosub, (unsigned)s_hci_bad,
+      (unsigned)s_heap_before, (unsigned)s_heap_after,
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, body);
 }
@@ -475,81 +516,64 @@ static void ble_reboot_task(void *) {
   esp_restart();
 }
 
-static bool query_uint(const char *q, const char *key, uint32_t *out) {
-  char v[12];
-  if (httpd_query_key_value(q, key, v, sizeof(v)) != ESP_OK)
-    return false;
-  char *end = nullptr;
-  const unsigned long x = strtoul(v, &end, 10);
-  if (end == v || *end != '\0' || x > 0xFFFFu)
-    return false;
-  *out = (uint32_t)x;
-  return true;
+// Query value for `key`: nullptr when absent, BLE_PROXY_PARAM_INVALID when
+// present but unreadable (longer than the buffer), else the value in buf.
+static const char *query_param(const char *q, const char *key, char *buf,
+                               size_t len) {
+  const esp_err_t ret = httpd_query_key_value(q, key, buf, len);
+  if (ret == ESP_ERR_NOT_FOUND)
+    return nullptr;
+  return ret == ESP_OK ? buf : BLE_PROXY_PARAM_INVALID;
 }
 
 static esp_err_t ble_proxy_post(httpd_req_t *req) {
-  char q[96] = "";
-  if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "enabled=0|1 [interval_ms= window_ms=]");
+  char q[128] = "";
+  const esp_err_t qret = httpd_req_get_url_query_str(req, q, sizeof(q));
+  if (qret != ESP_OK && qret != ESP_ERR_NOT_FOUND) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "query too long");
     return ESP_FAIL;
   }
-  // The values in NVS now (s_enabled etc. hold the boot-time copy).
-  bool enabled = s_enabled;
-  uint32_t interval = s_interval_ms, window = s_window_ms, x = 0;
-  char tmp[4];
-  const bool has_en =
-      httpd_query_key_value(q, "enabled", tmp, sizeof(tmp)) == ESP_OK;
-  if (has_en) {
-    if (strcmp(tmp, "0") != 0 && strcmp(tmp, "1") != 0) {
-      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "enabled must be 0 or 1");
-      return ESP_FAIL;
-    }
-    enabled = tmp[0] == '1';
-  }
-  const bool has_iv = query_uint(q, "interval_ms", &x);
-  if (has_iv)
-    interval = x;
-  const bool has_wn = query_uint(q, "window_ms", &x);
-  if (has_wn)
-    window = x;
-  uint16_t iu = 0, wu = 0;
-  if (ble_hci_scan_timing(interval, window, &iu, &wu) != 0 || window < 3) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "need 3 <= window_ms <= interval_ms <= 10240");
+  char en[8], iv[8], wn[8];
+  const BleProxySettings running = {s_enabled, s_interval_ms, s_window_ms};
+  BleProxySettings next;
+  const char *err = "";
+  const BleProxySetResult r = ble_proxy_settings_apply(
+      &running, &s_stored, query_param(q, "enabled", en, sizeof(en)),
+      query_param(q, "interval_ms", iv, sizeof(iv)),
+      query_param(q, "window_ms", wn, sizeof(wn)), &next, &err);
+  if (r == BLE_PROXY_SET_BAD) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
     return ESP_FAIL;
   }
-  if (!has_en && !has_iv && !has_wn) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "nothing to set");
-    return ESP_FAIL;
-  }
-  const bool changed = enabled != s_enabled || interval != s_interval_ms ||
-                       window != s_window_ms;
-  // The controller is only started at boot: a reboot applies an on/off flip,
-  // or new timing while on. Timing saved while off needs none.
-  const bool reboot = enabled != s_enabled || (enabled && changed);
-  if (changed) {
-    const esp_err_t ret =
-        save_nvs(enabled, (uint16_t)interval, (uint16_t)window);
-    if (ret != ESP_OK) {
+  if (r != BLE_PROXY_SET_UNCHANGED) {
+    if (save_nvs(next.enabled, next.interval_ms, next.window_ms) != ESP_OK) {
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs write");
       return ESP_FAIL;
     }
-    if (!reboot) {
-      s_interval_ms = (uint16_t)interval;
-      s_window_ms = (uint16_t)window;
+    s_stored = next;
+    // OFF with new timing: nothing is running, so the timing is live as is.
+    if (!s_enabled && !next.enabled) {
+      s_interval_ms = next.interval_ms;
+      s_window_ms = next.window_ms;
     }
   }
-  char body[160];
+  // The controller is only started at boot: reboot whenever NVS would now run
+  // differently from this boot, including a pending earlier save.
+  const bool reboot = ble_proxy_settings_reboot_pending(&running, &s_stored);
+  char body[200];
   snprintf(body, sizeof(body),
            "{\"status\":\"%s\",\"enabled\":%s,\"interval_ms\":%u,"
-           "\"window_ms\":%u}",
-           reboot ? "reboot_pending" : (changed ? "saved" : "unchanged"),
-           enabled ? "true" : "false", (unsigned)interval, (unsigned)window);
+           "\"window_ms\":%u,\"reboot_pending\":%s}",
+           reboot ? "reboot_pending"
+                  : (r == BLE_PROXY_SET_UNCHANGED ? "unchanged" : "saved"),
+           s_stored.enabled ? "true" : "false", (unsigned)s_stored.interval_ms,
+           (unsigned)s_stored.window_ms, reboot ? "true" : "false");
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, body);
-  if (reboot)
+  if (reboot && !s_reboot_scheduled) {
+    s_reboot_scheduled = true;
     xTaskCreate(ble_reboot_task, "ble_reboot", 2048, nullptr, 5, nullptr);
+  }
   return ESP_OK;
 }
 
