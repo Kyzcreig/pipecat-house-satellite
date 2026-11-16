@@ -90,8 +90,8 @@ static void test_ping_disconnect_list(void) {
   assert(feed_req(&s, ESPAPI_MSG_SUBSCRIBE_HA_STATES, out, sizeof(out),
                   &out_len) == ESPAPI_OK);
   assert(out_len == 0);
-  assert(feed_req(&s, ESPAPI_MSG_DISCONNECT_REQ, out, sizeof(out),
-                  &out_len) == ESPAPI_CLOSE);
+  assert(feed_req(&s, ESPAPI_MSG_DISCONNECT_REQ, out, sizeof(out), &out_len) ==
+         ESPAPI_CLOSE);
   assert(out_len == 3 && out[2] == 6);
 }
 
@@ -153,8 +153,8 @@ static void test_protocol_errors(void) {
   /* Noise client hello starts with 0x01. */
   espapi_session_reset(&s);
   const uint8_t noise[] = {0x01, 0x00, 0x00};
-  assert(espapi_session_feed(&s, &kInfo, noise, sizeof(noise), out,
-                             sizeof(out), &out_len) == ESPAPI_ERROR);
+  assert(espapi_session_feed(&s, &kInfo, noise, sizeof(noise), out, sizeof(out),
+                             &out_len) == ESPAPI_ERROR);
   /* Declared length above what we accept. */
   espapi_session_reset(&s);
   const uint8_t big[] = {0x00, 0x80, 0x08, 0x07}; /* len 1024 */
@@ -163,8 +163,8 @@ static void test_protocol_errors(void) {
   /* Over-long varint. */
   espapi_session_reset(&s);
   const uint8_t vlong[] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
-  assert(espapi_session_feed(&s, &kInfo, vlong, sizeof(vlong), out,
-                             sizeof(out), &out_len) == ESPAPI_ERROR);
+  assert(espapi_session_feed(&s, &kInfo, vlong, sizeof(vlong), out, sizeof(out),
+                             &out_len) == ESPAPI_ERROR);
   /* A flood that never completes a frame overflows the buffer. */
   espapi_session_reset(&s);
   uint8_t junk[ESPAPI_RX_MAX + 1];
@@ -208,8 +208,8 @@ static void test_full_batch_fits(void) {
     r[i].address = 0xFFFFFFFFFFFFULL;
   }
   uint8_t out[ESPAPI_TX_MAX];
-  size_t n = espapi_encode_raw_adverts(r, ESPAPI_ADV_BATCH_MAX, out,
-                                       sizeof(out));
+  size_t n =
+      espapi_encode_raw_adverts(r, ESPAPI_ADV_BATCH_MAX, out, sizeof(out));
   assert(n > 0 && n <= ESPAPI_TX_MAX);
   assert(espapi_encode_raw_adverts(r, ESPAPI_ADV_BATCH_MAX + 1, out,
                                    sizeof(out)) == 0);

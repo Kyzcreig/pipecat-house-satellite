@@ -41,6 +41,20 @@ jobs:
           idf.py set-target esp32s3 && idf.py build'
       shell: bash
 
+    - name: Build xiao-esp32-s3 with the BLE scanner compiled in (PIPECAT_BLE_PROXY=1)
+      # t_6215e36e: default-off flag, so the step above never compiles it.
+      # Fresh sdkconfig: CMake refuses one generated without Bluetooth.
+      run: |
+        docker run -v $PWD:/project -w /project/xiao-esp32-s3 -u 0 \
+        -e HOME=/tmp -e WIFI_SSID=A -e WIFI_PASSWORD=B \
+        -e PIPECAT_SMALLWEBRTC_URL=http://ci.invalid:7860/api/offer \
+        -e PIPECAT_DUAL_STREAM=1 -e PIPECAT_REDIAL=1 -e PIPECAT_WIFI_FAST_REJOIN=1 \
+        -e PIPECAT_BLE_PROXY=1 \
+        espressif/idf:v5.5.4 \
+        /bin/bash -c 'sed -i -E "s/^( *)(\"-Wall\"|\"-Werror\"|\"-Wextra\")$/\1# \2/" $IDF_PATH/tools/cmake/build.cmake && \
+          rm -rf sdkconfig build && idf.py set-target esp32s3 && idf.py build'
+      shell: bash
+
   reproducible:
     # Fleet v2 IMAGE-SHA (t_1d4f0294): one commit must give ONE image sha256, so
     # the manifest can pin firmware.image_sha256 and parity can grade bytes, not

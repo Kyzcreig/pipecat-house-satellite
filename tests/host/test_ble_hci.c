@@ -22,8 +22,8 @@ static void test_scan_params_command_bytes(void) {
   assert(ble_hci_scan_timing(320, 30, &iv, &wn) == 0);
   assert(iv == 512 && wn == 48); /* 0.625 ms units */
   size_t n = ble_hci_cmd_le_set_scan_params(buf, 1, iv, wn);
-  const uint8_t want[] = {0x01, 0x0B, 0x20, 0x07, 0x00, 0x00, 0x02,
-                          0x30, 0x00, 0x00, 0x00};
+  const uint8_t want[] = {0x01, 0x0B, 0x20, 0x07, 0x00, 0x00,
+                          0x02, 0x30, 0x00, 0x00, 0x00};
   assert(n == sizeof(want) && memcmp(buf, want, n) == 0);
   /* passive=0 flips only the scan type byte. */
   ble_hci_cmd_le_set_scan_params(buf, 0, iv, wn);
@@ -81,12 +81,12 @@ static void test_cmd_complete_and_status(void) {
 /* One report: ADV_NONCONN_IND, random address C0:11:22:33:44:55 (sent
  * little-endian), 3 bytes of AD data (flags), RSSI -67 (0xBD). */
 static const uint8_t kOneReport[] = {
-    0x04, 0x3E, 0x0F,             /* event LE Meta, plen 15 */
-    0x02, 0x01,                   /* subevent adv report, 1 report */
-    0x03, 0x01,                   /* event type, address type */
+    0x04, 0x3E, 0x0F,                   /* event LE Meta, plen 15 */
+    0x02, 0x01,                         /* subevent adv report, 1 report */
+    0x03, 0x01,                         /* event type, address type */
     0x55, 0x44, 0x33, 0x22, 0x11, 0xC0, /* address LE */
-    0x03, 0x02, 0x01, 0x06,       /* len 3, data */
-    0xBD                          /* rssi */
+    0x03, 0x02, 0x01, 0x06,             /* len 3, data */
+    0xBD                                /* rssi */
 };
 
 static void test_single_report(void) {
