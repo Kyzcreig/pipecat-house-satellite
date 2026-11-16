@@ -1,0 +1,27 @@
+# Passive BLE scanner for Home Assistant / Bermuda (t_6215e36e). Appended to
+# sdkconfig.defaults by CMakeLists.txt only when PIPECAT_BLE_PROXY=1 at
+# configure time. Controller only: the firmware talks HCI over VHCI itself
+# (src/ble_hci.c), so no Bluedroid/NimBLE host stack is linked.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_CTRL_HCI_MODE_VHCI=y
+# Controller task (priority 23) on core 1, away from core 0's Wi-Fi/lwIP
+# tasks and the Opus encoder (audio_publisher, core 0 prio 7).
+CONFIG_BT_CTRL_PINNED_TO_CORE_1=y
+# One activity: the scan. Each instance costs 828 B of controller RAM.
+CONFIG_BT_CTRL_BLE_MAX_ACT=1
+# Bermuda needs every report for RSSI; the controller duplicate filter and its
+# cache are not used.
+# CONFIG_BT_CTRL_BLE_SCAN_DUPL is not set
+# Report flow control is a credit scheme a host stack (Bluedroid) switches on
+# with a vendor command and then feeds; this firmware is its own host and
+# drains every report at once, so the controller is built without it.
+# CONFIG_BT_CTRL_BLE_ADV_REPORT_FLOW_CTRL_SUPP is not set
+
+# Wi-Fi and BLE share the one 2.4 GHz radio: IDF's software coexistence
+# scheduler arbitrates (the default whenever both are enabled; pinned here).
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# +2 sockets (API listen + one client) on top of httpd, WebRTC and DNS.
+CONFIG_LWIP_MAX_SOCKETS=16

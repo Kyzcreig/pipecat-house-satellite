@@ -278,6 +278,11 @@ extern "C" void app_main(void) {
   pipecat_start_ota_validation_watchdog();
   esp_task_wdt_reset();
   pipecat_init_webrtc();
+#if PIPECAT_BLE_PROXY
+  // After audio and WebRTC have taken their memory. NVS-gated, default off.
+  pipecat_ble_proxy_start();
+  esp_task_wdt_reset();
+#endif
   pipecat_validate_ota_if_healthy();
 
   // Persistent reconnect watchdog. A peer-state callback is not guaranteed for

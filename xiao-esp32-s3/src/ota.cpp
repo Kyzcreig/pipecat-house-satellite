@@ -1516,6 +1516,9 @@ void pipecat_init_ota_server() {
   config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
 #endif
   config.max_uri_handlers += 3;  // GET/POST/DELETE /hub/url (t_056748fb)
+#if PIPECAT_BLE_PROXY
+  config.max_uri_handlers += 2;  // GET/POST /ble/proxy (ble_proxy.cpp)
+#endif
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1626,6 +1629,9 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &hub_url_delete));
 #if PIPECAT_REDIAL
   ESP_ERROR_CHECK(pipecat_webrtc_register_http(g_ota_server));
+#endif
+#if PIPECAT_BLE_PROXY
+  ESP_ERROR_CHECK(pipecat_ble_proxy_register_http(g_ota_server));
 #endif
   ESP_LOGI(LOG_TAG, "OTA HTTP server listening on port %d", OTA_HTTP_PORT);
 }
