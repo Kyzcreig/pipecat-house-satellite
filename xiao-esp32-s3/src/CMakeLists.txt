@@ -13,6 +13,11 @@ list(APPEND TARGET_SRC "xvf_beam_json.cpp")
 if("$ENV{PIPECAT_XVF_AEC_FILTER}" STREQUAL "1")
 	list(APPEND TARGET_SRC "xvf_aec_filter.cpp")
 endif()
+set(TARGET_REQUIRES app_update driver esp_timer esp_wifi esp_http_server mdns nvs_flash peer esp_psram esp-libopus esp_http_client json)
+if("$ENV{PIPECAT_BLE_PROXY}" STREQUAL "1")
+	list(APPEND TARGET_SRC "ble_proxy.cpp" "ble_proxy_settings.c" "ble_hci.c" "esphome_api.c")
+	list(APPEND TARGET_REQUIRES bt esp_coex)
+endif()
 
 if(IDF_TARGET STREQUAL linux)
 	idf_component_register(
@@ -24,7 +29,7 @@ else()
 		SRCS ${COMMON_SRC} ${TARGET_SRC}
 		INCLUDE_DIRS "${CMAKE_BINARY_DIR}/generated"
 		EMBED_FILES "selftest_clip.pcm"
-		REQUIRES app_update driver esp_timer esp_wifi esp_http_server mdns nvs_flash peer esp_psram esp-libopus esp_http_client json)
+		REQUIRES ${TARGET_REQUIRES})
 endif()
 
 idf_component_get_property(lib peer COMPONENT_LIB)

@@ -27,6 +27,7 @@ FLAGS = {
     "PIPECAT_DECIM_COMP": "decim_comp.c",
     "PIPECAT_FEC_LBRR": "opus_gapfill.c",
     "PIPECAT_XVF_AEC_FILTER": "xvf_aec_filter.cpp",
+    "PIPECAT_BLE_PROXY": "ble_proxy.cpp",
 }
 NOTE = "built, never flashed, needs its own card"
 
@@ -66,7 +67,7 @@ def test_gated_sources_are_compiled_only_when_on() -> None:
             continue
         assert f'"{source}"' not in base.group(1), f"{source} is unconditional"
         assert re.search(
-            rf'if\("\$ENV\{{{flag}\}}" STREQUAL "1"\)\s*list\(APPEND TARGET_SRC "{re.escape(source)}"\)',
+            rf'if\("\$ENV\{{{flag}\}}" STREQUAL "1"\)\s*list\(APPEND TARGET_SRC "{re.escape(source)}"[^)]*\)',
             SRC_CMAKE,
         ), f"{source} not gated on {flag}"
 

@@ -104,6 +104,12 @@ extern void pipecat_start_ota_validation_watchdog();
 extern void pipecat_validate_ota_if_healthy();
 extern bool pipecat_mdns_started();
 extern bool pipecat_ota_server_started();
+#if PIPECAT_BLE_PROXY
+// Passive BLE scanner served as an ESPHome Bluetooth proxy (t_6215e36e).
+#include <esp_http_server.h>
+extern void pipecat_ble_proxy_start();
+extern esp_err_t pipecat_ble_proxy_register_http(httpd_handle_t server);
+#endif
 
 // WebRTC / Signalling
 extern void pipecat_init_webrtc();

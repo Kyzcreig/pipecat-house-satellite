@@ -195,8 +195,10 @@ assert registered_handlers == 14
 # base (every registration in the file is compiled in), plus every `+=`.
 base = int(re.search(r"config\.max_uri_handlers = (\d+);", server_body).group(1))
 increments = sum(int(n) for n in re.findall(r"config\.max_uri_handlers \+= (\d+);", server_body))
-assert base + increments == registered_handlers + 1, (base, increments, registered_handlers)
-# ...and the registration count includes the /webrtc/redial one made inside webrtc.cpp.
+# External registrations: /webrtc/redial (1, webrtc.cpp) and GET/POST
+# /ble/proxy (2, ble_proxy.cpp, t_6215e36e).
+assert base + increments == registered_handlers + 1 + 2, (base, increments, registered_handlers)
 assert "pipecat_webrtc_register_http(g_ota_server)" in server_body
+assert "pipecat_ble_proxy_register_http(g_ota_server)" in server_body
 
 print("xvf nvs source contract: PASS")

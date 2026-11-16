@@ -46,11 +46,27 @@ endif()
 # main reproduces the live firmware. Defaults live in pipecat_build_config.h.in;
 # src/CMakeLists.txt drops their sources when off. Each needs its own card.
 foreach(_pipecat_flag PIPECAT_UPLINK_64K PIPECAT_DECIM_COMP PIPECAT_FEC_LBRR
-                      PIPECAT_XVF_AEC_FILTER)
+                      PIPECAT_XVF_AEC_FILTER PIPECAT_BLE_PROXY)
   if("$ENV{${_pipecat_flag}}" STREQUAL "1")
     add_compile_definitions(${_pipecat_flag}=1)
   endif()
 endforeach()
+
+# Passive BLE scanner for Home Assistant / Bermuda (t_6215e36e). The flag also
+# turns the Bluetooth controller on in Kconfig (sdkconfig.ble_proxy). IDF only
+# applies defaults to keys a generated sdkconfig lacks, so an sdkconfig made
+# with the other setting would silently keep it: refuse instead.
+if("$ENV{PIPECAT_BLE_PROXY}" STREQUAL "1")
+  set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.ble_proxy")
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/sdkconfig")
+  file(STRINGS "${CMAKE_SOURCE_DIR}/sdkconfig" _pipecat_bt_on REGEX "^CONFIG_BT_ENABLED=y$")
+  if("$ENV{PIPECAT_BLE_PROXY}" STREQUAL "1" AND NOT _pipecat_bt_on)
+    message(FATAL_ERROR "PIPECAT_BLE_PROXY=1 but xiao-esp32-s3/sdkconfig was generated without Bluetooth; delete it and reconfigure")
+  elseif(NOT "$ENV{PIPECAT_BLE_PROXY}" STREQUAL "1" AND _pipecat_bt_on)
+    message(FATAL_ERROR "xiao-esp32-s3/sdkconfig has Bluetooth on but PIPECAT_BLE_PROXY is not 1; delete it and reconfigure")
+  endif()
+endif()
 
 # Phase 6 adaptive prebuffer (NetEQ-lite): grow the playback prebuffer
 # 40->80->120->160ms when PLC/FEC/RED recovery events exceed a rate threshold
