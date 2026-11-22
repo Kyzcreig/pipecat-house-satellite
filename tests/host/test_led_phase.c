@@ -1,17 +1,17 @@
-/* Host tests for the server-driven LED phase decision (led_phase.h, t_54a2a223).
- * Build/run: run_led_phase_tests.sh. No ESP-IDF required. */
+/* Host tests for the server-driven LED phase decision (led_phase.h,
+ * t_54a2a223). Build/run: run_led_phase_tests.sh. No ESP-IDF required. */
 #include <assert.h>
 #include <stdio.h>
 
 #include "led_phase.h"
 
 static int fails = 0;
-#define CHECK(cond)                                         \
-  do {                                                      \
-    if (!(cond)) {                                          \
+#define CHECK(cond)                                          \
+  do {                                                       \
+    if (!(cond)) {                                           \
       printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      fails++;                                              \
-    }                                                       \
+      fails++;                                               \
+    }                                                        \
   } while (0)
 
 int main(void) {
@@ -34,8 +34,7 @@ int main(void) {
    * when playback stops, and no TTL (minutes of conversation mode). */
   CHECK(led_phase_effective(LED_PH_CONVERSATION, 0, false) ==
         LED_PH_CONVERSATION);
-  CHECK(led_phase_effective(LED_PH_CONVERSATION, 100, true) ==
-        LED_PH_SPEAKING);
+  CHECK(led_phase_effective(LED_PH_CONVERSATION, 100, true) == LED_PH_SPEAKING);
   CHECK(led_phase_effective(LED_PH_CONVERSATION, 200, false) ==
         LED_PH_CONVERSATION);
   CHECK(led_phase_effective(LED_PH_CONVERSATION, LED_PHASE_TTL_MS, false) ==
