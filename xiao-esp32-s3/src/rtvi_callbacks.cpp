@@ -12,12 +12,13 @@ static void on_bot_started_speaking() {
   // Fresh opus decoder state per utterance: PLC-heavy idle pollutes the
   // predictive state and crackles the first syllable (escalation §2).
   pipecat_reset_audio_decoder();
-  pipecat_led_set_phase(PIPECAT_LED_PHASE_SPEAKING);
+  pipecat_led_set_bot_phase(PIPECAT_LED_PHASE_SPEAKING);
 }
 
 static void on_bot_stopped_speaking() {
-  // Bot finished replying -> back to idle (rainbow, waiting for wake).
-  pipecat_led_set_phase(PIPECAT_LED_PHASE_IDLE);
+  // Bot finished replying -> back to idle (rainbow, waiting for wake), or to
+  // white if conversation mode is on.
+  pipecat_led_set_bot_phase(PIPECAT_LED_PHASE_IDLE);
 }
 
 static void on_bot_tts_text(const char *text) {

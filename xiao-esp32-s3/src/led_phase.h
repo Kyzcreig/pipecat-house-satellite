@@ -45,6 +45,14 @@ static inline int led_phase_effective(int phase, uint32_t age_ms,
   return phase;
 }
 
+// Phase to store for a standard RTVI bot-started/stopped-speaking event. Those
+// events write SPEAKING / IDLE; in conversation mode they must not replace the
+// sticky CONVERSATION phase (speech already shows via is_playing), so the ring
+// returns to white, not rainbow, when the reply ends.
+static inline int led_phase_on_bot_event(int current, int requested) {
+  return current == LED_PH_CONVERSATION ? LED_PH_CONVERSATION : requested;
+}
+
 // 0..1 multiplier on the brightness scalar for the conversation breath:
 // LED_CONVERSATION_BREATH_MIN at tick 0, 1.0 at half period, smooth cosine.
 static inline float led_conversation_level(uint32_t tick) {

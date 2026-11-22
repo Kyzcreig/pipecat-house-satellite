@@ -44,6 +44,17 @@ int main(void) {
   CHECK(led_phase_effective(LED_PH_CONVERSATION, 10u * 60u * 1000u, true) ==
         LED_PH_SPEAKING);
 
+  /* Standard bot-speaking events keep conversation; otherwise they apply. */
+  CHECK(led_phase_on_bot_event(LED_PH_CONVERSATION, LED_PH_SPEAKING) ==
+        LED_PH_CONVERSATION);
+  CHECK(led_phase_on_bot_event(LED_PH_CONVERSATION, LED_PH_IDLE) ==
+        LED_PH_CONVERSATION);
+  CHECK(led_phase_on_bot_event(LED_PH_IDLE, LED_PH_SPEAKING) ==
+        LED_PH_SPEAKING);
+  CHECK(led_phase_on_bot_event(LED_PH_SPEAKING, LED_PH_IDLE) == LED_PH_IDLE);
+  CHECK(led_phase_on_bot_event(LED_PH_NONE, LED_PH_SPEAKING) ==
+        LED_PH_SPEAKING);
+
   /* Breath: floor at tick 0, full at half period, periodic, always within
    * [MIN, 1] so the brightness scalar (night level) stays the ceiling. */
   CHECK(led_conversation_level(0) > LED_CONVERSATION_BREATH_MIN - 1e-4f &&

@@ -160,6 +160,7 @@ enum PipecatLedPhase {
   PIPECAT_LED_PHASE_CONVERSATION = 5,
 };
 extern "C" void pipecat_led_set_phase(int phase);
+extern "C" void pipecat_led_set_bot_phase(int phase);
 
 extern void pipecat_init_rtvi(PeerConnection *peer_connection,
                               rtvi_callbacks_t *callbacks);

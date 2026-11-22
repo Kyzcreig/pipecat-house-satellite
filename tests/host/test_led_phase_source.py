@@ -56,6 +56,18 @@ assert re.search(r"case PHASE_CONVERSATION:\s*st = LED_CONVERSATION;", step)
 off = step[step.index("if (!pipecat_webrtc_connected)") : step.index("} else if (phase != PHASE_NONE)")]
 assert "compare_exchange_strong(conv, PHASE_NONE)" in off, "conversation not cleared on peer loss"
 
+# 3b. Standard bot-speaking events go through the conversation-preserving setter
+#     and still reset the decoder.
+CB = (SRC / "rtvi_callbacks.cpp").read_text()
+started = function_body(CB, "static void on_bot_started_speaking()")
+stopped = function_body(CB, "static void on_bot_stopped_speaking()")
+assert "pipecat_reset_audio_decoder();" in started
+assert "pipecat_led_set_bot_phase(PIPECAT_LED_PHASE_SPEAKING);" in started
+assert "pipecat_led_set_bot_phase(PIPECAT_LED_PHASE_IDLE);" in stopped
+assert "pipecat_led_set_phase(" not in started + stopped, "bot event overwrites conversation"
+bot = function_body(MEDIA, 'extern "C" void pipecat_led_set_bot_phase(int phase)')
+assert "led_phase_on_bot_event(cur, phase)" in bot
+
 # 4. Render.
 render = function_body(MEDIA, "static void led_render(")
 conv = render[render.index("case LED_CONVERSATION:") : render.index("case LED_SPEAKING:")]

@@ -1479,6 +1479,16 @@ extern "C" void pipecat_led_set_phase(int phase) {
   ESP_LOGI(LOG_TAG, "LED phase <- server: %d", phase);
 }
 
+// Standard RTVI bot-speaking events (rtvi_callbacks.cpp): same as
+// pipecat_led_set_phase, except they never overwrite CONVERSATION.
+extern "C" void pipecat_led_set_bot_phase(int phase) {
+  int cur = g_server_phase.load();
+  int next = led_phase_on_bot_event(cur, phase);
+  if (next == cur && cur == PHASE_CONVERSATION)
+    return;
+  pipecat_led_set_phase(next);
+}
+
 // HSV->RGB (h in [0,360), s/v in [0,1]) -> packed 0x00RRGGBB. Ported from the
 // ESPHome firmware's hsv_to_rgb used by the flowing-rainbow effect.
 static uint32_t led_hsv(float h, float s, float v) {
