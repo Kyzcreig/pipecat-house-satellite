@@ -230,6 +230,9 @@ static void rtvi_handle_message(const rtvi_msg_t *msg) {
           case hash("speaking"):
             pipecat_led_set_phase(PIPECAT_LED_PHASE_SPEAKING);
             break;
+          case hash("conversation"):
+            pipecat_led_set_phase(PIPECAT_LED_PHASE_CONVERSATION);
+            break;
           default:
             break;
         }

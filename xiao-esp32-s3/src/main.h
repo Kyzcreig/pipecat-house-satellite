@@ -156,6 +156,8 @@ enum PipecatLedPhase {
   PIPECAT_LED_PHASE_WAITING = 2,   // wake fired
   PIPECAT_LED_PHASE_THINKING = 3,  // processing
   PIPECAT_LED_PHASE_SPEAKING = 4,  // replying
+  // conversation mode, mic streaming
+  PIPECAT_LED_PHASE_CONVERSATION = 5,
 };
 extern "C" void pipecat_led_set_phase(int phase);
 

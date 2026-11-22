@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "led_phase.h"
 #include "main.h"
 #include "nvs.h"
 
@@ -1430,6 +1431,8 @@ enum LedState {
   LED_SPEAKING,   // reply audio playing -> green breathing
   LED_THINKING,   // server processing the command -> flowing rainbow
   LED_WAITING,    // wake fired, waiting for command -> purple beam at talker
+  // conversation mode, mic streaming -> white breathing
+  LED_CONVERSATION,
 };
 
 static LedState g_led_state = LED_OFF;
@@ -1448,13 +1451,25 @@ enum ServerPhase {
   PHASE_WAITING,   // wake fired -> purple beam at the wake direction
   PHASE_THINKING,  // processing -> flowing rainbow
   PHASE_SPEAKING,  // replying -> green comet
+  // conversation mode -> white breathing (no TTL)
+  PHASE_CONVERSATION,
 };
+static_assert(PHASE_IDLE == PIPECAT_LED_PHASE_IDLE &&
+                  PHASE_WAITING == PIPECAT_LED_PHASE_WAITING &&
+                  PHASE_THINKING == PIPECAT_LED_PHASE_THINKING &&
+                  PHASE_SPEAKING == PIPECAT_LED_PHASE_SPEAKING &&
+                  PHASE_CONVERSATION == PIPECAT_LED_PHASE_CONVERSATION,
+              "ServerPhase must match PipecatLedPhase");
+static_assert(PHASE_IDLE == LED_PH_IDLE && PHASE_WAITING == LED_PH_WAITING &&
+                  PHASE_THINKING == LED_PH_THINKING &&
+                  PHASE_SPEAKING == LED_PH_SPEAKING &&
+                  PHASE_CONVERSATION == LED_PH_CONVERSATION,
+              "ServerPhase must match led_phase.h");
 static std::atomic<int> g_server_phase{PHASE_NONE};
 static std::atomic<uint32_t> g_server_phase_ms{
     0};  // millis() of last phase msg
-// TTL: server sends idle explicitly, so a long TTL is safe; the fallback only
-// matters if the data channel dies mid-turn.
-static constexpr uint32_t LED_PHASE_TTL_MS = 30000;
+// TTL (LED_PHASE_TTL_MS, led_phase.h): server sends idle explicitly, so a long
+// TTL is safe; the fallback only matters if the data channel dies mid-turn.
 
 // Called from the RTVI data-channel callbacks (rtvi_callbacks.cpp) to set the
 // authoritative phase. Thread-safe (atomics); the LED render loop reads it.
@@ -1587,6 +1602,16 @@ static void led_render(LedState state, int beam_led) {
           }
         }
         ring[i] = base;
+      }
+      break;
+    }
+    case LED_CONVERSATION: {
+      // Soft white ring, slow breath: the "mic is streaming" signal.
+      static uint32_t breath_tick = 0;
+      uint32_t white =
+          led_hsv(0.0f, 0.0f, bmax * led_conversation_level(breath_tick++));
+      for (int i = 0; i < XVF_LED_COUNT; i++) {
+        ring[i] = white;
       }
       break;
     }
@@ -2836,16 +2861,24 @@ static void pipecat_led_step() {
   static uint32_t beam_poll_tick = 0;  // throttles the (blocking) az read
   LedState st;
 
-  int phase = g_server_phase.load();
   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-  bool phase_fresh = (phase != PHASE_NONE) &&
-                     ((now_ms - g_server_phase_ms.load()) < LED_PHASE_TTL_MS);
+  int phase =
+      led_phase_effective(g_server_phase.load(),
+                          now_ms - g_server_phase_ms.load(), is_playing.load());
 
   if (!pipecat_webrtc_connected) {
     st = LED_OFF;
     led_beam = -1;
-  } else if (phase_fresh) {
+    // Conversation has no TTL; a lost peer ends it, so a reconnect does not
+    // come back white unless the server says so again.
+    int conv = PHASE_CONVERSATION;
+    g_server_phase.compare_exchange_strong(conv, PHASE_NONE);
+  } else if (phase != PHASE_NONE) {
     switch (phase) {
+      case PHASE_CONVERSATION:
+        st = LED_CONVERSATION;
+        led_beam = -1;
+        break;
       case PHASE_SPEAKING:
         st = LED_SPEAKING;
         led_beam = -1;
