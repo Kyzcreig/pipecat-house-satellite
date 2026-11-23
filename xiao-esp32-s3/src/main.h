@@ -76,6 +76,29 @@ extern const char *pipecat_xvf_dump_row_name(size_t index);
 extern esp_err_t pipecat_xvf_read_aec_filter(int32_t far, int32_t mic,
                                              float *out, size_t out_capacity,
                                              XvfAecFilterResult *result);
+#if PIPECAT_XVF_ROUTE_CAL
+// Temporary output routing for mic calibration (t_3565803e, xvf_route_cal.h).
+// l/r = live (category, source) read back from the chip.
+struct PipecatXvfRouteState {
+  bool active;
+  bool readback_valid;
+  uint8_t l[2];
+  uint8_t r[2];
+  uint32_t remaining_ms;
+  uint32_t sets;
+  uint32_t restores;
+  uint32_t restore_failures;
+  const char *last_restore;  // "none" | "request" | "ttl" | "set_failed"
+};
+// ESP_ERR_INVALID_ARG = not a calibration route; ESP_ERR_INVALID_RESPONSE =
+// readback mismatch (production restored before returning).
+extern esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src,
+                                       uint8_t r_cat, uint8_t r_src,
+                                       uint32_t ttl_ms,
+                                       PipecatXvfRouteState *out);
+extern esp_err_t pipecat_xvf_route_restore(PipecatXvfRouteState *out);
+extern void pipecat_xvf_route_state(PipecatXvfRouteState *out);
+#endif
 extern bool pipecat_xvf_param_persistent(const char *param);
 extern size_t pipecat_xvf_persistent_param_count();
 extern const char *pipecat_xvf_persistent_param_name(size_t index);
