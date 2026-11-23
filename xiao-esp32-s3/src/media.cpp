@@ -19,6 +19,10 @@
 #include "freertos/task.h"
 #include "main.h"
 #include "nvs.h"
+#if PIPECAT_XVF_ROUTE_CAL
+#include "esp_system.h"
+#include "xvf_route_cal.h"
+#endif
 
 #define WEBRTC_SAMPLE_RATE (16000)
 #define BOARD_I2S_SAMPLE_RATE (48000)
@@ -999,6 +1003,170 @@ esp_err_t pipecat_xvf_read_diag(const char *param, float *values,
   }
   return ret;
 }
+
+#if PIPECAT_XVF_ROUTE_CAL
+// Temporary output routing for mic calibration (t_3565803e). Policy and the
+// production pair are in xvf_route_cal.h. Volatile on the chip, never in NVS.
+// Restored: when the TTL ends (esp_timer), on request, on any failed write or
+// readback, and on reboot (configure_xvf3800_dsp_profile rewrites both slots).
+// A restore that still reads back wrong after 3 tries reboots the ESP32, whose
+// boot profile writes the production pair again.
+static SemaphoreHandle_t s_route_lock = nullptr;
+static esp_timer_handle_t s_route_timer = nullptr;
+static bool s_route_active = false;
+static int64_t s_route_until_us = 0;
+static uint32_t s_route_sets = 0;
+static uint32_t s_route_restores = 0;
+static uint32_t s_route_restore_failures = 0;
+static const char *s_route_last_restore = "none";
+
+static uint8_t route_prod_r_cat() {
+#if PIPECAT_DUAL_STREAM
+  return XVF_ROUTE_PROD_R_CAT_DUAL;
+#else
+  return XVF_ROUTE_PROD_R_CAT_MONO;
+#endif
+}
+
+static esp_err_t route_read(uint8_t l[2], uint8_t r[2]) {
+  esp_err_t ret = xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, l, 2);
+  if (ret == ESP_OK) {
+    ret = xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R, r, 2);
+  }
+  return ret;
+}
+
+// Write both slots and require the readback to match. Lock held by caller.
+static esp_err_t route_write_verified(uint8_t lc, uint8_t ls, uint8_t rc,
+                                      uint8_t rs) {
+  esp_err_t ret =
+      xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, lc, ls);
+  if (ret == ESP_OK) {
+    ret = xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R, rc, rs);
+  }
+  if (ret != ESP_OK) return ret;
+  uint8_t l[2] = {}, r[2] = {};
+  ret = route_read(l, r);
+  if (ret != ESP_OK) return ret;
+  if (l[0] != lc || l[1] != ls || r[0] != rc || r[1] != rs) {
+    ESP_LOGW(LOG_TAG, "xvf route: wrote L=%u,%u R=%u,%u, reads L=%u,%u R=%u,%u",
+             lc, ls, rc, rs, l[0], l[1], r[0], r[1]);
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  return ESP_OK;
+}
+
+// Lock held by caller.
+static esp_err_t route_restore_locked(const char *why) {
+  if (s_route_timer != nullptr) esp_timer_stop(s_route_timer);
+  esp_err_t ret = ESP_FAIL;
+  for (int attempt = 0; attempt < 3 && ret != ESP_OK; attempt++) {
+    ret = route_write_verified(XVF_ROUTE_PROD_L_CAT, XVF_ROUTE_PROD_L_SRC,
+                               route_prod_r_cat(), XVF_ROUTE_PROD_R_SRC);
+    if (ret != ESP_OK) vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  s_route_active = false;
+  s_route_until_us = 0;
+  s_route_last_restore = why;
+  if (ret == ESP_OK) {
+    s_route_restores++;
+    ESP_LOGI(LOG_TAG, "xvf route: production routing restored (%s)", why);
+  } else {
+    s_route_restore_failures++;
+    ESP_LOGE(LOG_TAG,
+             "xvf route: restore (%s) failed: %s; rebooting so the boot "
+             "profile rewrites the routing",
+             why, esp_err_to_name(ret));
+    esp_restart();
+  }
+  return ret;
+}
+
+static void route_timer_cb(void *) {
+  if (s_route_lock == nullptr) return;
+  xSemaphoreTake(s_route_lock, portMAX_DELAY);
+  if (s_route_active) route_restore_locked("ttl");
+  xSemaphoreGive(s_route_lock);
+}
+
+static bool route_init() {
+  if (s_route_lock == nullptr) {
+    s_route_lock = xSemaphoreCreateMutex();
+    if (s_route_lock == nullptr) return false;
+  }
+  if (s_route_timer == nullptr) {
+    esp_timer_create_args_t args = {};
+    args.callback = route_timer_cb;
+    args.name = "xvf_route_ttl";
+    if (esp_timer_create(&args, &s_route_timer) != ESP_OK) return false;
+  }
+  return true;
+}
+
+static void route_fill_state_locked(PipecatXvfRouteState *out) {
+  if (out == nullptr) return;
+  memset(out, 0, sizeof(*out));
+  out->active = s_route_active;
+  out->readback_valid = route_read(out->l, out->r) == ESP_OK;
+  int64_t left = s_route_until_us - esp_timer_get_time();
+  out->remaining_ms = s_route_active && left > 0 ? (uint32_t)(left / 1000) : 0;
+  out->sets = s_route_sets;
+  out->restores = s_route_restores;
+  out->restore_failures = s_route_restore_failures;
+  out->last_restore = s_route_last_restore;
+}
+
+esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src, uint8_t r_cat,
+                                uint8_t r_src, uint32_t ttl_ms,
+                                PipecatXvfRouteState *out) {
+  if (!xvf_route_cal_valid(l_cat, l_src) || !xvf_route_cal_valid(r_cat, r_src)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!xvf3800_present) return ESP_ERR_NOT_SUPPORTED;
+  if (!route_init()) return ESP_ERR_NO_MEM;
+  const uint32_t ttl = xvf_route_cal_ttl(ttl_ms);
+  xSemaphoreTake(s_route_lock, portMAX_DELAY);
+  esp_timer_stop(s_route_timer);
+  esp_err_t ret = route_write_verified(l_cat, l_src, r_cat, r_src);
+  if (ret == ESP_OK) {
+    s_route_active = true;
+    s_route_sets++;
+    s_route_until_us = esp_timer_get_time() + (int64_t)ttl * 1000;
+    ret = esp_timer_start_once(s_route_timer, (uint64_t)ttl * 1000);
+    ESP_LOGI(LOG_TAG, "xvf route: L=%u,%u R=%u,%u for %lu ms", l_cat, l_src,
+             r_cat, r_src, (unsigned long)ttl);
+  }
+  if (ret != ESP_OK) {
+    route_restore_locked("set_failed");
+    if (ret != ESP_ERR_INVALID_RESPONSE) ret = ESP_FAIL;
+  }
+  route_fill_state_locked(out);
+  xSemaphoreGive(s_route_lock);
+  return ret;
+}
+
+esp_err_t pipecat_xvf_route_restore(PipecatXvfRouteState *out) {
+  if (!xvf3800_present) return ESP_ERR_NOT_SUPPORTED;
+  if (!route_init()) return ESP_ERR_NO_MEM;
+  xSemaphoreTake(s_route_lock, portMAX_DELAY);
+  esp_err_t ret = route_restore_locked("request");
+  route_fill_state_locked(out);
+  xSemaphoreGive(s_route_lock);
+  return ret;
+}
+
+void pipecat_xvf_route_state(PipecatXvfRouteState *out) {
+  if (out == nullptr) return;
+  if (!xvf3800_present || !route_init()) {
+    memset(out, 0, sizeof(*out));
+    out->last_restore = "none";
+    return;
+  }
+  xSemaphoreTake(s_route_lock, portMAX_DELAY);
+  route_fill_state_locked(out);
+  xSemaphoreGive(s_route_lock);
+}
+#endif  // PIPECAT_XVF_ROUTE_CAL
 
 // FULL register dump (t_a527ebfa). Every READABLE row of the XVF3800 host
 // control map (Obsidian "XVF3800 - Complete Device Reference", 150 rows / 11

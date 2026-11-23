@@ -46,7 +46,7 @@ endif()
 # main reproduces the live firmware. Defaults live in pipecat_build_config.h.in;
 # src/CMakeLists.txt drops their sources when off. Each needs its own card.
 foreach(_pipecat_flag PIPECAT_UPLINK_64K PIPECAT_DECIM_COMP PIPECAT_FEC_LBRR
-                      PIPECAT_XVF_AEC_FILTER)
+                      PIPECAT_XVF_AEC_FILTER PIPECAT_XVF_ROUTE_CAL)
   if("$ENV{${_pipecat_flag}}" STREQUAL "1")
     add_compile_definitions(${_pipecat_flag}=1)
   endif()

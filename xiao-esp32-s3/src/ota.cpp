@@ -23,6 +23,9 @@
 #include "hub_url.h"
 #include "link_health.h"
 #include "main.h"
+#if PIPECAT_XVF_ROUTE_CAL
+#include "xvf_route_cal.h"
+#endif
 #include "mbedtls/sha256.h"
 #include "mdns.h"
 #include "nvs.h"
@@ -806,6 +809,78 @@ static esp_err_t xvf_tune_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#if PIPECAT_XVF_ROUTE_CAL
+// /xvf/route (t_3565803e): temporary raw-mic / reference output routing for
+// microphone calibration. Bench calibration build only. See xvf_route_cal.h.
+//   GET  /xvf/route                                  live routing + state
+//   POST /xvf/route?l=<cat>,<src>&r=<cat>,<src>[&ttl_ms=N]   set (TTL clamped)
+//   POST /xvf/route?op=restore                       production routing now
+static esp_err_t xvf_route_send(httpd_req_t *req, esp_err_t ret,
+                                const PipecatXvfRouteState &st) {
+  char body[320];
+  snprintf(body, sizeof(body),
+           "{\"ok\":%s,\"error\":\"%s\",\"active\":%s,\"readback_valid\":%s,"
+           "\"l\":[%u,%u],\"r\":[%u,%u],\"remaining_ms\":%lu,\"sets\":%lu,"
+           "\"restores\":%lu,\"restore_failures\":%lu,\"last_restore\":\"%s\"}",
+           ret == ESP_OK ? "true" : "false",
+           ret == ESP_OK ? "" : esp_err_to_name(ret), st.active ? "true" : "false",
+           st.readback_valid ? "true" : "false", st.l[0], st.l[1], st.r[0],
+           st.r[1], (unsigned long)st.remaining_ms, (unsigned long)st.sets,
+           (unsigned long)st.restores, (unsigned long)st.restore_failures,
+           st.last_restore ? st.last_restore : "none");
+  if (ret == ESP_ERR_INVALID_ARG) {
+    httpd_resp_set_status(req, "400 Bad Request");
+  } else if (ret != ESP_OK) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t xvf_route_get_handler(httpd_req_t *req) {
+  PipecatXvfRouteState st = {};
+  pipecat_xvf_route_state(&st);
+  return xvf_route_send(req, ESP_OK, st);
+}
+
+static esp_err_t xvf_route_post_handler(httpd_req_t *req) {
+  char query[96] = {0};
+  char op[16] = {0};
+  char l_s[8] = {0};
+  char r_s[8] = {0};
+  char ttl_s[12] = {0};
+  PipecatXvfRouteState st = {};
+  st.last_restore = "none";
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+    return xvf_route_send(req, ESP_ERR_INVALID_ARG, st);
+  }
+  if (httpd_query_key_value(query, "op", op, sizeof(op)) == ESP_OK) {
+    if (strcmp(op, "restore") != 0) {
+      return xvf_route_send(req, ESP_ERR_INVALID_ARG, st);
+    }
+    esp_err_t ret = pipecat_xvf_route_restore(&st);
+    return xvf_route_send(req, ret, st);
+  }
+  uint8_t lc = 0, ls = 0, rc = 0, rs = 0;
+  if (httpd_query_key_value(query, "l", l_s, sizeof(l_s)) != ESP_OK ||
+      httpd_query_key_value(query, "r", r_s, sizeof(r_s)) != ESP_OK ||
+      !xvf_route_cal_parse(l_s, &lc, &ls) || !xvf_route_cal_parse(r_s, &rc, &rs)) {
+    return xvf_route_send(req, ESP_ERR_INVALID_ARG, st);
+  }
+  uint32_t ttl = 0;
+  if (httpd_query_key_value(query, "ttl_ms", ttl_s, sizeof(ttl_s)) == ESP_OK) {
+    char *end = nullptr;
+    unsigned long v = strtoul(ttl_s, &end, 10);
+    if (end == ttl_s || *end != '\0') {
+      return xvf_route_send(req, ESP_ERR_INVALID_ARG, st);
+    }
+    ttl = v > 0xFFFFFFFFul ? 0xFFFFFFFFu : (uint32_t)v;
+  }
+  esp_err_t ret = pipecat_xvf_route_set(lc, ls, rc, rs, ttl, &st);
+  return xvf_route_send(req, ret, st);
+}
+#endif  // PIPECAT_XVF_ROUTE_CAL
+
 // GET /xvf/params[?reset=1] — report the durable device-owned source of truth.
 static esp_err_t xvf_params_handler(httpd_req_t *req) {
   char query[64] = {0};
@@ -1516,6 +1591,9 @@ void pipecat_init_ota_server() {
   config.max_uri_handlers += 1;  // POST /webrtc/redial (webrtc.cpp)
 #endif
   config.max_uri_handlers += 3;  // GET/POST/DELETE /hub/url (t_056748fb)
+#if PIPECAT_XVF_ROUTE_CAL
+  config.max_uri_handlers += 2;  // GET/POST /xvf/route (t_3565803e)
+#endif
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
 
@@ -1600,6 +1678,22 @@ void pipecat_init_ota_server() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &dump_uri));
 #if PIPECAT_XVF_AEC_FILTER
   ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &aec_filter_uri));
+#endif
+#if PIPECAT_XVF_ROUTE_CAL
+  httpd_uri_t route_get_uri = {
+      .uri = "/xvf/route",
+      .method = HTTP_GET,
+      .handler = xvf_route_get_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t route_post_uri = {
+      .uri = "/xvf/route",
+      .method = HTTP_POST,
+      .handler = xvf_route_post_handler,
+      .user_ctx = NULL,
+  };
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &route_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(g_ota_server, &route_post_uri));
 #endif
   httpd_uri_t hub_url_get = {
       .uri = "/hub/url",

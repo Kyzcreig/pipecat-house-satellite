@@ -27,6 +27,7 @@ FLAGS = {
     "PIPECAT_DECIM_COMP": "decim_comp.c",
     "PIPECAT_FEC_LBRR": "opus_gapfill.c",
     "PIPECAT_XVF_AEC_FILTER": "xvf_aec_filter.cpp",
+    "PIPECAT_XVF_ROUTE_CAL": None,  # header-only policy; code gated in media.cpp / ota.cpp
 }
 NOTE = "built, never flashed, needs its own card"
 
