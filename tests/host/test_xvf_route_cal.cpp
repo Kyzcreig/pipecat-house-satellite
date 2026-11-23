@@ -16,7 +16,8 @@ static int g_fail = 0;
 
 int main() {
   // Category 3 (amplified mic) takes mic 0..3 only.
-  for (unsigned src = 0; src <= 3; src++) CHECK(xvf_route_cal_valid(3, src));
+  for (unsigned src = 0; src <= 3; src++)
+    CHECK(xvf_route_cal_valid(3, src));
   CHECK(!xvf_route_cal_valid(3, 4));
   // Category 4 (far-end reference) takes source 0 only.
   CHECK(xvf_route_cal_valid(4, 0));
@@ -24,11 +25,13 @@ int main() {
   // Never a beam, silence, user DSP, packed, out-of-range category, nor the
   // mic/reference categories the bench measured unusable through the ESP32
   // path (1, 11; 5, 12 unmeasured).
-  for (unsigned cat : {0u, 1u, 2u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 255u}) {
-    for (unsigned src = 0; src <= 5; src++) CHECK(!xvf_route_cal_valid(cat, src));
+  for (unsigned cat :
+       {0u, 1u, 2u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 255u}) {
+    for (unsigned src = 0; src <= 5; src++)
+      CHECK(!xvf_route_cal_valid(cat, src));
   }
-  // Pair: dual stream takes two different routes; mono only the same route twice
-  // (it averages both slots into one stream).
+  // Pair: dual stream takes two different routes; mono only the same route
+  // twice (it averages both slots into one stream).
   CHECK(xvf_route_cal_pair_ok(3, 0, 3, 2, true));
   CHECK(!xvf_route_cal_pair_ok(3, 0, 3, 2, false));
   CHECK(xvf_route_cal_pair_ok(3, 2, 3, 2, false));

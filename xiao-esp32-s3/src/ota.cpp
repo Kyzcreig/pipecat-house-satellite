@@ -823,10 +823,11 @@ static esp_err_t xvf_route_send(httpd_req_t *req, esp_err_t ret,
            "\"l\":[%u,%u],\"r\":[%u,%u],\"remaining_ms\":%lu,\"sets\":%lu,"
            "\"restores\":%lu,\"restore_failures\":%lu,\"last_restore\":\"%s\"}",
            ret == ESP_OK ? "true" : "false",
-           ret == ESP_OK ? "" : esp_err_to_name(ret), st.active ? "true" : "false",
-           st.readback_valid ? "true" : "false", st.l[0], st.l[1], st.r[0],
-           st.r[1], (unsigned long)st.remaining_ms, (unsigned long)st.sets,
-           (unsigned long)st.restores, (unsigned long)st.restore_failures,
+           ret == ESP_OK ? "" : esp_err_to_name(ret),
+           st.active ? "true" : "false", st.readback_valid ? "true" : "false",
+           st.l[0], st.l[1], st.r[0], st.r[1], (unsigned long)st.remaining_ms,
+           (unsigned long)st.sets, (unsigned long)st.restores,
+           (unsigned long)st.restore_failures,
            st.last_restore ? st.last_restore : "none");
   if (ret == ESP_ERR_INVALID_ARG) {
     httpd_resp_set_status(req, "400 Bad Request");
@@ -864,7 +865,8 @@ static esp_err_t xvf_route_post_handler(httpd_req_t *req) {
   uint8_t lc = 0, ls = 0, rc = 0, rs = 0;
   if (httpd_query_key_value(query, "l", l_s, sizeof(l_s)) != ESP_OK ||
       httpd_query_key_value(query, "r", r_s, sizeof(r_s)) != ESP_OK ||
-      !xvf_route_cal_parse(l_s, &lc, &ls) || !xvf_route_cal_parse(r_s, &rc, &rs)) {
+      !xvf_route_cal_parse(l_s, &lc, &ls) ||
+      !xvf_route_cal_parse(r_s, &rc, &rs)) {
     return xvf_route_send(req, ESP_ERR_INVALID_ARG, st);
   }
   uint32_t ttl = 0;
