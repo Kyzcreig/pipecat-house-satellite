@@ -1029,7 +1029,8 @@ static uint8_t route_prod_r_cat() {
 }
 
 static esp_err_t route_read(uint8_t l[2], uint8_t r[2]) {
-  esp_err_t ret = xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, l, 2);
+  esp_err_t ret =
+      xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, l, 2);
   if (ret == ESP_OK) {
     ret = xvf_read_bytes(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R, r, 2);
   }
@@ -1042,12 +1043,15 @@ static esp_err_t route_write_verified(uint8_t lc, uint8_t ls, uint8_t rc,
   esp_err_t ret =
       xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_L, lc, ls);
   if (ret == ESP_OK) {
-    ret = xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R, rc, rs);
+    ret =
+        xvf_write_u8_pair(XVF_RESID_AUDIO_MGR, XVF_CMD_AUDIO_MGR_OP_R, rc, rs);
   }
-  if (ret != ESP_OK) return ret;
+  if (ret != ESP_OK)
+    return ret;
   uint8_t l[2] = {}, r[2] = {};
   ret = route_read(l, r);
-  if (ret != ESP_OK) return ret;
+  if (ret != ESP_OK)
+    return ret;
   if (l[0] != lc || l[1] != ls || r[0] != rc || r[1] != rs) {
     ESP_LOGW(LOG_TAG, "xvf route: wrote L=%u,%u R=%u,%u, reads L=%u,%u R=%u,%u",
              lc, ls, rc, rs, l[0], l[1], r[0], r[1]);
@@ -1058,12 +1062,14 @@ static esp_err_t route_write_verified(uint8_t lc, uint8_t ls, uint8_t rc,
 
 // Lock held by caller.
 static esp_err_t route_restore_locked(const char *why) {
-  if (s_route_timer != nullptr) esp_timer_stop(s_route_timer);
+  if (s_route_timer != nullptr)
+    esp_timer_stop(s_route_timer);
   esp_err_t ret = ESP_FAIL;
   for (int attempt = 0; attempt < 3 && ret != ESP_OK; attempt++) {
     ret = route_write_verified(XVF_ROUTE_PROD_L_CAT, XVF_ROUTE_PROD_L_SRC,
                                route_prod_r_cat(), XVF_ROUTE_PROD_R_SRC);
-    if (ret != ESP_OK) vTaskDelay(pdMS_TO_TICKS(20));
+    if (ret != ESP_OK)
+      vTaskDelay(pdMS_TO_TICKS(20));
   }
   s_route_active = false;
   s_route_until_us = 0;
@@ -1083,28 +1089,36 @@ static esp_err_t route_restore_locked(const char *why) {
 }
 
 static void route_timer_cb(void *) {
-  if (s_route_lock == nullptr) return;
+  if (s_route_lock == nullptr)
+    return;
   xSemaphoreTake(s_route_lock, portMAX_DELAY);
-  if (s_route_active) route_restore_locked("ttl");
+  // A set that re-armed the timer while this callback waited for the lock
+  // moved the expiry: only restore once the CURRENT expiry has passed.
+  if (s_route_active && esp_timer_get_time() >= s_route_until_us) {
+    route_restore_locked("ttl");
+  }
   xSemaphoreGive(s_route_lock);
 }
 
 static bool route_init() {
   if (s_route_lock == nullptr) {
     s_route_lock = xSemaphoreCreateMutex();
-    if (s_route_lock == nullptr) return false;
+    if (s_route_lock == nullptr)
+      return false;
   }
   if (s_route_timer == nullptr) {
     esp_timer_create_args_t args = {};
     args.callback = route_timer_cb;
     args.name = "xvf_route_ttl";
-    if (esp_timer_create(&args, &s_route_timer) != ESP_OK) return false;
+    if (esp_timer_create(&args, &s_route_timer) != ESP_OK)
+      return false;
   }
   return true;
 }
 
 static void route_fill_state_locked(PipecatXvfRouteState *out) {
-  if (out == nullptr) return;
+  if (out == nullptr)
+    return;
   memset(out, 0, sizeof(*out));
   out->active = s_route_active;
   out->readback_valid = route_read(out->l, out->r) == ESP_OK;
@@ -1119,11 +1133,14 @@ static void route_fill_state_locked(PipecatXvfRouteState *out) {
 esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src, uint8_t r_cat,
                                 uint8_t r_src, uint32_t ttl_ms,
                                 PipecatXvfRouteState *out) {
-  if (!xvf_route_cal_valid(l_cat, l_src) || !xvf_route_cal_valid(r_cat, r_src)) {
+  if (!xvf_route_cal_pair_ok(l_cat, l_src, r_cat, r_src,
+                             PIPECAT_DUAL_STREAM != 0)) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (!xvf3800_present) return ESP_ERR_NOT_SUPPORTED;
-  if (!route_init()) return ESP_ERR_NO_MEM;
+  if (!xvf3800_present)
+    return ESP_ERR_NOT_SUPPORTED;
+  if (!route_init())
+    return ESP_ERR_NO_MEM;
   const uint32_t ttl = xvf_route_cal_ttl(ttl_ms);
   xSemaphoreTake(s_route_lock, portMAX_DELAY);
   esp_timer_stop(s_route_timer);
@@ -1138,7 +1155,8 @@ esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src, uint8_t r_cat,
   }
   if (ret != ESP_OK) {
     route_restore_locked("set_failed");
-    if (ret != ESP_ERR_INVALID_RESPONSE) ret = ESP_FAIL;
+    if (ret != ESP_ERR_INVALID_RESPONSE)
+      ret = ESP_FAIL;
   }
   route_fill_state_locked(out);
   xSemaphoreGive(s_route_lock);
@@ -1146,8 +1164,10 @@ esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src, uint8_t r_cat,
 }
 
 esp_err_t pipecat_xvf_route_restore(PipecatXvfRouteState *out) {
-  if (!xvf3800_present) return ESP_ERR_NOT_SUPPORTED;
-  if (!route_init()) return ESP_ERR_NO_MEM;
+  if (!xvf3800_present)
+    return ESP_ERR_NOT_SUPPORTED;
+  if (!route_init())
+    return ESP_ERR_NO_MEM;
   xSemaphoreTake(s_route_lock, portMAX_DELAY);
   esp_err_t ret = route_restore_locked("request");
   route_fill_state_locked(out);
@@ -1156,7 +1176,8 @@ esp_err_t pipecat_xvf_route_restore(PipecatXvfRouteState *out) {
 }
 
 void pipecat_xvf_route_state(PipecatXvfRouteState *out) {
-  if (out == nullptr) return;
+  if (out == nullptr)
+    return;
   if (!xvf3800_present || !route_init()) {
     memset(out, 0, sizeof(*out));
     out->last_restore = "none";
