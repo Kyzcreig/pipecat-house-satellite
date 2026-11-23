@@ -49,8 +49,10 @@ need("esp_timer_start_once" in route_impl, "a set must arm the TTL timer")
 need('route_restore_locked("ttl")' in route_impl, "the TTL must restore")
 need('route_restore_locked("set_failed")' in route_impl, "a failed set must restore")
 need("esp_restart()" in route_impl, "an unrestorable route must reboot into the boot profile")
-need("xvf_route_cal_valid(l_cat, l_src)" in route_impl and "xvf_route_cal_valid(r_cat, r_src)" in route_impl,
-     "both slots must pass the calibration-category policy")
+need("xvf_route_cal_pair_ok(l_cat, l_src, r_cat, r_src" in route_impl and "PIPECAT_DUAL_STREAM != 0" in route_impl,
+     "both slots must pass the calibration-category policy (same route on both in mono)")
+need("esp_timer_get_time() >= s_route_until_us" in route_impl,
+     "a TTL callback that waited behind a re-arming set must not restore early")
 need("config.max_uri_handlers += 2;  // GET/POST /xvf/route" in ota, "httpd needs 2 slots for /xvf/route")
 
 if fails:

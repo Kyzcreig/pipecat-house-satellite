@@ -1086,7 +1086,11 @@ static esp_err_t route_restore_locked(const char *why) {
 static void route_timer_cb(void *) {
   if (s_route_lock == nullptr) return;
   xSemaphoreTake(s_route_lock, portMAX_DELAY);
-  if (s_route_active) route_restore_locked("ttl");
+  // A set that re-armed the timer while this callback waited for the lock
+  // moved the expiry: only restore once the CURRENT expiry has passed.
+  if (s_route_active && esp_timer_get_time() >= s_route_until_us) {
+    route_restore_locked("ttl");
+  }
   xSemaphoreGive(s_route_lock);
 }
 
@@ -1120,7 +1124,8 @@ static void route_fill_state_locked(PipecatXvfRouteState *out) {
 esp_err_t pipecat_xvf_route_set(uint8_t l_cat, uint8_t l_src, uint8_t r_cat,
                                 uint8_t r_src, uint32_t ttl_ms,
                                 PipecatXvfRouteState *out) {
-  if (!xvf_route_cal_valid(l_cat, l_src) || !xvf_route_cal_valid(r_cat, r_src)) {
+  if (!xvf_route_cal_pair_ok(l_cat, l_src, r_cat, r_src,
+                             PIPECAT_DUAL_STREAM != 0)) {
     return ESP_ERR_INVALID_ARG;
   }
   if (!xvf3800_present) return ESP_ERR_NOT_SUPPORTED;
