@@ -189,8 +189,9 @@ assert "httpd_register_uri_handler(g_ota_server, &params_uri)" in server_body
 assert "httpd_register_uri_handler(g_ota_server, &read_uri)" in server_body
 registered_handlers = server_body.count("httpd_register_uri_handler(")
 # +/xvf/aec_filter (t_c1bfa4f6), +/xvf/dump (t_a527ebfa), +GET/POST/DELETE /hub/url (t_056748fb;
-# their slots are a `+= 3` increment, like /webrtc/redial's `+= 1`).
-assert registered_handlers == 14
+# their slots are a `+= 3` increment, like /webrtc/redial's `+= 1`), +GET/POST /xvf/route
+# (t_3565803e, `+= 2` under PIPECAT_XVF_ROUTE_CAL).
+assert registered_handlers == 16
 # Slot arithmetic on the ALL-ON arm: the first `= N` is the PIPECAT_XVF_AEC_FILTER
 # base (every registration in the file is compiled in), plus every `+=`.
 base = int(re.search(r"config\.max_uri_handlers = (\d+);", server_body).group(1))

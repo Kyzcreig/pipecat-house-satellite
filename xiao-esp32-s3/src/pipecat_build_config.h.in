@@ -33,6 +33,9 @@
 #ifndef PIPECAT_BLE_PROXY
 #define PIPECAT_BLE_PROXY 0  // passive BLE scanner for HA/Bermuda (t_6215e36e): built, never flashed, needs its own card
 #endif
+#ifndef PIPECAT_XVF_ROUTE_CAL
+#define PIPECAT_XVF_ROUTE_CAL 0  // /xvf/route raw-mic calibration routing (t_3565803e): built, never flashed, needs its own card (bench calibration builds only)
+#endif
 #ifndef PIPECAT_WIFI_FAST_REJOIN
 #define PIPECAT_WIFI_FAST_REJOIN 0  // GADGET-3 cached-BSSID fast re-join (t_2a5f2312): PASS 2026-10-04; the golden build env sets it to 1
 #endif
